@@ -32,6 +32,9 @@ platform := env_var_or_default("UDYNLINK_PLATFORM", "stm32f429_discovery")
 # Module target
 module_target := env_var_or_default("UDYNLINK_MODULE_TARGET", "cortex-m4")
 
+# Python command (uses uv to ensure dependencies are available)
+python_cmd := "uv run python3"
+
 # CMake flags
 cmake_flags := env_var_or_default("UDYNLINK_CMAKE_FLAGS", "")
 
@@ -80,7 +83,7 @@ test-f429:
     UDYNLINK_PLATFORM=stm32f429_discovery \
     UDYNLINK_QEMU_BIN={{qemu_legacy}} \
     UDYNLINK_QEMU_MACHINE=STM32F429I-Discovery \
-    python3 test_driver.py
+    {{python_cmd}} test_driver.py
 
 # Run a specific test on STM32F429
 test-f429-single test_name:
@@ -89,7 +92,7 @@ test-f429-single test_name:
     UDYNLINK_PLATFORM=stm32f429_discovery \
     UDYNLINK_QEMU_BIN={{qemu_legacy}} \
     UDYNLINK_QEMU_MACHINE=STM32F429I-Discovery \
-    python3 test_driver.py {{test_name}}
+    {{python_cmd}} test_driver.py {{test_name}}
 
 # =============================================================================
 # Test Commands - Mainline QEMU (M4/M3/M7/M33/M4F)
@@ -105,7 +108,7 @@ test-mps2:
     UDYNLINK_QEMU_CPU=cortex-m4 \
     UDYNLINK_QEMU_EXTRA_FLAGS="-semihosting" \
     UDYNLINK_QEMU_TIMEOUT=30 \
-    python3 test_driver.py
+    {{python_cmd}} test_driver.py
 
 # Run a specific test on MPS2-AN386
 test-mps2-single test_name:
@@ -117,7 +120,7 @@ test-mps2-single test_name:
     UDYNLINK_QEMU_CPU=cortex-m4 \
     UDYNLINK_QEMU_EXTRA_FLAGS="-semihosting" \
     UDYNLINK_QEMU_TIMEOUT=30 \
-    python3 test_driver.py {{test_name}}
+    {{python_cmd}} test_driver.py {{test_name}}
 
 # Run tests on MPS2-AN385 (Cortex-M3) - mainline QEMU
 test-an385:
@@ -130,7 +133,7 @@ test-an385:
     UDYNLINK_QEMU_CPU=cortex-m3 \
     UDYNLINK_QEMU_EXTRA_FLAGS="-semihosting" \
     UDYNLINK_QEMU_TIMEOUT=30 \
-    python3 test_driver.py
+    {{python_cmd}} test_driver.py
 
 # Run tests on MPS2-AN500 (Cortex-M7) - mainline QEMU
 test-an500:
@@ -143,7 +146,7 @@ test-an500:
     UDYNLINK_QEMU_CPU=cortex-m7 \
     UDYNLINK_QEMU_EXTRA_FLAGS="-semihosting" \
     UDYNLINK_QEMU_TIMEOUT=30 \
-    python3 test_driver.py
+    {{python_cmd}} test_driver.py
 
 # Run tests on MPS2-AN505 (Cortex-M33) - mainline QEMU
 test-an505:
@@ -156,7 +159,7 @@ test-an505:
     UDYNLINK_QEMU_CPU=cortex-m33 \
     UDYNLINK_QEMU_EXTRA_FLAGS="-semihosting" \
     UDYNLINK_QEMU_TIMEOUT=30 \
-    python3 test_driver.py
+    {{python_cmd}} test_driver.py
 
 # Run tests on Olimex STM32-H405 (Cortex-M4F hard-float) - mainline QEMU
 test-h405:
@@ -169,7 +172,7 @@ test-h405:
     UDYNLINK_QEMU_CPU=cortex-m4 \
     UDYNLINK_QEMU_EXTRA_FLAGS="-semihosting" \
     UDYNLINK_QEMU_TIMEOUT=30 \
-    python3 test_driver.py
+    {{python_cmd}} test_driver.py
 
 # Run tests on micro:bit (Cortex-M0) - mainline QEMU
 # NOTE: Currently broken. QEMU microbit machine does not support `-kernel` ELF
@@ -184,7 +187,7 @@ test-microbit:
     UDYNLINK_QEMU_CPU=cortex-m0 \
     UDYNLINK_QEMU_EXTRA_FLAGS="-semihosting" \
     UDYNLINK_QEMU_TIMEOUT=30 \
-    python3 test_driver.py
+    {{python_cmd}} test_driver.py
 
 # =============================================================================
 # Test Commands - Legacy QEMU (M3/M0)
@@ -197,7 +200,7 @@ test-f103:
     UDYNLINK_PLATFORM=stm32f103_bluepill \
     UDYNLINK_QEMU_BIN={{qemu_legacy}} \
     UDYNLINK_QEMU_MACHINE=NUCLEO-F103RB \
-    python3 test_driver.py
+    {{python_cmd}} test_driver.py
 
 # Run tests on STM32F051 (Cortex-M0) - requires qemu-system-gnuarmeclipse
 test-f051:
@@ -206,7 +209,7 @@ test-f051:
     UDYNLINK_PLATFORM=stm32f051_discovery \
     UDYNLINK_QEMU_BIN={{qemu_legacy}} \
     UDYNLINK_QEMU_MACHINE=STM32F0-Discovery \
-    python3 test_driver.py
+    {{python_cmd}} test_driver.py
 
 # =============================================================================
 # Manual QEMU Commands (for debugging individual tests)
@@ -235,21 +238,21 @@ qemu-f429:
 
 # Compile a loadable module for the default target (cortex-m4)
 module source_file *args="":
-    cd {{scripts_dir}} && uv run python3 mkmodule \
+    cd {{scripts_dir}} &&     {{python_cmd}} mkmodule \
         --target {{module_target}} \
         {{args}} \
         {{source_file}}
 
 # Compile a module for a specific target
 module-for target source_file *args="":
-    cd {{scripts_dir}} && uv run python3 mkmodule \
+    cd {{scripts_dir}} &&     {{python_cmd}} mkmodule \
         --target {{target}} \
         {{args}} \
         {{source_file}}
 
 # Compile a module with C header generation
 module-header source_file header_path *args="":
-    cd {{scripts_dir}} && uv run python3 mkmodule \
+    cd {{scripts_dir}} &&     {{python_cmd}} mkmodule \
         --target {{module_target}} \
         --gen-c-header --header-path {{header_path}} \
         {{args}} \
@@ -261,7 +264,7 @@ validate-all-targets:
     cd {{tests_dir}}/test-helloworld
     for target in cortex-m0 cortex-m0plus cortex-m3 cortex-m4 cortex-m4f cortex-m7 cortex-m33 cortex-m55 cortex-m85; do
         echo "=== Compiling for $target ==="
-        uv run python3 ../../scripts/mkmodule \
+        {{python_cmd}} ../../scripts/mkmodule \
             --target $target \
             --bin-name /tmp/mod_hello_${target}.bin \
             hello.c || echo "FAILED: $target"
@@ -273,11 +276,11 @@ validate-all-targets:
 
 # Show supported targets and their properties
 targets:
-    @cd {{scripts_dir}} && uv run python3 list_targets.py
+    @cd {{scripts_dir}} && {{python_cmd}} list_targets.py
 
 # Show detailed info for a specific target
 target-info target=module_target:
-    @cd {{scripts_dir}} && uv run python3 list_targets.py {{target}}
+    @cd {{scripts_dir}} && {{python_cmd}} list_targets.py {{target}}
 
 # =============================================================================
 # Development & Debug
