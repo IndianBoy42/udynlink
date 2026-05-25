@@ -8,6 +8,49 @@ import re
 
 os.chdir(os.path.dirname(os.path.realpath(__file__)))
 
+# ---------------------------------------------------------------------------
+# Configuration: QEMU binary, target board, CPU, and extra flags.
+#
+# Defaults point to the legacy xPack QEMU (qemu-system-gnuarmeclipse) and
+# the STM32F429I-Discovery board because that is what the current test
+# firmware is compiled/linked for.  Override via environment variables to
+# experiment with other QEMU binaries or target boards.
+# ---------------------------------------------------------------------------
+
+# QEMU binary path.
+#   Default: auto-locate the xPack legacy QEMU in tests/xpack-qemu-arm-*
+default_qemu_dir = None
+for entry in os.listdir("."):
+    if entry.startswith("xpack-qemu-arm-") and os.path.isdir(entry):
+        default_qemu_dir = entry
+        break
+
+default_qemu_bin = os.path.join(
+    os.path.dirname(os.path.realpath(__file__)),
+    default_qemu_dir or "xpack-qemu-arm-7.2.5-1",
+    "bin",
+    "qemu-system-gnuarmeclipse",
+) if default_qemu_dir else "qemu-system-gnuarmeclipse"
+
+qemu_bin = os.environ.get("UDYNLINK_QEMU_BIN", default_qemu_bin)
+
+# Target board / machine name.
+#   Legacy QEMU uses  -board <name>
+#   Upstream QEMU uses -machine <name>
+qemu_machine = os.environ.get("UDYNLINK_QEMU_MACHINE", "STM32F429I-Discovery")
+
+# CPU type (mainly for upstream QEMU -cpu flag).
+#   e.g. cortex-m4, cortex-m3, cortex-m0
+default_cpu = "cortex-m4"  # STM32F429 is a Cortex-M4
+qemu_cpu = os.environ.get("UDYNLINK_QEMU_CPU", default_cpu)
+
+# Extra QEMU flags (space-separated).
+#   e.g. "-semihosting -d unimp,guest_errors"
+qemu_extra_flags = os.environ.get("UDYNLINK_QEMU_EXTRA_FLAGS", "")
+
+# Whether the binary is the legacy qemu-system-gnuarmeclipse fork.
+is_legacy = os.path.basename(qemu_bin) == "qemu-system-gnuarmeclipse"
+
 default_qemu_timeout = 5
 compile_cmd = '../../scripts/mkmodule --disasm --gen-c-header --header-path ../qemu_host/src %s%s'
 cleaned = False
@@ -40,6 +83,20 @@ def run_cmd(cmd, show_output=False, timeout=None):
     if show_output:
         print(out)
     return (True, out)
+
+# Build the QEMU command line for running test1.elf.
+def build_qemu_cmd(elf_path="test1.elf"):
+    parts = [qemu_bin]
+    if is_legacy:
+        parts += ["-board", qemu_machine, "-image", elf_path, "-nographic"]
+    else:
+        # Upstream qemu-system-arm / qemu-system-aarch64 syntax
+        parts += ["-machine", qemu_machine, "-kernel", elf_path, "-nographic"]
+        if qemu_cpu:
+            parts += ["-cpu", qemu_cpu]
+        if qemu_extra_flags:
+            parts += qemu_extra_flags.split()
+    return " ".join(parts)
 
 # Run a single test
 @keep_current_dir
@@ -92,8 +149,7 @@ def test_one(full_path, opt):
         return False, "Unable to build test"
     # Run QEMU with the freshly compiled test
     print("--- Running QEMU ---")
-    qemu_bin = os.path.join(os.path.dirname(os.path.realpath(__file__)), "xpack-qemu-arm-7.2.5-1/bin/qemu-system-gnuarmeclipse")
-    qemu_cmd = "%s -board STM32F429I-Discovery -image test1.elf -nographic" % qemu_bin
+    qemu_cmd = build_qemu_cmd("test1.elf")
     res, out = run_cmd(qemu_cmd, timeout=default_qemu_timeout)
     out = out.decode() 
     if not res:
@@ -131,4 +187,3 @@ print("Failed: %d" % failed)
 print('*' * 20)
 
 os._exit(failed)
-
