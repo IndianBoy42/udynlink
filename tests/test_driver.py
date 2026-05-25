@@ -48,7 +48,7 @@ qemu_extra_flags = os.environ.get("UDYNLINK_QEMU_EXTRA_FLAGS", "")
 # Whether the binary is the legacy qemu-system-gnuarmeclipse fork.
 is_legacy = os.path.basename(qemu_bin) == "qemu-system-gnuarmeclipse"
 
-default_qemu_timeout = 5
+default_qemu_timeout = int(os.environ.get("UDYNLINK_QEMU_TIMEOUT", "5"))
 module_target = os.environ.get("UDYNLINK_MODULE_TARGET", "")
 module_target_flag = " --target %s " % module_target if module_target else " "
 compile_cmd = '%s ../../scripts/mkmodule --disasm --gen-c-header --header-path ../qemu_host/src%s%%s%%s' % (sys.executable, module_target_flag)
@@ -145,7 +145,9 @@ def test_one(full_path, opt):
         # Remove the build directory to force a clean rebuild
         shutil.rmtree(cmake_build_dir, ignore_errors=True)
         cleaned = True
-    if not run_cmd("cmake -B %s -S ../qemu_host" % cmake_build_dir)[0]:
+    cmake_flags = os.environ.get("UDYNLINK_CMAKE_FLAGS", "")
+    cmake_cmd = "cmake -B %s -S ../qemu_host %s" % (cmake_build_dir, cmake_flags)
+    if not run_cmd(cmake_cmd)[0]:
         return False, "Unable to configure test"
     if not run_cmd("cmake --build %s --target test1.elf" % cmake_build_dir)[0]:
         return False, "Unable to build test"
@@ -153,9 +155,9 @@ def test_one(full_path, opt):
     print("--- Running QEMU ---")
     qemu_cmd = build_qemu_cmd(os.path.join(cmake_build_dir, "test1.elf"))
     res, out = run_cmd(qemu_cmd, timeout=default_qemu_timeout)
-    out = out.decode() 
-    if not res:
+    if not res or out is None:
         return False, "**** Unable to run QEMU or timeout running ****"
+    out = out.decode()
     with open(full_path + "/output_test_%s.txt" % aopt, 'w') as fout:
         fout.write(out)
     # Check result

@@ -12,8 +12,8 @@ tests/qemu_host/src/test_qemu.c
 *.pyc
 temp/*
 *.txt
-tests/build/
-build/
+tests/build*/
+build*/
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
