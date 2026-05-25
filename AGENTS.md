@@ -105,10 +105,8 @@ Per the README, this code is **pre-alpha / work in progress** and "likely quite 
 
 ## Known Issues (Carried Forward)
 
-- **`#include <stdio.h>` still in `udynlink.c`** — Line 7 has `// TODO: remove next` / `#include <stdio.h>`. Inappropriate for an embedded library that should not depend on stdio.
 - **`UDYNLINK_MAKE_VERSION` macro is broken** — `udynlink.h:114` shifts `major` by 8, but `UDYNLINK_GET_MAJOR_VERSION` shifts by 16. They don't round-trip.
 - **Version fields still commented out** in `udynlink_module_header_t` — no ABI versioning means no way to detect module/loader incompatibility.
-- **Typo** — "ownershsip" in `udynlink.h:64`, "correponding" in `udynlink.h:105`
 - **No thread safety** — `module_table` is a bare static array with no locking. Cortex-M targets often use interrupts; concurrent load/unload from different interrupt levels will corrupt state.
 - **Module unload doesn't verify dependents** — Unloading a module that other modules depend on via `udynlink_external_resolve_symbol` leaves dangling references.
 - **`0x20000000` is hardcoded** — The LOT base address is STM32-specific. No abstraction for other MCU families with different RAM bases.
@@ -131,12 +129,12 @@ The `.gitignore` and test harness generate these artifacts; do not commit them:
 
 | # | Task | Priority | Notes |
 |---|------|----------|-------|
-| 1 | Remove `#include <stdio.h>` from `udynlink.c` | High | Replace `snprintf` usage with `udynlink_external_vprintf` or manual formatting |
+| 1 | ~~Remove `#include <stdio.h>` from `udynlink.c`~~ | ~~High~~ | Done |
 | 2 | Fix `UDYNLINK_MAKE_VERSION` / `UDYNLINK_GET_MAJOR_VERSION` macros | High | Shift amounts don't round-trip; decide on 8-bit or 16-bit fields |
 | 3 | Uncomment and implement version fields in module header | Medium | ABI versioning prevents loading incompatible modules |
 | 4 | Make LOT base address configurable (not hardcoded `0x20000000`) | Medium | Add a `udynlink_set_lot_base_addr()` API or config macro |
 | 5 | Add thread safety for module table | Medium | At minimum, disable interrupts around load/unload on Cortex-M |
-| 6 | Fix typos in `udynlink.h` | Low | "ownershsip" → "ownership", "correponding" → "corresponding" |
+| 6 | ~~Fix typos in `udynlink.h`~~ | ~~Low~~ | Done |
 | 7 | Guard module unload against dependents | Medium | Track which modules resolve symbols from which others |
 | 8 | Migrate from `qemu-system-gnuarmeclipse` to mainstream QEMU | Medium | Mainline QEMU now has STM32 support; reduces external dependency |
 | 9 | Replace Eclipse-generated makefiles with CMake or Makefile | Low | Current build system is IDE-specific and not easily CI-friendly |
