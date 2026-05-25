@@ -1,130 +1,106 @@
-/* semihosting.c - ARM semihosting for MPS2-AN500 (mainline QEMU)
- *
- * Uses CMSDK UART at 0x4000_4000 (UART0 on MPS2 boards).
- * QEMU provides a working pl011-like UART at this address.
- */
-
 #include <stdint.h>
-#include <unistd.h>
+#include <string.h>
 
-/* CMSDK UART0 registers */
-#define UART0_BASE   0x40004000
-#define UART_DATA    (*(volatile uint32_t *)(UART0_BASE + 0x00))
-#define UART_STATE   (*(volatile uint32_t *)(UART0_BASE + 0x04))
-#define UART_CTRL    (*(volatile uint32_t *)(UART0_BASE + 0x08))
-#define UART_INT     (*(volatile uint32_t *)(UART0_BASE + 0x0C))
-#define UART_BAUDDIV (*(volatile uint32_t *)(UART0_BASE + 0x10))
-
-#define UART_STATE_TXFULL  (1 << 0)
-#define UART_STATE_RXFULL  (1 << 1)
-#define UART_CTRL_TX_EN    (1 << 0)
-#define UART_CTRL_RX_EN    (1 << 1)
-#define UART_CTRL_TX_INT   (1 << 2)
-#define UART_CTRL_RX_INT   (1 << 3)
-#define UART_CTRL_TXO_INT  (1 << 4)
-#define UART_CTRL_RXO_INT  (1 << 5)
-#define UART_CTRL_HST_INT  (1 << 6)
-
-/* Initialize UART for TX */
-static void uart_init(void) {
-    UART_CTRL = UART_CTRL_TX_EN;
-    /* QEMU doesn't need baud rate setup, but set a safe default */
-    UART_BAUDDIV = 16;
-}
-
-/* Write a single character to UART */
-static void uart_putc(char c) {
-    while (UART_STATE & UART_STATE_TXFULL) {
-        /* spin */
-    }
-    UART_DATA = c;
-}
-
-/* Minimal _write for newlib nano */
-int _write(int fd, const char *buf, int len) {
-    if (fd != STDOUT_FILENO && fd != STDERR_FILENO) {
-        return -1;
-    }
-    for (int i = 0; i < len; i++) {
-        uart_putc(buf[i]);
-    }
-    return len;
-}
-
-/* ARM semihosting - bkpt 0xAB interface */
-static int semihosting_call(int op, void *arg) {
-    int result;
-    __asm__ volatile (
-        "mov r0, %[op]\n"
-        "mov r1, %[arg]\n"
-        "bkpt #0xAB\n"
-        "mov %[result], r0\n"
-        : [result] "=r" (result)
-        : [op] "r" (op), [arg] "r" (arg)
-        : "r0", "r1", "memory"
+/* ARM Semihosting via BKPT 0xAB (Thumb-2) */
+static void _sys_write0(const char *str) {
+    __asm__ volatile(
+        "movs r0, #4\n\t"      // SYS_WRITE0
+        "movs r1, %0\n\t"
+        "bkpt 0xAB\n\t"
+        :
+        : "r" (str)
+        : "r0", "r1"
     );
-    return result;
 }
 
-#define SEMIHOSTING_SYS_WRITE0  0x04
-#define SEMIHOSTING_SYS_EXIT    0x18
-
-/* Write null-terminated string via semihosting */
-void semihosting_write0(const char *str) {
-    semihosting_call(SEMIHOSTING_SYS_WRITE0, (void *)str);
+static void _sys_exit(int code) {
+    __asm__ volatile(
+        "movs r0, #0x18\n\t"   // SYS_EXIT
+        "movs r1, %0\n\t"
+        "bkpt 0xAB\n\t"
+        :
+        : "r" (code)
+        : "r0", "r1"
+    );
 }
 
-/* Exit via semihosting */
-void semihosting_exit(int code) {
-    uint32_t args[2] = {0x20026, (uint32_t)code};  /* ADP_Stopped_ApplicationExit */
-    semihosting_call(SEMIHOSTING_SYS_EXIT, args);
-}
+#define OUTPUT_BUF_SIZE 512
+static char output_buf[OUTPUT_BUF_SIZE];
+static uint32_t output_pos = 0;
 
-/* Provide _sbrk for malloc */
-extern char _end;
-static char *heap_end = 0;
-
-caddr_t _sbrk(int incr) {
-    char *prev_heap_end;
-    if (heap_end == 0) {
-        heap_end = &_end;
+static void flush_output(void) {
+    if (output_pos > 0) {
+        output_buf[output_pos] = '\0';
+        _sys_write0(output_buf);
+        output_pos = 0;
     }
-    prev_heap_end = heap_end;
-    heap_end += incr;
-    return (caddr_t)prev_heap_end;
 }
 
-/* Minimal _fstat to satisfy newlib */
-int _fstat(int fd, void *st) {
+static void buf_putc(char c) {
+    if (output_pos >= OUTPUT_BUF_SIZE - 1) {
+        flush_output();
+    }
+    output_buf[output_pos++] = c;
+}
+
+int _write(int fd, const void *buf, int count) {
     (void)fd;
-    (void)st;
-    return 0;
+    const char *p = buf;
+    for (int i = 0; i < count; i++) {
+        buf_putc(p[i]);
+        if (p[i] == '\n') {
+            flush_output();
+        }
+    }
+    return count;
 }
 
-/* Minimal _isatty */
-int _isatty(int fd) {
-    (void)fd;
-    return 1;
-}
-
-/* Minimal _lseek */
-int _lseek(int fd, int ptr, int dir) {
-    (void)fd;
-    (void)ptr;
-    (void)dir;
-    return 0;
-}
-
-/* Minimal _close */
 int _close(int fd) {
     (void)fd;
     return -1;
 }
 
-/* Minimal _read */
-int _read(int fd, char *buf, int len) {
-    (void)fd;
-    (void)buf;
-    (void)len;
+int _lseek(int fd, int ptr, int dir) {
+    (void)fd; (void)ptr; (void)dir;
     return 0;
+}
+
+int _read(int fd, void *buf, int count) {
+    (void)fd; (void)buf; (void)count;
+    return 0;
+}
+
+int _isatty(int fd) {
+    (void)fd;
+    return 1;
+}
+
+void *_sbrk(int incr) {
+    extern char _end;
+    static char *heap_end = 0;
+    char *prev_heap_end;
+    if (heap_end == 0) heap_end = &_end;
+    prev_heap_end = heap_end;
+    heap_end += incr;
+    return (void *)prev_heap_end;
+}
+
+void _exit(int status) {
+    flush_output();
+    _sys_exit(status);
+    while (1);
+}
+
+int _kill(int pid, int sig) {
+    (void)pid; (void)sig;
+    return -1;
+}
+
+int _getpid(void) {
+    return 1;
+}
+
+int _fstat(int fd, void *st) {
+    (void)fd; (void)st;
+    return -1;
 }
