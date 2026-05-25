@@ -73,7 +73,7 @@ def test_one(full_path, opt):
             return False, "Unable to compile module(s) " + srcs
         with open(full_path + "/output_build_%s.txt" % aopt, 'w') as fout:
             fout.write(out)
-        cmd = "arm-none-eabi-objdump -Dztr --source ./%s.elf" % os.path.splitext(srcs)[0]
+        cmd = "arm-none-eabi-objdump -Dztr --source ./%s.elf" % os.path.splitext(m[0])[0]
         res, out = run_cmd(cmd)
         out = out.decode() 
         with open(full_path + "/output_objdump_%s.txt" % aopt, 'w') as fout:
@@ -92,7 +92,9 @@ def test_one(full_path, opt):
         return False, "Unable to build test"
     # Run QEMU with the freshly compiled test
     print("--- Running QEMU ---")
-    res, out = run_cmd("qemu-system-gnuarmeclipse -board STM32F429I-Discovery -image test1.elf -nographic", timeout=default_qemu_timeout)
+    qemu_bin = os.path.join(os.path.dirname(os.path.realpath(__file__)), "xpack-qemu-arm-7.2.5-1/bin/qemu-system-gnuarmeclipse")
+    qemu_cmd = "%s -board STM32F429I-Discovery -image test1.elf -nographic" % qemu_bin
+    res, out = run_cmd(qemu_cmd, timeout=default_qemu_timeout)
     out = out.decode() 
     if not res:
         return False, "**** Unable to run QEMU or timeout running ****"

@@ -572,13 +572,8 @@ register char* stack_ptr asm ("sp");
 
 /* following is copied from libc/stdio/local.h to check std streams */
 //extern void _EXFUN(__sinit,(struct _reent*));
-#define CHECK_INIT(ptr) \
-  do                                            \
-    {                                           \
-      if ((ptr) && !(ptr)->__sdidinit)          \
-        __sinit (ptr);                          \
-    }                                           \
-  while (0)
+// Modern newlib initializes stdio automatically; __sdidinit was removed.
+#define CHECK_INIT(ptr) do { (void)(ptr); } while (0)
 
 static int monitor_stdin;
 static int monitor_stdout;
