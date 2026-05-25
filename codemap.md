@@ -1,9 +1,9 @@
 # Repository Atlas: udynlink
 
 ## Project Responsibility
-A micro dynamic linker for ARM Cortex-M MCUs that compiles C/C++ code into position-independent binary modules and loads them at runtime from RAM or flash (XIP). Supports partial firmware updates, RAM-resident code execution, modular C/C++ plugin loading, and inter-module symbol dependencies.
+A micro dynamic linker for ARM Cortex-M MCUs that compiles C/C++ code into position-independent binary modules and loads them at runtime from RAM or flash (XIP). Supports partial firmware updates, RAM-resident code execution, modular C/C++ plugin loading, inter-module symbol dependencies, hash-based O(1) symbol resolution, and dependency tracking with safe unload.
 
-This repository is the **eh2k fork** of the original udynlink project. It adds C++ support, `--gc-sections` dead code elimination, `--public-symbols` selective exporting, `R_ARM_TARGET1` relocation support, and GitHub Actions CI.
+This repository is the **eh2k fork** of the original udynlink project. It adds C++ support, `--gc-sections` dead code elimination, `--public-symbols` selective exporting, `R_ARM_TARGET1` relocation support, hash-based symbol resolution, module dependency tracking, and GitHub Actions CI.
 
 ## System Entry Points
 - `udynlink/udynlink.h`: Public C API for host firmware integration.
@@ -28,6 +28,22 @@ This repository is the **eh2k fork** of the original udynlink project. It adds C
 - **Fixed LOT Base**: The original `udynlink_get_lot_base(pc)` function pointer at address `0x1c` was replaced by a fixed memory location at `0x20000000` (RAM base). The host must write `p_mod->ram_base` to `*(uint32_t*)0x20000000` before calling any module function.
 - **Dead Code Elimination**: `--gc-sections` is used during linking, with `KEEP(*(.text_nogc))` and `KEEP(*(.init_array))` preserving prologues and constructors.
 - **Selective Exporting**: `--public-symbols` allows restricting which global functions are wrapped/exported, reducing binary size and attack surface.
+
+### Hash-Based Symbol Resolution (O(1))
+- New files: `udynlink/udynlink_hash.h` (hash table struct + lookup declaration) and `udynlink/udynlink_hash.c` (~60-line GNU hash + bloom filter lookup implementation)
+- New tool: `scripts/mkhostsyms` — Python tool that reads a host firmware ELF, generates a C header with const hash table data for O(1) symbol resolution
+- The hash table struct `udynlink_hash_table_t` contains: bloom filter, buckets, hash values, symbol addresses, and string table
+- Lookup function: `udynlink_resolve_hashed_symbol()` — O(1) amortized, replaces the O(N) strcmp resolution chain
+- No changes to existing `udynlink.h` / `udynlink.c` / `udynlink_externals.h` for this feature; it is an optional additive capability
+
+### Module Dependency Tracking
+- Modified files: `udynlink/udynlink.h` (header struct grew from 32 to 36 bytes, module struct extended, new error codes, ABI version bump to 2.0), `udynlink/udynlink.c` (dependency validation, 3-tier extern symbol resolution, safe unload), `udynlink/udynlink_externals.h` (2 new callbacks)
+- New test: `tests/test-deps/` with provider + consumer modules
+- UDLM header now 36 bytes with `num_deps` and `deps_strtab_size` fields; binary layout: [Header 36B] [Relocs] [Symtab] [Deps strtab] [Code] [Data]
+- `mkmodule --depends mod_a,mod_b` declares module dependencies at build time
+- Three-tier symbol resolution: critical host symbols → loaded dependency modules → fallback host symbols
+- Safe unload: modules with active dependents (tracked via `dep_refcount`) cannot be unloaded until all dependents are removed
+- v1.0 backward compatibility: `get_header_size()` returns 32 for v1.0, 36 for v2.0+
 
 ## Changelog Summary (eh2k fork)
 - `[12]` 2024-12-01: `--gc-sections` + readonly data & reloc optimizations
