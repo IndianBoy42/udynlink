@@ -15,6 +15,8 @@ For deep work on a specific folder, also read that folder's `codemap.md`.
 
 This repo is based on the **eh2k fork** which adds: C++ support (`__init_array`), `--gc-sections` dead code elimination, `--public-symbols` selective exporting, `R_ARM_ABS32`/`R_ARM_TARGET1` data relocations, fixed LOT base at `0x20000000`, multiple module instances, and GitHub Actions CI.
 
+Recent expansion adds: compile-time target configuration (`UDYNLINK_LOT_BASE_ADDR`, `UDYNLINK_MAX_HANDLES`), ABI versioning with `mod_version`/`udynlink_version`/`arch_tag`, architecture tag validation at load time, a Python target database (`scripts/targets.py`) supporting Cortex-M0/M0+/M3/M4/M4F/M7/M33/M55/M85, and per-target assembly prologue templates.
+
 ## Toolchain Requirements
 
 - **`arm-none-eabi-gcc`** / **`arm-none-eabi-g++`** / **`arm-none-eabi-objcopy`** (GCC ARM Embedded)
@@ -47,6 +49,10 @@ Additional flags:
 - `--bin-name <path>` — custom output binary name
 - `--build_flags=<flags>` — prepend extra compiler flags
 - `--mcpu <cpu>` — target CPU (default: `cortex-m4`)
+- `--target <name>` — target from the target database (default: `cortex-m4`). Supported: `cortex-m0`, `cortex-m0plus`, `cortex-m3`, `cortex-m4`, `cortex-m4f`, `cortex-m7`, `cortex-m33`, `cortex-m55`, `cortex-m85`
+- `--mod-version <ver>` — module ABI version (default: `1.0`)
+- `--udynlink-version <ver>` — loader ABI version (default: `1.0`)
+- `--lot-base <addr>` — LOT base address (default: `0x20000000`)
 
 For C++ sources (`.cpp`/`.cxx`), the toolchain automatically adds `-fno-exceptions -fno-rtti -fno-use-cxa-atexit` and compiles `cpp_init_fini.c` for `__init_array` support.
 
@@ -61,6 +67,10 @@ python3 test_driver.py [test-name-prefix]
 Without arguments, it runs every `test-*/` directory. With an argument, it runs only matching directories.
 
 Each test is executed **twice**: once with `-O0` and once with `-Os`.
+
+The platform is selected via `-DUDYNLINK_PLATFORM=<name>` in the CMake build step (default: `stm32f429_discovery`). Platforms live in `tests/platforms/<name>/`.
+
+The module compilation target can be overridden via `UDYNLINK_MODULE_TARGET` env var (default: `cortex-m4`).
 
 ### Run a single test manually (advanced)
 The test driver orchestrates several steps:
@@ -99,8 +109,8 @@ The test host build pulls `udynlink.c` from the repo root via a `if(NOT TARGET u
 ### Position-Independent Code Model
 - Modules are compiled with `-fPIE -msingle-pic-base -mno-pic-data-is-text-relative -ffunction-sections -fdata-sections`
 - Data access uses `r9` as a base register pointing to the **LOT** (Linker Offset Table)
-- Exported functions get an assembly prologue (generated from `scripts/asm_template.tmpl`) that loads `r9` from a **fixed memory address at `0x20000000`** (RAM base on STM32F429)
-- **Host must write `p_mod->ram_base` to `*(uint32_t*)0x20000000` before calling any module function** (this is the LOT base)
+- Exported functions get an assembly prologue (generated from `scripts/asm_template_*.tmpl`) that loads `r9` from a **fixed memory address** (default `0x20000000`, configurable via `UDYNLINK_LOT_BASE_ADDR`)
+- **Host must write `p_mod->ram_base` to `*(uint32_t*)UDYNLINK_LOT_BASE_ADDR` before calling any module function** (this is the LOT base)
 
 ### Host Firmware Integration
 The host MCU firmware must implement the functions in `udynlink/udynlink_externals.h`:
@@ -113,12 +123,14 @@ Without these, the linker will not link. `udynlink_external_resolve_symbol` is t
 
 ### C++ Module Support
 - Call `udynlink_cpp_init(p_mod)` after loading a C++ module to run global constructors via `__init_array`
-- The host must set `*(uint32_t*)0x20000000 = p_mod->ram_base` before calling `udynlink_cpp_init`
+- The host must set `*(uint32_t*)UDYNLINK_LOT_BASE_ADDR = p_mod->ram_base` before calling `udynlink_cpp_init`
 
 ### Module Image Format
-Binary modules start with the signature `UDLM`, followed by a header, relocation table, symbol table, `.text`, and `.data`. The loader (`udynlink_load_module`) validates the signature, checks for duplicate module names, applies relocations, and resolves extern symbols.
+Binary modules start with the signature `UDLM`, followed by a header, relocation table, symbol table, `.text`, and `.data`. The loader (`udynlink_load_module`) validates the signature, checks ABI version and architecture tag compatibility, applies relocations, and resolves extern symbols.
 
 Relocation types handled: `R_ARM_GOT_BREL` (LOT), `R_ARM_ABS32` and `R_ARM_TARGET1` (data), `R_ARM_THM_CALL`/`R_ARM_THM_JUMP24` (ignored, PC-relative).
+
+The header contains `mod_version`, `udynlink_version`, and `arch_tag` fields for runtime compatibility checking. `arch_tag` encodes the core family, FPU presence, and float ABI.
 
 ### Three Load Modes
 All tests validate all three modes by default:
@@ -134,13 +146,14 @@ Per the README, this code is **pre-alpha / work in progress** and "likely quite 
 
 ## Known Issues (Carried Forward)
 
-- **`UDYNLINK_MAKE_VERSION` macro is broken** — `udynlink.h:114` shifts `major` by 8, but `UDYNLINK_GET_MAJOR_VERSION` shifts by 16. They don't round-trip.
-- **Version fields still commented out** in `udynlink_module_header_t` — no ABI versioning means no way to detect module/loader incompatibility.
+- ~~**`UDYNLINK_MAKE_VERSION` macro is broken**~~ — Fixed. Both shift by 8.
+- ~~**Version fields still commented out**~~ — Fixed. Header now includes `mod_version`, `udynlink_version`, `arch_tag`.
 - **No thread safety** — `module_table` is a bare static array with no locking. Cortex-M targets often use interrupts; concurrent load/unload from different interrupt levels will corrupt state.
 - **Module unload doesn't verify dependents** — Unloading a module that other modules depend on via `udynlink_external_resolve_symbol` leaves dangling references.
-- **`0x20000000` is hardcoded** — The LOT base address is STM32-specific. No abstraction for other MCU families with different RAM bases.
-- **`UDYNLINK_MAX_HANDLES` defaults to 1** with only a `#warning` — silent default is easy to miss.
+- ~~**`0x20000000` is hardcoded**~~ — Fixed. Configurable via `UDYNLINK_LOT_BASE_ADDR` macro.
+- ~~**`UDYNLINK_MAX_HANDLES` defaults to 1**~~ — Fixed. Now requires explicit definition (`#error` if unset).
 - **Test harness defaults to niche QEMU** — `qemu-system-gnuarmeclipse` is a specialized variant; mainstream QEMU has gained STM32 support that could replace it. The harness is now configurable via env vars (`UDYNLINK_QEMU_BIN`, `UDYNLINK_QEMU_MACHINE`, etc.) so migration can proceed once the firmware is ported to an upstream-supported board.
+- **M3/M0 QEMU hosts have Flash→RAM call quirk** — Modules calling host functions (e.g. `printf`) hang under `qemu-system-gnuarmeclipse` for STM32F103/STM32F051 boards, but work correctly on STM32F429. This is believed to be a QEMU emulation bug, not a code issue.
 
 ## Generated / Ignored Files
 
@@ -159,14 +172,14 @@ The `.gitignore` and test harness generate these artifacts; do not commit them:
 | # | Task | Priority | Notes |
 |---|------|----------|-------|
 | 1 | ~~Remove `#include <stdio.h>` from `udynlink.c`~~ | ~~High~~ | Done |
-| 2 | Fix `UDYNLINK_MAKE_VERSION` / `UDYNLINK_GET_MAJOR_VERSION` macros | High | Shift amounts don't round-trip; decide on 8-bit or 16-bit fields |
-| 3 | Uncomment and implement version fields in module header | Medium | ABI versioning prevents loading incompatible modules |
-| 4 | Make LOT base address configurable (not hardcoded `0x20000000`) | Medium | Add a `udynlink_set_lot_base_addr()` API or config macro |
+| 2 | ~~Fix `UDYNLINK_MAKE_VERSION` / `UDYNLINK_GET_MAJOR_VERSION` macros~~ | ~~High~~ | Done |
+| 3 | ~~Uncomment and implement version fields in module header~~ | ~~Medium~~ | Done |
+| 4 | ~~Make LOT base address configurable (not hardcoded `0x20000000`)~~ | ~~Medium~~ | Done |
 | 5 | Add thread safety for module table | Medium | At minimum, disable interrupts around load/unload on Cortex-M |
 | 6 | ~~Fix typos in `udynlink.h`~~ | ~~Low~~ | Done |
 | 7 | Guard module unload against dependents | Medium | Track which modules resolve symbols from which others |
 | 8 | Migrate from `qemu-system-gnuarmeclipse` to mainstream QEMU | Medium | Test harness is now configurable via env vars; next step is porting the test firmware to an upstream-supported board |
 | 9 | ~~Replace Eclipse-generated makefiles with CMake or Makefile~~ | ~~Low~~ | Done |
-| 10 | Add Cortex-M0+/M3/M7 support | Low | Compilation flags hardcode `-mcpu=cortex-m4` |
+| 10 | ~~Add Cortex-M0+/M3/M7/M33/M55/M85 support~~ | ~~Low~~ | Done. Toolchain supports all 9 targets. QEMU hosts created for M0, M3, M4 (STM32F429). M4F/M7/M55/M85 hosts need porting to upstream QEMU. |
 | 11 | Add unit tests for Python toolchain | Low | Only integration tests via QEMU currently exist |
-| 12 | Add `UDYNLINK_MAX_HANDLES` as a required compile-time constant | Low | Fail compilation if not explicitly set, instead of defaulting to 1 |
+| 12 | ~~Add `UDYNLINK_MAX_HANDLES` as a required compile-time constant~~ | ~~Low~~ | Done |

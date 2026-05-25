@@ -80,6 +80,8 @@ cmake -B tests/build -S tests/qemu_host -DUDYNLINK_BUILD_TESTS=ON
 cmake --build tests/build
 ```
 
+The platform is selected via `-DUDYNLINK_PLATFORM=<name>` (default: `stm32f429_discovery`). Available platforms: `stm32f429_discovery`, `stm32f103_bluepill`, `stm32f051_discovery`.
+
 # License
 
 The dynamic linker code is licensed under the Apache 2.0 license.
@@ -213,6 +215,28 @@ The picture below shows the memory layout of the module image:
 ```
 
 To load the module, a pointer to this module image needs to be passed to the dynamic linker running on the MCU. Note that the memory map of the module **after** it is loaded is different (see below for details).
+
+## Target selection
+
+`mkmodule` supports all major Cortex-M cores via the `--target` flag:
+
+```bash
+python3 mkmodule --target cortex-m3 --gen-c-header hello.c
+```
+
+Supported targets: `cortex-m0`, `cortex-m0plus`, `cortex-m3`, `cortex-m4`, `cortex-m4f`, `cortex-m7`, `cortex-m33`, `cortex-m55`, `cortex-m85`.
+
+The `--target` flag automatically selects the correct `-mcpu`, `-mfpu`, `-mfloat-abi`, assembly template family, and architecture tag for the module header. You can still override individual compiler flags with `--mcpu` or `--build_flags` if needed.
+
+## ABI versioning
+
+The module header includes two version fields and an architecture tag:
+
+- `mod_version` — the module's own ABI version
+- `udynlink_version` — the minimum loader version required
+- `arch_tag` — encodes the target core family, FPU presence, and float ABI
+
+The runtime rejects modules with incompatible versions or mismatched architecture tags, preventing crashes from loading a hard-float module on a soft-float host (for example).
 
 # The dynamic linker
 
