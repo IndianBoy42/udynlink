@@ -3,8 +3,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdarg.h>
-// TODO: remove next
-#include <stdio.h>
+
 
 ////////////////////////////////////////////////////////////////////////////////
 // Local macros and data

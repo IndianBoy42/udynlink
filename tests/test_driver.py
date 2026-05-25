@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import os
-import subprocess32 as subprocess
+import subprocess
 import sys
 import shutil
 import re

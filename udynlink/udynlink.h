@@ -61,7 +61,7 @@ typedef struct _udynlink_module_t {
         void *p_ram;                            // pointer to module RAM
         uint32_t ram_base;                      // same thing as a number
     };
-    uint8_t info;                               // load mode (above) and RAM ownserhsip info
+    uint8_t info;                               // load mode (above) and RAM ownership info
 } udynlink_module_t;
 
 // A symbol (mapping between a name and a value). Symbols can be both functions and
@@ -102,7 +102,7 @@ typedef enum {
 #undef _UDYNLINK_EXPAND
 
 // Debug levels for udynlink_debug (order is important!)
-// If this enum is modified, the correponding array in udynlink_debug must also be modified!
+// If this enum is modified, the corresponding array in udynlink_debug must also be modified!
 typedef enum {
     UDYNLINK_DEBUG_NONE,
     UDYNLINK_DEBUG_ERROR,
