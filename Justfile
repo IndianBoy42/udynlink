@@ -72,6 +72,10 @@ build-all:
     cmake -B {{build_dir}} -S . -DUDYNLINK_BUILD_TESTS=ON
     cmake --build {{build_dir}} --target test1.elf
 
+[parallel]
+test-all: ci test-f429 test-f103 test-f051
+
+
 # =============================================================================
 # Test Commands - STM32F429 (Legacy xPack QEMU)
 # =============================================================================
@@ -328,12 +332,8 @@ clean-all: clean
 # =============================================================================
 
 # Run the full CI test suite (all platforms that currently pass on mainline QEMU)
-ci:
-    just test-mps2
-    just test-an385
-    just test-an500
-    just test-an505
-    just test-h405
+[parallel]
+ci: test-mps2 test-an385 test-an500 test-an505 test-h405
 
 # Validate all targets can compile
 ci-validate-targets:
