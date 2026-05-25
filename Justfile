@@ -52,6 +52,13 @@ build-tests platform=platform:
 build-tests-all:
     just build-tests stm32f429_discovery
     just build-tests mps2_an386
+    just build-tests mps2_an385
+    just build-tests mps2_an500
+    just build-tests mps2_an505
+    just build-tests microbit
+    just build-tests olimex_stm32_h405
+    just build-tests stm32f103_bluepill
+    just build-tests stm32f051_discovery
 
 # Build the core library + tests in-tree
 build-all:
@@ -111,6 +118,42 @@ test-mps2-single test_name:
 # =============================================================================
 # Test Commands - Other Platforms (Skeleton/Test Only)
 # =============================================================================
+
+# Run tests on MPS2-AN385 (Cortex-M3) - mainline QEMU
+test-an385:
+    #!/usr/bin/env bash
+    cd {{tests_dir}}
+    UDYNLINK_PLATFORM=mps2_an385 \
+    UDYNLINK_QEMU_BIN=qemu-system-arm \
+    UDYNLINK_QEMU_MACHINE=mps2-an385 \
+    UDYNLINK_QEMU_CPU=cortex-m3 \
+    UDYNLINK_QEMU_EXTRA_FLAGS="-semihosting" \
+    UDYNLINK_QEMU_TIMEOUT=120 \
+    python3 test_driver.py
+
+# Run tests on micro:bit (Cortex-M0) - mainline QEMU
+test-microbit:
+    #!/usr/bin/env bash
+    cd {{tests_dir}}
+    UDYNLINK_PLATFORM=microbit \
+    UDYNLINK_QEMU_BIN=qemu-system-arm \
+    UDYNLINK_QEMU_MACHINE=microbit \
+    UDYNLINK_QEMU_CPU=cortex-m0 \
+    UDYNLINK_QEMU_EXTRA_FLAGS="-semihosting" \
+    UDYNLINK_QEMU_TIMEOUT=120 \
+    python3 test_driver.py
+
+# Run tests on Olimex STM32-H405 (Cortex-M4F hard-float) - mainline QEMU
+test-h405:
+    #!/usr/bin/env bash
+    cd {{tests_dir}}
+    UDYNLINK_PLATFORM=olimex_stm32_h405 \
+    UDYNLINK_QEMU_BIN=qemu-system-arm \
+    UDYNLINK_QEMU_MACHINE=olimex-stm32-h405 \
+    UDYNLINK_QEMU_CPU=cortex-m4 \
+    UDYNLINK_QEMU_EXTRA_FLAGS="-semihosting" \
+    UDYNLINK_QEMU_TIMEOUT=120 \
+    python3 test_driver.py
 
 # Run tests on STM32F103 (Cortex-M3) - requires qemu-system-gnuarmeclipse
 test-f103:
@@ -246,10 +289,13 @@ clean-all: clean
 # CI Commands
 # =============================================================================
 
-# Run the full CI test suite (STM32F429 + MPS2-AN386)
+# Run the full CI test suite (all working platforms)
 ci:
     just test-f429
     just test-mps2
+    just test-an385
+    just test-microbit
+    just test-h405
 
 # Validate all targets can compile
 ci-validate-targets:
@@ -282,7 +328,12 @@ help:
     @echo "  just test-mps2              - Run all tests on MPS2-AN386"
     @echo "  just test-mps2-single NAME  - Run specific test"
     @echo ""
-    @echo "TEST (Other platforms):"
+    @echo "TEST (Mainline QEMU - M3/M0/M4F):"
+    @echo "  just test-an385             - MPS2-AN385 (Cortex-M3)"
+    @echo "  just test-microbit          - BBC micro:bit (Cortex-M0)"
+    @echo "  just test-h405              - Olimex STM32-H405 (Cortex-M4F hard-float)"
+    @echo ""
+    @echo "TEST (Legacy QEMU - M3/M0):"
     @echo "  just test-f103              - STM32F103 (M3)"
     @echo "  just test-f051              - STM32F051 (M0)"
     @echo ""
@@ -306,7 +357,7 @@ help:
     @echo "  just clean-all               - Deep clean"
     @echo ""
     @echo "CI:"
-    @echo "  just ci                      - Full CI suite"
+    @echo "  just ci                      - Full CI suite (F429 + MPS2)"
     @echo "  just ci-quick                - Compile-only checks"
     @echo ""
     @echo "ENVIRONMENT VARIABLES:"

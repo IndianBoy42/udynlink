@@ -146,6 +146,9 @@ def test_one(full_path, opt):
         shutil.rmtree(cmake_build_dir, ignore_errors=True)
         cleaned = True
     cmake_flags = os.environ.get("UDYNLINK_CMAKE_FLAGS", "")
+    platform = os.environ.get("UDYNLINK_PLATFORM", "")
+    if platform:
+        cmake_flags += " -DUDYNLINK_PLATFORM=%s" % platform
     cmake_cmd = "cmake -B %s -S ../qemu_host %s" % (cmake_build_dir, cmake_flags)
     if not run_cmd(cmake_cmd)[0]:
         return False, "Unable to configure test"
