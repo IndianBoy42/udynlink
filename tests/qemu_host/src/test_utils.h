@@ -16,6 +16,8 @@ int is_extern_symbol(const udynlink_module_t *p_mod, const char *name);
 int check_exported_symbols(const udynlink_module_t *p_mod, const char *slist[]);
 int check_extern_symbols(const udynlink_module_t *p_mod, const char *slist[]);
 int run_test_func(const udynlink_module_t *p_mod);
+udynlink_error_t test_load_module(udynlink_module_t *p_mod, const void *base_addr, void *load_addr, uint32_t load_size, udynlink_load_mode_t load_mode);
+udynlink_error_t test_unload_module(udynlink_module_t *p_mod);
 
 #endif
 

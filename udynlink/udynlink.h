@@ -35,12 +35,15 @@ typedef struct {
     uint16_t arch_tag;                          // target architecture + float ABI
     uint16_t num_lot;                           // number of LOT entries
     uint16_t num_rels;                          // number of relocations
+    uint16_t num_deps;                          // number of dependencies (0 for v1.0 modules)
     uint32_t symt_size;                         // size of symbol table in bytes
     uint32_t code_size;                         // size of code section in bytes
     uint32_t data_size;                         // size of data section in bytes
     uint32_t bss_size;                          // size of bss section in bytes
+    uint32_t deps_strtab_size;                  // dependency string table size in bytes (0 for v1.0 modules)
     // Then relocations (num_rels * 8 bytes)
     // Then the symbol table (symt_size bytes, rounded up to 4)
+    // Then the dependency string table (deps_strtab_size bytes) [v2.0+]
     // Then the code (rounded up to a multiple of 4 bytes)
     // Then data
 } udynlink_module_header_t;
@@ -55,7 +58,10 @@ typedef enum {
     _UDYNLINK_LOAD_MODE_LAST = UDYNLINK_LOAD_MODE_XIP // for testing only
 } udynlink_load_mode_t;
 
-// Representation of a loaded module in memory
+#ifndef UDYNLINK_MAX_DEPS
+#define UDYNLINK_MAX_DEPS 4
+#endif
+
 typedef struct _udynlink_module_t {
     const udynlink_module_header_t *p_header;   // pointer to module header
     union {
@@ -63,6 +69,9 @@ typedef struct _udynlink_module_t {
         uint32_t ram_base;                      // same thing as a number
     };
     uint8_t info;                               // load mode (above) and RAM ownership info
+    uint8_t num_deps;                           // number of loaded dependencies
+    uint8_t dep_refcount;                        // how many modules depend on this one
+    const struct _udynlink_module_t *deps[UDYNLINK_MAX_DEPS];
 } udynlink_module_t;
 
 // A symbol (mapping between a name and a value). Symbols can be both functions and
@@ -96,6 +105,8 @@ _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_DUPLICATE_NAME),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_VERSION_MISMATCH),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_ARCH_MISMATCH),\
+_UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_MISSING_DEP),\
+_UDYNLINK_EXPAND(UDYNLINK_ERR_MODULE_IN_USE),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_INVALID_MODULE)
 
 #define _UDYNLINK_EXPAND(x)                   x
@@ -126,7 +137,7 @@ typedef enum {
 #define UDYNLINK_LOT_BASE_ADDR 0x20000000
 #endif
 
-#define UDYNLINK_LOADER_ABI_VERSION           UDYNLINK_MAKE_VERSION(1, 0)
+#define UDYNLINK_LOADER_ABI_VERSION           UDYNLINK_MAKE_VERSION(2, 0)
 
 // Architecture tag constants (uint16_t)
 //   Bits [3:0]  — core family ID

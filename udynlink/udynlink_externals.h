@@ -22,6 +22,8 @@
 #include <stdarg.h>
 #include "stdint.h"
 
+struct _udynlink_module_t;
+
 ////////////////////////////////////////////////////////////////////////////////
 // These functions must be implemented by a program that uses udynlink
 
@@ -30,6 +32,8 @@ void *udynlink_external_malloc(size_t size);
 void udynlink_external_free(void *p);
 void udynlink_external_vprintf(const char *s, va_list va);
 uint32_t udynlink_external_resolve_symbol(const char *name);
+uint32_t udynlink_external_resolve_critical_symbol(const char *name);
+struct _udynlink_module_t *udynlink_external_get_module_handle(const char *module_name);
 
 // UDYNLINK_MAX_HANDLES
 //     >0: that many modules

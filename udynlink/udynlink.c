@@ -68,8 +68,28 @@ static void udynlink_debug(const char *func, int line, udynlink_debug_level_t le
 
 // Returns the offset of code from the given module header address
 // The code comes after the header, the relocations and the symbol table.
+static uint32_t get_header_size(const udynlink_module_header_t *p_header) {
+    if (p_header->udynlink_version < UDYNLINK_MAKE_VERSION(2, 0))
+        return 32;
+    return sizeof(udynlink_module_header_t);
+}
+
+static uint32_t get_deps_strtab_offset(const udynlink_module_header_t *p_header) {
+    return get_header_size(p_header) + p_header->num_rels * 2 * sizeof(uint32_t) + p_header->symt_size;
+}
+
+static const char *get_deps_strtab(const udynlink_module_header_t *p_header) {
+    if (p_header->udynlink_version < UDYNLINK_MAKE_VERSION(2, 0) || p_header->num_deps == 0)
+        return NULL;
+    return (const char *)p_header + get_deps_strtab_offset(p_header);
+}
+
 static uint32_t get_code_offset_from_header(const udynlink_module_header_t *p_header) {
-    uint32_t res = sizeof(udynlink_module_header_t) + p_header->num_rels * 2 * sizeof(uint32_t) + p_header->symt_size;
+    uint32_t res = get_deps_strtab_offset(p_header);
+    if (p_header->udynlink_version >= UDYNLINK_MAKE_VERSION(2, 0)) {
+        res += p_header->deps_strtab_size;
+        res = (res + 3) & ~3U;
+    }
     return res;
 }
 
@@ -103,14 +123,14 @@ static uint8_t *get_data_pointer(const udynlink_module_t *p_mod) {
 
 // Gets the pointer to the symbol table according to the given module header
 static const uint32_t *get_sym_table_pointer(const udynlink_module_header_t *p_header) {
-    return (uint32_t*)p_header + sizeof(udynlink_module_header_t) / sizeof(uint32_t) + p_header->num_rels * 2;
+    return (uint32_t*)p_header + get_header_size(p_header) / sizeof(uint32_t) + p_header->num_rels * 2;
 }
 
 // Return a pointer to the relocation data (after the header)
 static const uint32_t *get_relocs_pointer(const udynlink_module_t *p_mod) {
     const udynlink_module_header_t *p_header = p_mod->p_header;
 
-    return (const uint32_t*)p_header + sizeof(udynlink_module_header_t) / sizeof(uint32_t);
+    return (const uint32_t*)p_header + get_header_size(p_header) / sizeof(uint32_t);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -223,6 +243,39 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
 
     UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Processing module at %p named '%s' with load mode %d\n", base_addr, udynlink_get_module_name(p_mod), (int)load_mode);
 
+    // Dependency validation (v2.0+ modules only)
+    p_mod->num_deps = 0;
+    p_mod->dep_refcount = 0;
+    if (p_header->udynlink_version >= UDYNLINK_MAKE_VERSION(2, 0) && p_header->num_deps > 0) {
+        if (p_header->num_deps > UDYNLINK_MAX_DEPS) {
+            UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, "Module has %u dependencies, max is %u\n", p_header->num_deps, UDYNLINK_MAX_DEPS);
+            res = UDYNLINK_ERR_LOAD_MISSING_DEP;
+            goto exit;
+        }
+        const char *dep_str = get_deps_strtab(p_header);
+        if (dep_str == NULL && p_header->num_deps > 0) {
+            res = UDYNLINK_ERR_LOAD_MISSING_DEP;
+            goto exit;
+        }
+        for (uint16_t d = 0; d < p_header->num_deps; d++) {
+            if (dep_str == NULL || *dep_str == '\0') {
+                UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, "Missing dependency name at index %u\n", d);
+                res = UDYNLINK_ERR_LOAD_MISSING_DEP;
+                goto exit;
+            }
+            udynlink_module_t *dep_mod = udynlink_external_get_module_handle(dep_str);
+            if (dep_mod == NULL) {
+                UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, "Dependency '%s' not found\n", dep_str);
+                res = UDYNLINK_ERR_LOAD_MISSING_DEP;
+                goto exit;
+            }
+            p_mod->deps[d] = dep_mod;
+            dep_mod->dep_refcount++;
+            p_mod->num_deps++;
+            dep_str += strlen(dep_str) + 1;
+        }
+    }
+
     // Allocate RAM or check given RAM region, as needed
     uint32_t ram_size = udynlink_get_ram_size(p_mod);
     if (ram_size > 0) { // is any RAM needed at all?
@@ -313,14 +366,27 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
 
             case UDYNLINK_SYM_TYPE_EXTERN:
                 UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Applying extern relocation for symbol at index %u, name=%s at lot_offset=%u\n", symt_offset, sym.name, lot_offset);
-                // TODO: this needs a separate step (look in the static symbols of the running program)
-                uint32_t sym_addr = udynlink_external_resolve_symbol(sym.name);
-                if (sym_addr > 0) {
-                    *p_rel_location = sym_addr;
-                } else {
-                    UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, "Unable to resolve relocation for extern symbol '%s'\n", sym.name);
-                    res = UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL;
-                    goto exit;
+                {
+                    uint32_t sym_addr = udynlink_external_resolve_critical_symbol(sym.name);
+                    if (sym_addr == 0) {
+                        for (uint8_t d = 0; d < p_mod->num_deps; d++) {
+                            udynlink_sym_t dep_sym;
+                            if (udynlink_lookup_symbol(p_mod->deps[d], sym.name, &dep_sym) != NULL) {
+                                sym_addr = dep_sym.val;
+                                break;
+                            }
+                        }
+                    }
+                    if (sym_addr == 0) {
+                        sym_addr = udynlink_external_resolve_symbol(sym.name);
+                    }
+                    if (sym_addr > 0) {
+                        *p_rel_location = sym_addr;
+                    } else {
+                        UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, "Unable to resolve relocation for extern symbol '%s'\n", sym.name);
+                        res = UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL;
+                        goto exit;
+                    }
                 }
                 break;
 
@@ -364,7 +430,16 @@ udynlink_error_t udynlink_unload_module(udynlink_module_t *p_mod) {
         UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, error_codes[(int)UDYNLINK_ERR_INVALID_MODULE]);
         return UDYNLINK_ERR_INVALID_MODULE;
     }
+    if (p_mod->dep_refcount > 0) {
+        UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, "Cannot unload module: %u other modules depend on it\n", p_mod->dep_refcount);
+        return UDYNLINK_ERR_MODULE_IN_USE;
+    }
     UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Unloading module at %p\n", p_mod);
+    for (uint8_t i = 0; i < p_mod->num_deps; i++) {
+        if (p_mod->deps[i] != NULL) {
+            ((udynlink_module_t *)p_mod->deps[i])->dep_refcount--;
+        }
+    }
     if ((p_mod->p_ram != NULL) && !UDYNLINK_LOAD_IS_FOREIGN_RAM(p_mod)) { // free allocated memory
         udynlink_external_free(p_mod->p_ram);
         UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Deallocated memory area at %p\n", p_mod->p_ram);
@@ -454,7 +529,7 @@ uint32_t udynlink_get_module_size(const void *base_addr)
     const udynlink_module_header_t *p_header = (const udynlink_module_header_t *)base_addr;
 
     uint32_t tot_size = 0;
-    tot_size += sizeof(udynlink_module_header_t) + p_header->num_rels * 2 * sizeof(uint32_t) + p_header->symt_size;
+    tot_size += get_code_offset_from_header(p_header);
     tot_size += p_header->code_size;
     tot_size += p_header->data_size;
 

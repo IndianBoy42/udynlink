@@ -334,7 +334,7 @@ def process(output, args):
         total_relocs += 1
     debug("== RelocationTable, entries: %d" % total_relocs, args)
     img += struct.pack("<H", total_relocs)  # Total number of relocations (2b)
-    img += struct.pack("<H", 0)             # Padding to align symt_size to 4 bytes (2b)
+    img += struct.pack("<H", len(args.dep_list))  # Number of dependencies (2b)
     
     symt_len = len(slist) * 8 + 4 # 2 4-byte entry for each symbol: (offset to name, offset in image) + initial word which is the number of entries
     for i, s in enumerate(slist):
@@ -346,6 +346,11 @@ def process(output, args):
     img += struct.pack("<I", len(code_sect))  # Size of code section (4b)
     img += struct.pack("<I", len(data_sect))  # Size of data section (4b)
     img += struct.pack("<I", len(bss_sect))  # Size of bss section (4b)
+    deps_strtab = b""
+    for dep_name in args.dep_list:
+        deps_strtab += dep_name.encode('utf-8') + b'\0'
+    deps_strtab_size = len(deps_strtab)
+    img += struct.pack("<I", deps_strtab_size)  # Deps string table size (4b)
     # Write relocations: (lot off, symy off) pairs
     img += realocs
     
@@ -393,6 +398,12 @@ def process(output, args):
     # Round to a multiple of 4
     if len(img) % 4 > 0:
         img += ('\0' * (4 - len(img) % 4)).encode('utf-8')
+    # Write dependency string table (after symtab, before code)
+    if deps_strtab_size > 0:
+        img += deps_strtab
+        debug("== DepsStrtab, %d bytes, %d deps: %s" % (deps_strtab_size, len(args.dep_list), ",".join(args.dep_list)), args)
+        while len(img) % 4 > 0:
+            img += b'\0'
     # And finally append the code
     img = img + code_sect + data_sect
     bin_name = args.bin_name
@@ -445,8 +456,9 @@ parser.add_argument("--bin-name", dest="bin_name", default=None)
 parser.add_argument("--mcpu", dest="mcpu", default="cortex-m4", help="Target CPU (default: cortex-m4)")
 parser.add_argument("--target", dest="target", default=targets.DEFAULT_TARGET, help="Target name (default: %s)" % targets.DEFAULT_TARGET)
 parser.add_argument("--mod-version", dest="mod_version", default="1.0", help="Module ABI version (default: 1.0)")
-parser.add_argument("--udynlink-version", dest="udynlink_version", default="1.0", help="Loader ABI version (default: 1.0)")
+parser.add_argument("--udynlink-version", dest="udynlink_version", default="2.0", help="Loader ABI version (default: 2.0)")
 parser.add_argument("--lot-base", dest="lot_base", default="0x20000000", help="LOT base address (default: 0x20000000)")
+parser.add_argument("--depends", dest="depends", default=None, help="Comma-separated list of dependency module names")
 
 args, rest = parser.parse_known_args()
 
@@ -470,6 +482,20 @@ args.lot_base = int(args.lot_base, 0)
 args.template = target_meta["template"]
 args.fpu_flag = " -mfpu=" + target_meta["fpu"] if target_meta.get("fpu") else ""
 args.float_abi_flag = " -mfloat-abi=" + target_meta["float_abi"] if target_meta.get("float_abi") else ""
+
+# Parse dependencies
+args.dep_list = []
+if args.depends:
+    for dep in args.depends.split(","):
+        dep = dep.strip()
+        if not dep:
+            error("Empty dependency name in --depends")
+        if dep in args.dep_list:
+            error("Duplicate dependency '%s' in --depends" % dep)
+        args.dep_list.append(dep)
+    if args.udynlink_version_val < (2 << 8):
+        args.udynlink_version_val = (2 << 8)
+        debug("Auto-bumped udynlink_version to 2.0 due to --depends", args)
 if len(rest) == 0:
     error("Empty file/macro list")
 # Look in "rest" for definitions (-Dmacro or -Dmacro=value)
