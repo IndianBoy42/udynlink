@@ -19,7 +19,7 @@ This repo is based on the **eh2k fork** which adds: C++ support (`__init_array`)
 
 - **`arm-none-eabi-gcc`** / **`arm-none-eabi-g++`** / **`arm-none-eabi-objcopy`** (GCC ARM Embedded)
 - **Python 3** with `pyelftools`, `Jinja2` (managed via `uv` / `pyproject.toml`)
-- **QEMU** (`qemu-system-gnuarmeclipse`, GNU MCU Eclipse flavor) for tests
+- **QEMU** for tests. Defaults to the legacy xPack `qemu-system-gnuarmeclipse`, but the harness now supports any QEMU binary via `UDYNLINK_QEMU_BIN` env var
 
 All Python scripts are **Python 3** (migrated in eh2k's [1]).
 
@@ -54,7 +54,9 @@ The test driver orchestrates several steps:
 1. Compiles module C files via `../../scripts/mkmodule`
 2. Copies `test_qemu.c` into `tests/qemu_host/src/`
 3. Builds `test1.elf` in `tests/qemu_host/Debug/` via Eclipse-generated `makefile`
-4. Runs `qemu-system-gnuarmeclipse -board STM32F429I-Discovery -image test1.elf -nographic`
+4. Runs QEMU with the freshly compiled `test1.elf`
+   - Default: `qemu-system-gnuarmeclipse -board STM32F429I-Discovery -image test1.elf -nographic`
+   - Override via env vars: `UDYNLINK_QEMU_BIN`, `UDYNLINK_QEMU_MACHINE`, `UDYNLINK_QEMU_CPU`, `UDYNLINK_QEMU_EXTRA_FLAGS`
 5. Checks output for `*** TEST OK ***` and regex matches from `test_data.py`
 
 ### Build the test host firmware
@@ -111,7 +113,7 @@ Per the README, this code is **pre-alpha / work in progress** and "likely quite 
 - **Module unload doesn't verify dependents** — Unloading a module that other modules depend on via `udynlink_external_resolve_symbol` leaves dangling references.
 - **`0x20000000` is hardcoded** — The LOT base address is STM32-specific. No abstraction for other MCU families with different RAM bases.
 - **`UDYNLINK_MAX_HANDLES` defaults to 1** with only a `#warning` — silent default is easy to miss.
-- **Test harness uses niche QEMU** — `qemu-system-gnuarmeclipse` is a specialized variant; mainstream QEMU has gained STM32 support that could replace it.
+- **Test harness defaults to niche QEMU** — `qemu-system-gnuarmeclipse` is a specialized variant; mainstream QEMU has gained STM32 support that could replace it. The harness is now configurable via env vars (`UDYNLINK_QEMU_BIN`, `UDYNLINK_QEMU_MACHINE`, etc.) so migration can proceed once the firmware is ported to an upstream-supported board.
 
 ## Generated / Ignored Files
 
@@ -136,7 +138,7 @@ The `.gitignore` and test harness generate these artifacts; do not commit them:
 | 5 | Add thread safety for module table | Medium | At minimum, disable interrupts around load/unload on Cortex-M |
 | 6 | ~~Fix typos in `udynlink.h`~~ | ~~Low~~ | Done |
 | 7 | Guard module unload against dependents | Medium | Track which modules resolve symbols from which others |
-| 8 | Migrate from `qemu-system-gnuarmeclipse` to mainstream QEMU | Medium | Mainline QEMU now has STM32 support; reduces external dependency |
+| 8 | Migrate from `qemu-system-gnuarmeclipse` to mainstream QEMU | Medium | Test harness is now configurable via env vars; next step is porting the test firmware to an upstream-supported board |
 | 9 | Replace Eclipse-generated makefiles with CMake or Makefile | Low | Current build system is IDE-specific and not easily CI-friendly |
 | 10 | Add Cortex-M0+/M3/M7 support | Low | Compilation flags hardcode `-mcpu=cortex-m4` |
 | 11 | Add unit tests for Python toolchain | Low | Only integration tests via QEMU currently exist |
