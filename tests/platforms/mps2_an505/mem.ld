@@ -9,7 +9,7 @@
 
 MEMORY
 {
-  RAM (rwx) : ORIGIN = 0x00000000, LENGTH = 4M
+  RAM (rwx) : ORIGIN = 0x10000000, LENGTH = 4M
 }
 
 SECTIONS

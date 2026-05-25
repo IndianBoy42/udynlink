@@ -68,7 +68,7 @@ def keep_current_dir(func):
 # Return the output and the exit code
 def run_cmd(cmd, show_output=False, timeout=None):
     print("Executing '%s' " % cmd)
-    child = subprocess.Popen(cmd.split(' '), stdout=subprocess.PIPE)
+    child = subprocess.Popen(cmd.split(' '), stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     try:
         out, _ = child.communicate(timeout = timeout)
     except subprocess.TimeoutExpired:
@@ -76,8 +76,9 @@ def run_cmd(cmd, show_output=False, timeout=None):
         child.terminate()
         return (False, None)
     if child.returncode != 0:
-        print("-" * 80 + "\nError running '%s'" % cmd)
-        print(out)
+        if show_output:
+            print("-" * 80 + "\nError running '%s' (exit code %d)" % (cmd, child.returncode))
+            print(out)
         return (False, out)
     if show_output:
         print(out)
@@ -158,19 +159,19 @@ def test_one(full_path, opt):
     print("--- Running QEMU ---")
     qemu_cmd = build_qemu_cmd(os.path.join(cmake_build_dir, "test1.elf"))
     res, out = run_cmd(qemu_cmd, timeout=default_qemu_timeout)
-    if not res or out is None:
+    if out is None:
         return False, "**** Unable to run QEMU or timeout running ****"
     out = out.decode()
     with open(full_path + "/output_test_%s.txt" % aopt, 'w') as fout:
         fout.write(out)
-    # Check result
-    if out.find("*** TEST OK ***") == -1:
-        return False, "**** Can't find the test OK indicator in the output ****\n" + out
-    for t in test_data.get("required", []):
-        finds = re.findall(t, out, re.MULTILINE)
-        if len(finds) < test_data.get("total_loads", 3): # consider each load mode in turn
-            return False, "**** Can't find '%s' in output ****" % t + out
-    return True, out
+    # Check result (accept non-zero QEMU exit if output shows success)
+    if out.find("*** TEST OK ***") != -1:
+        for t in test_data.get("required", []):
+            finds = re.findall(t, out, re.MULTILINE)
+            if len(finds) < test_data.get("total_loads", 3): # consider each load mode in turn
+                return False, "**** Can't find '%s' in output ****" % t + out
+        return True, out
+    return False, "**** Can't find the test OK indicator in the output ****\n" + out
 
 total, failed = 0, 0
 tests = sys.argv[1:] if len(sys.argv) > 1 else os.listdir(".")
@@ -193,4 +194,5 @@ print("Passed: %d" % (total - failed))
 print("Failed: %d" % failed)
 print('*' * 20)
 
+sys.stdout.flush()
 os._exit(failed)

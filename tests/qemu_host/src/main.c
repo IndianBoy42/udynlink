@@ -50,5 +50,7 @@ extern int test_qemu(void);
 
 int main() {
     udynlink_set_debug_level(UDYNLINK_DEBUG_INFO);
-    printf (test_qemu() ? "*** TEST OK ***\n" : "*** TEST FAILED! ***\n");
+    int ok = test_qemu();
+    printf (ok ? "*** TEST OK ***\n" : "*** TEST FAILED! ***\n");
+    exit(ok ? 0 : 1);
 }
