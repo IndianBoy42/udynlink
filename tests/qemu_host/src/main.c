@@ -65,11 +65,11 @@ extern int _write(int file, char *ptr, int len);
 
 uint32_t udynlink_external_resolve_symbol(const char *name) {
     if (!strcmp(name, "printf"))
-        return (uint32_t)&printf;
+        return (uint32_t)(uintptr_t)&printf;
     else if (!strcmp(name, "_write"))
-        return (uint32_t)&_write;
+        return (uint32_t)(uintptr_t)&_write;
     else if (!strcmp(name, "puts"))
-        return (uint32_t)&puts;
+        return (uint32_t)(uintptr_t)&puts;
     else
         return test_resolve_symbol(name);
 }

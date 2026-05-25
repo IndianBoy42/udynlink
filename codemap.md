@@ -45,6 +45,18 @@ This repository is the **eh2k fork** of the original udynlink project. It adds C
 - Safe unload: modules with active dependents (tracked via `dep_refcount`) cannot be unloaded until all dependents are removed
 - v1.0 backward compatibility: `get_header_size()` returns 32 for v1.0, 36 for v2.0+
 
+### Streaming I/O Module Loading
+- New API: `udynlink_load_module_stream()` loads modules from a `udynlink_io_t` callback interface (random-access `read` + `get_size`), enabling loading from SD card, SPI flash, network streams, or any non-memory-mapped source without pre-buffering the entire image
+- Caller provides a work buffer (minimum 64 bytes, optimal size from `udynlink_get_stream_work_buf_size()`); the loader reads metadata and copies sections through this buffer in chunks
+- On-demand symbol resolution: symbol entries and names are read from the stream during relocation processing, avoiding pre-loading the entire symbol table into RAM
+- Supports COPY_ALL and COPY_CODE modes; XIP returns `UDYNLINK_ERR_LOAD_UNABLE_TO_XIP`
+- For COPY_CODE streaming, the loader uses a COPY_ALL-style RAM layout so that `udynlink_lookup_symbol` works after loading
+- Query functions: `udynlink_get_ram_requirements()`, `udynlink_get_ram_requirements_stream()`, `udynlink_get_stream_work_buf_size()`
+- New error code: `UDYNLINK_ERR_LOAD_IO_ERROR` for stream read failures
+- New helper macro: `UDYNLINK_SYMBOL(sym)` for building host symbol tables
+- New test: `tests/test-streaming-load/` with mock `udynlink_io_t` wrapping memory-mapped data
+- `uintptr_t` cleanup: all raw `(uint32_t)ptr` casts replaced with `(uint32_t)(uintptr_t)ptr` to suppress 64-bit host warnings
+
 ## Changelog Summary (eh2k fork)
 - `[12]` 2024-12-01: `--gc-sections` + readonly data & reloc optimizations
 - `[11]` 2024-09-25: Added `udynlink_get_module_size`, `udynlink_get_code_pointer`

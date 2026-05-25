@@ -106,6 +106,7 @@ _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_DUPLICATE_NAME),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_VERSION_MISMATCH),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_ARCH_MISMATCH),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_MISSING_DEP),\
+_UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_IO_ERROR),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_MODULE_IN_USE),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_INVALID_MODULE)
 
@@ -171,6 +172,26 @@ typedef enum {
 #define UDYNLINK_DEBUG(...)                   udynlink_debug(__func__, __LINE__, __VA_ARGS__)
 
 ////////////////////////////////////////////////////////////////////////////////
+// Streaming I/O interface
+
+// Read callback: read num_bytes from offset into buf.
+// Returns bytes read, or -1 on error.
+typedef int32_t (*udynlink_read_cb_t)(void *pv_ctx, void *buf, uint32_t num_bytes, uint32_t offset);
+
+// Get size callback: return total image size, or -1 on error.
+typedef int32_t (*udynlink_get_size_cb_t)(void *pv_ctx);
+
+typedef struct {
+    udynlink_read_cb_t      read;
+    udynlink_get_size_cb_t  get_size;
+    void                   *pv_ctx;
+} udynlink_io_t;
+
+#ifndef UDYNLINK_STREAM_BUF_SIZE
+#define UDYNLINK_STREAM_BUF_SIZE 512
+#endif
+
+////////////////////////////////////////////////////////////////////////////////
 // Public interface
 
 // Loads a module.
@@ -223,6 +244,28 @@ uint32_t udynlink_get_module_size(const void *base_addr);
 
 // Gets the ptr to the code (.text) memory
 uint8_t *udynlink_get_code_pointer(const udynlink_module_t *p_mod);
+
+// Loads a module from a streaming I/O source.
+// p_io - streaming I/O callbacks (read, get_size, pv_ctx).
+// load_addr - RAM address where the module will be loaded, or NULL for auto-allocation.
+// load_size - if load_addr is not NULL, the size of the memory region at load_addr.
+// load_mode - COPY_ALL or COPY_CODE only; XIP returns UDYNLINK_ERR_LOAD_UNABLE_TO_XIP.
+// work_buf / work_buf_size - caller-provided scratch buffer (minimum 64 bytes).
+udynlink_error_t udynlink_load_module_stream(udynlink_module_t *p_mod,
+    const udynlink_io_t *p_io, void *load_addr, uint32_t load_size,
+    udynlink_load_mode_t load_mode, void *work_buf, uint32_t work_buf_size);
+
+// Return the RAM required to load a module from memory-mapped data.
+uint32_t udynlink_get_ram_requirements(const void *base_addr, udynlink_load_mode_t mode);
+
+// Return the RAM required to load a module from a streaming I/O source.
+// Reads the header from the stream; returns 0 on I/O error.
+uint32_t udynlink_get_ram_requirements_stream(const udynlink_io_t *p_io, udynlink_load_mode_t mode);
+
+// Return the optimal work buffer size for streaming load.
+// This is sizeof(header) + num_rels*8 + symt_size, allowing all metadata
+// to be read in a single read() callback. Returns 0 on I/O error.
+uint32_t udynlink_get_stream_work_buf_size(const udynlink_io_t *p_io);
 
 #ifdef __cplusplus
 }

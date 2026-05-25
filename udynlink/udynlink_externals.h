@@ -38,5 +38,8 @@ struct _udynlink_module_t *udynlink_external_get_module_handle(const char *modul
 // UDYNLINK_MAX_HANDLES
 //     >0: that many modules
 
+// Convenience macro for building host symbol tables
+#define UDYNLINK_SYMBOL(sym) { #sym, (void *)(uintptr_t)(sym) }
+
 #endif // #ifndef __UDYNLINK_EXTERNALS_H__
 
