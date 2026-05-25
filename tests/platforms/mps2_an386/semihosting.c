@@ -1,116 +1,106 @@
-/* semihosting.c - Custom semihosting layer for mainline QEMU
- *
- * Mainline QEMU's SYS_WRITE (buffered I/O) returns all bytes as
- * "unwritten", so stdout is silently swallowed.  We use SYS_WRITE0
- * (null-terminated string) and SYS_WRITEC (single char) instead.
- */
+#include <stdint.h>
+#include <string.h>
 
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <errno.h>
-
-#define SEMIHOST_SYS_WRITEC     0x03
-#define SEMIHOST_SYS_WRITE0     0x04
-#define SEMIHOST_SYS_WRITE      0x05
-#define SEMIHOST_SYS_EXIT       0x18
-
-extern char _end_noinit[];
-static char *heap_end = NULL;
-
-static inline int __attribute__((always_inline))
-semihost_call(int op, void *arg)
-{
-    int result;
-    __asm volatile (
-        "mov r0, %1\n"
-        "mov r1, %2\n"
-        "bkpt 0xAB\n"
-        "mov %0, r0\n"
-        : "=r" (result)
-        : "r" (op), "r" (arg)
-        : "r0", "r1", "r2", "r3", "memory"
+/* ARM Semihosting via BKPT 0xAB (Thumb-2) */
+static void _sys_write0(const char *str) {
+    __asm__ volatile(
+        "movs r0, #4\n\t"      // SYS_WRITE0
+        "movs r1, %0\n\t"
+        "bkpt 0xAB\n\t"
+        :
+        : "r" (str)
+        : "r0", "r1"
     );
-    return result;
 }
 
-caddr_t _sbrk(int incr)
-{
-    char *prev_heap_end;
-    char *stack_ptr;
-    if (heap_end == NULL)
-        heap_end = _end_noinit;
-    prev_heap_end = heap_end;
-    __asm volatile ("mov %0, sp" : "=r" (stack_ptr));
-    if (heap_end + incr > stack_ptr - 256) {
-        errno = ENOMEM;
-        return (caddr_t)-1;
+static void _sys_exit(int code) {
+    __asm__ volatile(
+        "movs r0, #0x18\n\t"   // SYS_EXIT
+        "movs r1, %0\n\t"
+        "bkpt 0xAB\n\t"
+        :
+        : "r" (code)
+        : "r0", "r1"
+    );
+}
+
+#define OUTPUT_BUF_SIZE 512
+static char output_buf[OUTPUT_BUF_SIZE];
+static uint32_t output_pos = 0;
+
+static void flush_output(void) {
+    if (output_pos > 0) {
+        output_buf[output_pos] = '\0';
+        _sys_write0(output_buf);
+        output_pos = 0;
     }
-    heap_end += incr;
-    return (caddr_t)prev_heap_end;
 }
 
-void _exit(int code)
-{
-    /* SYS_EXIT_EXTENDED: { ADP_Stopped_ApplicationExit, exit_code } */
-    volatile unsigned block[2] = { 0x20026, (unsigned)code };
-    semihost_call(SEMIHOST_SYS_EXIT, (void *)block);
-    while (1);
-}
-
-int _write(int file, char *ptr, int len)
-{
-    int i;
-    (void)file;
-    for (i = 0; i < len; i++) {
-        semihost_call(SEMIHOST_SYS_WRITEC, &ptr[i]);
+static void buf_putc(char c) {
+    if (output_pos >= OUTPUT_BUF_SIZE - 1) {
+        flush_output();
     }
-    return len;
+    output_buf[output_pos++] = c;
 }
 
-int _fstat(int file, struct stat *st)
-{
-    (void)file;
-    st->st_mode = S_IFCHR;
+int _write(int fd, const void *buf, int count) {
+    (void)fd;
+    const char *p = buf;
+    for (int i = 0; i < count; i++) {
+        buf_putc(p[i]);
+        if (p[i] == '\n') {
+            flush_output();
+        }
+    }
+    return count;
+}
+
+int _close(int fd) {
+    (void)fd;
+    return -1;
+}
+
+int _lseek(int fd, int ptr, int dir) {
+    (void)fd; (void)ptr; (void)dir;
     return 0;
 }
 
-int _isatty(int file)
-{
-    (void)file;
+int _read(int fd, void *buf, int count) {
+    (void)fd; (void)buf; (void)count;
+    return 0;
+}
+
+int _isatty(int fd) {
+    (void)fd;
     return 1;
 }
 
-int _close(int file)
-{
-    (void)file;
+void *_sbrk(int incr) {
+    extern char _end;
+    static char *heap_end = 0;
+    char *prev_heap_end;
+    if (heap_end == 0) heap_end = &_end;
+    prev_heap_end = heap_end;
+    heap_end += incr;
+    return (void *)prev_heap_end;
+}
+
+void _exit(int status) {
+    flush_output();
+    _sys_exit(status);
+    while (1);
+}
+
+int _kill(int pid, int sig) {
+    (void)pid; (void)sig;
     return -1;
 }
 
-int _lseek(int file, int ptr, int dir)
-{
-    (void)file;
-    (void)ptr;
-    (void)dir;
-    return 0;
+int _getpid(void) {
+    return 1;
 }
 
-int _open(const char *name, int flags, int mode)
-{
-    (void)name;
-    (void)flags;
-    (void)mode;
-    errno = ENOSYS;
+int _fstat(int fd, void *st) {
+    (void)fd; (void)st;
     return -1;
 }
-
-int _read(int file, char *ptr, int len)
-{
-    (void)file;
-    (void)ptr;
-    (void)len;
-    errno = ENOSYS;
-    return -1;
-}
-
-void __initialize_hardware_early(void) {}
-void __initialize_hardware(void) {}

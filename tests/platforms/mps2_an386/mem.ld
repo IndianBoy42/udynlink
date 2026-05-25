@@ -38,6 +38,7 @@ SECTIONS
     _ebss = .;
   } > RAM
 
+  _end = .;
   _end_noinit = .;
   _estack = ORIGIN(RAM) + LENGTH(RAM);
 }
