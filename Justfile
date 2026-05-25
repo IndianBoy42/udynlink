@@ -3,6 +3,10 @@
 #
 # Requires: just (https://github.com/casey/just)
 #           arm-none-eabi-gcc, cmake, python3, uv, qemu-system-arm
+#
+# NOTE: All test commands below use the correct QEMU flags and module targets
+# for their platform. Use `just` for all test running (do not run test_driver.py
+# manually with ad-hoc env vars).
 
 # Default recipe - show help
 _default:
@@ -88,7 +92,7 @@ test-f429-single test_name:
     python3 test_driver.py {{test_name}}
 
 # =============================================================================
-# Test Commands - MPS2-AN386 (Mainline QEMU 9.x)
+# Test Commands - Mainline QEMU (M4/M3/M7/M33/M4F)
 # =============================================================================
 
 # Run all tests on MPS2-AN386 (mainline QEMU, Cortex-M4)
@@ -100,7 +104,7 @@ test-mps2:
     UDYNLINK_QEMU_MACHINE=mps2-an386 \
     UDYNLINK_QEMU_CPU=cortex-m4 \
     UDYNLINK_QEMU_EXTRA_FLAGS="-semihosting" \
-    UDYNLINK_QEMU_TIMEOUT=120 \
+    UDYNLINK_QEMU_TIMEOUT=30 \
     python3 test_driver.py
 
 # Run a specific test on MPS2-AN386
@@ -112,48 +116,79 @@ test-mps2-single test_name:
     UDYNLINK_QEMU_MACHINE=mps2-an386 \
     UDYNLINK_QEMU_CPU=cortex-m4 \
     UDYNLINK_QEMU_EXTRA_FLAGS="-semihosting" \
-    UDYNLINK_QEMU_TIMEOUT=120 \
+    UDYNLINK_QEMU_TIMEOUT=30 \
     python3 test_driver.py {{test_name}}
-
-# =============================================================================
-# Test Commands - Other Platforms (Skeleton/Test Only)
-# =============================================================================
 
 # Run tests on MPS2-AN385 (Cortex-M3) - mainline QEMU
 test-an385:
     #!/usr/bin/env bash
     cd {{tests_dir}}
+    UDYNLINK_MODULE_TARGET=cortex-m3 \
     UDYNLINK_PLATFORM=mps2_an385 \
     UDYNLINK_QEMU_BIN=qemu-system-arm \
     UDYNLINK_QEMU_MACHINE=mps2-an385 \
     UDYNLINK_QEMU_CPU=cortex-m3 \
     UDYNLINK_QEMU_EXTRA_FLAGS="-semihosting" \
-    UDYNLINK_QEMU_TIMEOUT=120 \
+    UDYNLINK_QEMU_TIMEOUT=30 \
     python3 test_driver.py
 
-# Run tests on micro:bit (Cortex-M0) - mainline QEMU
-test-microbit:
+# Run tests on MPS2-AN500 (Cortex-M7) - mainline QEMU
+test-an500:
     #!/usr/bin/env bash
     cd {{tests_dir}}
-    UDYNLINK_PLATFORM=microbit \
+    UDYNLINK_MODULE_TARGET=cortex-m7 \
+    UDYNLINK_PLATFORM=mps2_an500 \
     UDYNLINK_QEMU_BIN=qemu-system-arm \
-    UDYNLINK_QEMU_MACHINE=microbit \
-    UDYNLINK_QEMU_CPU=cortex-m0 \
+    UDYNLINK_QEMU_MACHINE=mps2-an500 \
+    UDYNLINK_QEMU_CPU=cortex-m7 \
     UDYNLINK_QEMU_EXTRA_FLAGS="-semihosting" \
-    UDYNLINK_QEMU_TIMEOUT=120 \
+    UDYNLINK_QEMU_TIMEOUT=30 \
+    python3 test_driver.py
+
+# Run tests on MPS2-AN505 (Cortex-M33) - mainline QEMU
+test-an505:
+    #!/usr/bin/env bash
+    cd {{tests_dir}}
+    UDYNLINK_MODULE_TARGET=cortex-m33 \
+    UDYNLINK_PLATFORM=mps2_an505 \
+    UDYNLINK_QEMU_BIN=qemu-system-arm \
+    UDYNLINK_QEMU_MACHINE=mps2-an505 \
+    UDYNLINK_QEMU_CPU=cortex-m33 \
+    UDYNLINK_QEMU_EXTRA_FLAGS="-semihosting" \
+    UDYNLINK_QEMU_TIMEOUT=30 \
     python3 test_driver.py
 
 # Run tests on Olimex STM32-H405 (Cortex-M4F hard-float) - mainline QEMU
 test-h405:
     #!/usr/bin/env bash
     cd {{tests_dir}}
+    UDYNLINK_MODULE_TARGET=cortex-m4f \
     UDYNLINK_PLATFORM=olimex_stm32_h405 \
     UDYNLINK_QEMU_BIN=qemu-system-arm \
     UDYNLINK_QEMU_MACHINE=olimex-stm32-h405 \
     UDYNLINK_QEMU_CPU=cortex-m4 \
     UDYNLINK_QEMU_EXTRA_FLAGS="-semihosting" \
-    UDYNLINK_QEMU_TIMEOUT=120 \
+    UDYNLINK_QEMU_TIMEOUT=30 \
     python3 test_driver.py
+
+# Run tests on micro:bit (Cortex-M0) - mainline QEMU
+# NOTE: Currently broken. QEMU microbit machine does not support `-kernel` ELF
+# loading at 0x00000000. Needs `-device loader,file=...,addr=0x0` with raw binary.
+test-microbit:
+    #!/usr/bin/env bash
+    cd {{tests_dir}}
+    UDYNLINK_MODULE_TARGET=cortex-m0 \
+    UDYNLINK_PLATFORM=microbit \
+    UDYNLINK_QEMU_BIN=qemu-system-arm \
+    UDYNLINK_QEMU_MACHINE=microbit \
+    UDYNLINK_QEMU_CPU=cortex-m0 \
+    UDYNLINK_QEMU_EXTRA_FLAGS="-semihosting" \
+    UDYNLINK_QEMU_TIMEOUT=30 \
+    python3 test_driver.py
+
+# =============================================================================
+# Test Commands - Legacy QEMU (M3/M0)
+# =============================================================================
 
 # Run tests on STM32F103 (Cortex-M3) - requires qemu-system-gnuarmeclipse
 test-f103:
@@ -289,12 +324,12 @@ clean-all: clean
 # CI Commands
 # =============================================================================
 
-# Run the full CI test suite (all working platforms)
+# Run the full CI test suite (all platforms that currently pass on mainline QEMU)
 ci:
-    just test-f429
     just test-mps2
     just test-an385
-    just test-microbit
+    just test-an500
+    just test-an505
     just test-h405
 
 # Validate all targets can compile
@@ -324,14 +359,16 @@ help:
     @echo "  just test-f429              - Run all tests on STM32F429"
     @echo "  just test-f429-single NAME  - Run specific test"
     @echo ""
-    @echo "TEST (MPS2-AN386 - mainline QEMU 9.x):"
-    @echo "  just test-mps2              - Run all tests on MPS2-AN386"
-    @echo "  just test-mps2-single NAME  - Run specific test"
-    @echo ""
-    @echo "TEST (Mainline QEMU - M3/M0/M4F):"
+    @echo "TEST (Mainline QEMU - M4/M3/M7/M33/M4F):"
+    @echo "  just test-mps2              - MPS2-AN386 (Cortex-M4)"
+    @echo "  just test-mps2-single NAME  - Single test on MPS2-AN386"
     @echo "  just test-an385             - MPS2-AN385 (Cortex-M3)"
-    @echo "  just test-microbit          - BBC micro:bit (Cortex-M0)"
+    @echo "  just test-an500             - MPS2-AN500 (Cortex-M7)"
+    @echo "  just test-an505             - MPS2-AN505 (Cortex-M33)"
     @echo "  just test-h405              - Olimex STM32-H405 (Cortex-M4F hard-float)"
+    @echo ""
+    @echo "TEST (Mainline QEMU - BROKEN):"
+    @echo "  just test-microbit          - BBC micro:bit (Cortex-M0) - needs raw binary loader"
     @echo ""
     @echo "TEST (Legacy QEMU - M3/M0):"
     @echo "  just test-f103              - STM32F103 (M3)"
@@ -357,7 +394,7 @@ help:
     @echo "  just clean-all               - Deep clean"
     @echo ""
     @echo "CI:"
-    @echo "  just ci                      - Full CI suite (F429 + MPS2)"
+    @echo "  just ci                      - Full CI suite (M4/M3/M7/M33/M4F on mainline QEMU)"
     @echo "  just ci-quick                - Compile-only checks"
     @echo ""
     @echo "ENVIRONMENT VARIABLES:"
@@ -365,3 +402,6 @@ help:
     @echo "  UDYNLINK_PLATFORM           - Target platform (default: stm32f429_discovery)"
     @echo "  UDYNLINK_MODULE_TARGET      - Module CPU target (default: cortex-m4)"
     @echo "  UDYNLINK_CMAKE_FLAGS        - Extra CMake flags"
+    @echo ""
+    @echo "NOTE: Always run tests through 'just'. Manual invocation of test_driver.py"
+    @echo "      with ad-hoc env vars is not supported and will likely fail."

@@ -58,19 +58,24 @@ For C++ sources (`.cpp`/`.cxx`), the toolchain automatically adds `-fno-exceptio
 
 The compiler prefix can be overridden via the `UDYNLINK_CC_PREFIX` environment variable (default: `arm-none-eabi-`).
 
-### Run all tests
+### Run all tests (via `just` — recommended)
+
+**Always use `just` for running tests.** The `Justfile` encodes the correct QEMU flags,
+module targets, and timeouts for each platform. Running `test_driver.py` manually with
+ad-hoc environment variables is not supported and will likely fail.
+
 ```bash
-cd tests
-python3 test_driver.py [test-name-prefix]
+just test-mps2          # MPS2-AN386 (Cortex-M4) — mainline QEMU
+just test-an385         # MPS2-AN385 (Cortex-M3)
+just test-an500         # MPS2-AN500 (Cortex-M7)
+just test-an505         # MPS2-AN505 (Cortex-M33)
+just test-h405          # Olimex STM32-H405 (Cortex-M4F hard-float)
+just test-f429          # STM32F429 (legacy xPack QEMU — fast)
+just test-f429-single test-globals1   # Single test on STM32F429
 ```
 
-Without arguments, it runs every `test-*/` directory. With an argument, it runs only matching directories.
-
 Each test is executed **twice**: once with `-O0` and once with `-Os`.
-
-The platform is selected via `-DUDYNLINK_PLATFORM=<name>` in the CMake build step (default: `stm32f429_discovery`). Platforms live in `tests/platforms/<name>/`.
-
-The module compilation target can be overridden via `UDYNLINK_MODULE_TARGET` env var (default: `cortex-m4`).
+The full suite of 22 tests per platform completes in ~30 seconds (mainline QEMU).
 
 ### Run a single test manually (advanced)
 The test driver orchestrates several steps:
@@ -86,9 +91,28 @@ The test driver orchestrates several steps:
    - Override via env vars: `UDYNLINK_QEMU_BIN`, `UDYNLINK_QEMU_MACHINE`, `UDYNLINK_QEMU_CPU`, `UDYNLINK_QEMU_EXTRA_FLAGS`
 5. Checks output for `*** TEST OK ***` and regex matches from `test_data.py`
 
-### Quick Testing with Just
+### Build a loadable module
+```bash
+cd scripts
+python3 mkmodule --gen-c-header --header-path /some/path source1.c [source2.c ...]
+```
 
-A `Justfile` is provided for convenient command running:
+Additional flags:
+- `--public-symbols func1,func2` — only export named symbols (reduces image size)
+- `--no-opt` — compile with `-O3` instead of default `-Os`
+- `--bin-name <path>` — custom output binary name
+- `--build_flags=<flags>` — prepend extra compiler flags
+- `--mcpu <cpu>` — target CPU (default: `cortex-m4`)
+- `--target <name>` — target from the target database (default: `cortex-m4`). Supported: `cortex-m0`, `cortex-m0plus`, `cortex-m3`, `cortex-m4`, `cortex-m4f`, `cortex-m7`, `cortex-m33`, `cortex-m55`, `cortex-m85`
+- `--mod-version <ver>` — module ABI version (default: `1.0`)
+- `--udynlink-version <ver>` — loader ABI version (default: `1.0`)
+- `--lot-base <addr>` — LOT base address (default: `0x20000000`)
+
+For C++ sources (`.cpp`/`.cxx`), the toolchain automatically adds `-fno-exceptions -fno-rtti -fno-use-cxa-atexit` and compiles `cpp_init_fini.c` for `__init_array` support.
+
+The compiler prefix can be overridden via the `UDYNLINK_CC_PREFIX` environment variable (default: `arm-none-eabi-`).
+
+### Other `just` commands
 
 ```bash
 just --list                    # Show all available commands
@@ -99,14 +123,6 @@ just build-lib                 # Build core library
 just build-tests               # Build tests (default: stm32f429_discovery)
 just build-tests mps2_an386    # Build for MPS2-AN386 platform
 
-# Test on STM32F429 (legacy xPack QEMU - fast)
-just test-f429                 # Run all tests
-just test-f429-single test-globals1  # Run specific test
-
-# Test on MPS2-AN386 (mainline QEMU 9.x - slower but more compatible)
-just test-mps2                 # Run all tests
-just test-mps2-single test-globals1  # Run specific test
-
 # Module compilation
 just module source.c            # Compile module for default target
 just module-for cortex-m7 source.c   # Compile for specific target
@@ -115,7 +131,7 @@ just target-info cortex-m4f    # Show target details
 
 # Validation
 just validate-all-targets      # Compile hello.c for all 9 targets
-just ci                        # Full CI suite (F429 + MPS2)
+just ci                        # Full CI suite (MPS2 + AN385 + AN500 + AN505 + H405)
 ```
 
 ### Build the test host firmware
@@ -179,14 +195,14 @@ Per the README, this code is **pre-alpha / work in progress** and "likely quite 
 | Platform | QEMU Machine | QEMU Binary | CPU | Status | Notes |
 |----------|--------------|-------------|-----|--------|-------|
 | `stm32f429_discovery` | STM32F429I-Discovery | `qemu-system-gnuarmeclipse` | cortex-m4 | ✅ **All 22 tests pass** | Fast, legacy xPack fork |
-| `mps2_an386` | mps2-an386 | `qemu-system-arm` (9.2.4+) | cortex-m4 | ✅ **All 22 tests pass** | Slower (~60s/test), mainline QEMU |
+| `mps2_an386` | mps2-an386 | `qemu-system-arm` (9.2.4+) | cortex-m4 | ✅ **All 22 tests pass** | Mainline QEMU, ~0.5s/test |
 | `olimex_stm32_h405` | olimex-stm32-h405 | `qemu-system-arm` | cortex-m4f | ✅ **All 22 tests pass** | Hard-float M4F on mainline QEMU |
-| `mps2_an385` | mps2-an385 | `qemu-system-arm` | cortex-m3 | ✅ **Builds + boots** | Mainline QEMU, avoids semihosting bug |
+| `mps2_an385` | mps2-an385 | `qemu-system-arm` | cortex-m3 | ✅ **All 22 tests pass** | Mainline QEMU |
+| `mps2_an500` | mps2-an500 | `qemu-system-arm` | cortex-m7 | ✅ **All 22 tests pass** | Mainline QEMU |
+| `mps2_an505` | mps2-an505 | `qemu-system-arm` | cortex-m33 | ✅ **All 22 tests pass** | Mainline QEMU, secure boot (see notes) |
+| `microbit` | microbit | `qemu-system-arm` | cortex-m0 | ⚠️ **Builds, `-kernel` broken** | QEMU microbit machine does not support ELF `-kernel` at 0x00000000 |
 | `stm32f103_bluepill` | NUCLEO-F103RB | `qemu-system-gnuarmeclipse` | cortex-m3 | ⚠️ **Boots, internal calls OK** | Flash→RAM host calls hang (QEMU quirk) |
-| `microbit` | microbit | `qemu-system-arm` | cortex-m0 | ✅ **Builds + boots** | Mainline QEMU, BBC micro:bit |
 | `stm32f051_discovery` | STM32F0-Discovery | `qemu-system-gnuarmeclipse` | cortex-m0 | ⚠️ **Boots, internal calls OK** | Same Flash→RAM quirk as M3 |
-| `mps2_an500` | mps2-an500 | `qemu-system-arm` | cortex-m7 | ✅ **Basic loading verified** | Mainline QEMU, M7 loading works |
-| `mps2_an505` | mps2-an505 | `qemu-system-arm` | cortex-m33 | ✅ **Builds + boots** | Mainline QEMU, secure boot (see notes) |
 
 **Dual-QEMU Strategy:**
 - **STM32F429** (legacy xPack `qemu-system-gnuarmeclipse`): Fast baseline/regression testing
@@ -194,10 +210,10 @@ Per the README, this code is **pre-alpha / work in progress** and "likely quite 
 - All other platforms target mainline QEMU for future compatibility
 
 **MPS2-AN505 (Cortex-M33) Note:**
-QEMU boots the Cortex-M33 in **Secure state** and fetches the initial vector table from the secure alias address `0x10000000`. To run tests, the test harness needs to either convert the ELF to raw binary and load it at `0x10000000`, or provide a small secure shim. This is purely a QEMU invocation detail — the build itself is clean.
+QEMU boots the Cortex-M33 in **Secure state** and fetches the initial vector table from the secure alias address `0x10000000`. The `tests/platforms/mps2_an505/mem.ld` linker script places the vector table at `0x10000000` so `-kernel` loading works directly.
 
-**MPS2-AN500 (Cortex-M7) Note:**
-Basic module loading and execution verified with a minimal test program. Full test suite integration pending semihosting output refinement (the `printf`-based test utilities may need buffering adjustments for this board).
+**microbit Note:**
+QEMU's `microbit` machine does not properly load ELF files via `-kernel` at `0x00000000`. It needs a raw binary loaded via `-device loader,file=...,addr=0x0`. The test harness currently does not support this.
 
 ## Known Issues (Carried Forward)
 
@@ -209,7 +225,7 @@ Basic module loading and execution verified with a minimal test program. Full te
 - ~~**`UDYNLINK_MAX_HANDLES` defaults to 1**~~ — Fixed. Now requires explicit definition (`#error` if unset).
 - **M3/M0 QEMU hosts have Flash→RAM call quirk** — Modules calling host functions (e.g. `printf`) hang under `qemu-system-gnuarmeclipse` for STM32F103/STM32F051 boards, but work correctly on STM32F429. This is a known `qemu-system-gnuarmeclipse` emulation bug; mainline QEMU (`qemu-system-arm`) does **not** exhibit this issue.
 - **xPack QEMU 9.2.4 discontinued `qemu-system-gnuarmeclipse`** — Latest xPack releases only include `qemu-system-arm` (mainline). STM32F429 fast testing requires an older xPack release or the `xpack-dev-tools/qemu-arm` project.
-- **Mainline QEMU Cortex-M emulation is slow** — `qemu-system-arm` 9.2.4 takes ~60s per test on MPS2-AN386 vs ~5s on `qemu-system-gnuarmeclipse`. This is QEMU's ARM emulation speed, not a code issue.
+
 
 ## Generated / Ignored Files
 
