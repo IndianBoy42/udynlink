@@ -32,9 +32,13 @@ uint32_t test_resolve_symbol(const char *name) {
     return 0;
 }
 
+extern int _write(int file, char *ptr, int len);
+
 uint32_t udynlink_external_resolve_symbol(const char *name) {
     if (!strcmp(name, "printf"))
         return (uint32_t)&printf;
+    else if (!strcmp(name, "_write"))
+        return (uint32_t)&_write;
     else
         return test_resolve_symbol(name);
 }
