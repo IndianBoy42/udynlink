@@ -86,6 +86,38 @@ The test driver orchestrates several steps:
    - Override via env vars: `UDYNLINK_QEMU_BIN`, `UDYNLINK_QEMU_MACHINE`, `UDYNLINK_QEMU_CPU`, `UDYNLINK_QEMU_EXTRA_FLAGS`
 5. Checks output for `*** TEST OK ***` and regex matches from `test_data.py`
 
+### Quick Testing with Just
+
+A `Justfile` is provided for convenient command running:
+
+```bash
+just --list                    # Show all available commands
+just help                      # Show detailed help with examples
+
+# Build
+just build-lib                 # Build core library
+just build-tests               # Build tests (default: stm32f429_discovery)
+just build-tests mps2_an386    # Build for MPS2-AN386 platform
+
+# Test on STM32F429 (legacy xPack QEMU - fast)
+just test-f429                 # Run all tests
+just test-f429-single test-globals1  # Run specific test
+
+# Test on MPS2-AN386 (mainline QEMU 9.x - slower but more compatible)
+just test-mps2                 # Run all tests
+just test-mps2-single test-globals1  # Run specific test
+
+# Module compilation
+just module source.c            # Compile module for default target
+just module-for cortex-m7 source.c   # Compile for specific target
+just targets                   # List all supported targets
+just target-info cortex-m4f    # Show target details
+
+# Validation
+just validate-all-targets      # Compile hello.c for all 9 targets
+just ci                        # Full CI suite (F429 + MPS2)
+```
+
 ### Build the test host firmware
 
 **In-tree** (from repo root, builds the core library as a dependency):
@@ -100,9 +132,7 @@ cmake -B tests/build -S tests/qemu_host -DUDYNLINK_BUILD_TESTS=ON
 cmake --build tests/build
 ```
 
-The platform is selected via `-DUDYNLINK_PLATFORM=<name>` (default: `stm32f429_discovery`), which loads the corresponding file from `cmake/platforms/`. Adding support for a new MCU family is a matter of creating a new platform file there.
-
-The test host build pulls `udynlink.c` from the repo root via a `if(NOT TARGET udynlink)` guard, so it works both standalone and as part of the in-tree build.
+The platform is selected via `-DUDYNLINK_PLATFORM=<name>` (default: `stm32f429_discovery`), which loads the corresponding file from `tests/platforms/<name>/`.
 
 ## Architecture & Key Constraints
 
@@ -144,6 +174,22 @@ Unlike the original, the eh2k fork allows **multiple instances of the same modul
 ### Code Quality Note
 Per the README, this code is **pre-alpha / work in progress** and "likely quite buggy."
 
+## Testing Platform Matrix
+
+| Platform | QEMU Machine | QEMU Binary | CPU | Status | Notes |
+|----------|--------------|-------------|-----|--------|-------|
+| `stm32f429_discovery` | STM32F429I-Discovery | `qemu-system-gnuarmeclipse` | cortex-m4 | ✅ **All 22 tests pass** | Fast, legacy xPack fork |
+| `mps2_an386` | mps2-an386 | `qemu-system-arm` (9.2.4+) | cortex-m4 | ✅ **All 22 tests pass** | Slower (~60s/test), mainline QEMU |
+| `stm32f103_bluepill` | NUCLEO-F103RB | `qemu-system-gnuarmeclipse` | cortex-m3 | ⚠️ **Boots, internal calls OK** | Flash→RAM host calls hang (QEMU quirk) |
+| `stm32f051_discovery` | STM32F0-Discovery | `qemu-system-gnuarmeclipse` | cortex-m0 | ⚠️ **Boots, internal calls OK** | Same Flash→RAM quirk as M3 |
+| `olimex-stm32-h405` | olimex-stm32-h405 | `qemu-system-arm` | cortex-m4f | 🔲 **Not yet implemented** | Hard-float M4F on mainline QEMU |
+| `mps2-an500` | mps2-an500 | `qemu-system-arm` | cortex-m7 | 🔲 **Not yet implemented** | M7 on mainline QEMU |
+
+**Dual-QEMU Strategy:**
+- **STM32F429** (legacy xPack `qemu-system-gnuarmeclipse`): Fast baseline/regression testing
+- **MPS2-AN386** (mainline `qemu-system-arm` 9.2.4+): Future-proof, validates no xPack-specific bugs
+- All other platforms target mainline QEMU for future compatibility
+
 ## Known Issues (Carried Forward)
 
 - ~~**`UDYNLINK_MAKE_VERSION` macro is broken**~~ — Fixed. Both shift by 8.
@@ -152,8 +198,9 @@ Per the README, this code is **pre-alpha / work in progress** and "likely quite 
 - **Module unload doesn't verify dependents** — Unloading a module that other modules depend on via `udynlink_external_resolve_symbol` leaves dangling references.
 - ~~**`0x20000000` is hardcoded**~~ — Fixed. Configurable via `UDYNLINK_LOT_BASE_ADDR` macro.
 - ~~**`UDYNLINK_MAX_HANDLES` defaults to 1**~~ — Fixed. Now requires explicit definition (`#error` if unset).
-- **Test harness defaults to niche QEMU** — `qemu-system-gnuarmeclipse` is a specialized variant; mainstream QEMU has gained STM32 support that could replace it. The harness is now configurable via env vars (`UDYNLINK_QEMU_BIN`, `UDYNLINK_QEMU_MACHINE`, etc.) so migration can proceed once the firmware is ported to an upstream-supported board.
-- **M3/M0 QEMU hosts have Flash→RAM call quirk** — Modules calling host functions (e.g. `printf`) hang under `qemu-system-gnuarmeclipse` for STM32F103/STM32F051 boards, but work correctly on STM32F429. This is believed to be a QEMU emulation bug, not a code issue.
+- **M3/M0 QEMU hosts have Flash→RAM call quirk** — Modules calling host functions (e.g. `printf`) hang under `qemu-system-gnuarmeclipse` for STM32F103/STM32F051 boards, but work correctly on STM32F429. This is a known `qemu-system-gnuarmeclipse` emulation bug; mainline QEMU (`qemu-system-arm`) does **not** exhibit this issue.
+- **xPack QEMU 9.2.4 discontinued `qemu-system-gnuarmeclipse`** — Latest xPack releases only include `qemu-system-arm` (mainline). STM32F429 fast testing requires an older xPack release or the `xpack-dev-tools/qemu-arm` project.
+- **Mainline QEMU Cortex-M emulation is slow** — `qemu-system-arm` 9.2.4 takes ~60s per test on MPS2-AN386 vs ~5s on `qemu-system-gnuarmeclipse`. This is QEMU's ARM emulation speed, not a code issue.
 
 ## Generated / Ignored Files
 
@@ -178,8 +225,9 @@ The `.gitignore` and test harness generate these artifacts; do not commit them:
 | 5 | Add thread safety for module table | Medium | At minimum, disable interrupts around load/unload on Cortex-M |
 | 6 | ~~Fix typos in `udynlink.h`~~ | ~~Low~~ | Done |
 | 7 | Guard module unload against dependents | Medium | Track which modules resolve symbols from which others |
-| 8 | Migrate from `qemu-system-gnuarmeclipse` to mainstream QEMU | Medium | Test harness is now configurable via env vars; next step is porting the test firmware to an upstream-supported board |
+| 8 | ~~Migrate from `qemu-system-gnuarmeclipse` to mainstream QEMU~~ | ~~Medium~~ | **Partially done**. MPS2-AN386 (Cortex-M4) works on mainline QEMU 9.2.4. STM32F429 remains on legacy fork for speed. |
 | 9 | ~~Replace Eclipse-generated makefiles with CMake or Makefile~~ | ~~Low~~ | Done |
-| 10 | ~~Add Cortex-M0+/M3/M7/M33/M55/M85 support~~ | ~~Low~~ | Done. Toolchain supports all 9 targets. QEMU hosts created for M0, M3, M4 (STM32F429). M4F/M7/M55/M85 hosts need porting to upstream QEMU. |
+| 10 | ~~Add Cortex-M0+/M3/M7/M33/M55/M85 support~~ | ~~Low~~ | Done. Toolchain supports all 9 targets. QEMU hosts created for M0, M3, M4 (STM32F429 + MPS2-AN386). M4F/M7/M55/M85 hosts need porting to upstream QEMU. |
 | 11 | Add unit tests for Python toolchain | Low | Only integration tests via QEMU currently exist |
 | 12 | ~~Add `UDYNLINK_MAX_HANDLES` as a required compile-time constant~~ | ~~Low~~ | Done |
+| 13 | Add Justfile for convenient command running | Low | Done. See `just --list` for available commands. |
