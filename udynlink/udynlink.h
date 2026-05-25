@@ -30,8 +30,9 @@ extern "C" {
 // Module header structure
 typedef struct {
     uint32_t sign;                              // module signature
-    //uint16_t mod_version;                       // module version (major, minor)
-    //uint16_t udynlink_version;                  // version of udynlink used to compile module (major, minor)
+    uint16_t mod_version;                       // module version (major, minor)
+    uint16_t udynlink_version;                  // version of udynlink used to compile module (major, minor)
+    uint16_t arch_tag;                          // target architecture + float ABI
     uint16_t num_lot;                           // number of LOT entries
     uint16_t num_rels;                          // number of relocations
     uint32_t symt_size;                         // size of symbol table in bytes
@@ -93,6 +94,8 @@ _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_INVALID_MODE),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_BAD_RELOCATION_TABLE),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_DUPLICATE_NAME),\
+_UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_VERSION_MISMATCH),\
+_UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_ARCH_MISMATCH),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_INVALID_MODULE)
 
 #define _UDYNLINK_EXPAND(x)                   x
@@ -110,9 +113,44 @@ typedef enum {
     UDYNLINK_DEBUG_INFO
 } udynlink_debug_level_t;
 
+// Compile-time configuration
+#ifndef UDYNLINK_MAX_HANDLES
+#error "UDYNLINK_MAX_HANDLES must be defined before including udynlink.h"
+#endif
+
+#ifndef UDYNLINK_HOST_ARCH_TAG
+#define UDYNLINK_HOST_ARCH_TAG UDYNLINK_ARCH_TAG_CORTEX_M4
+#endif
+
+#define UDYNLINK_LOADER_ABI_VERSION           UDYNLINK_MAKE_VERSION(1, 0)
+
+// Architecture tag constants (uint16_t)
+//   Bits [3:0]  — core family ID
+//   Bit  4      — FPU present
+//   Bits [6:5]  — float ABI (00=soft, 01=softfp, 10=hard)
+//   Bits [15:7] — reserved
+#define UDYNLINK_ARCH_FAMILY_MASK           0x0F
+#define UDYNLINK_ARCH_FPU_MASK              0x10
+#define UDYNLINK_ARCH_FLOAT_ABI_MASK        0x60
+#define UDYNLINK_ARCH_FLOAT_ABI_SHIFT       5
+
+#define UDYNLINK_ARCH_FLOAT_ABI_SOFT        0
+#define UDYNLINK_ARCH_FLOAT_ABI_SOFTFP      1
+#define UDYNLINK_ARCH_FLOAT_ABI_HARD        2
+
+#define UDYNLINK_ARCH_TAG_CORTEX_M0         0x01
+#define UDYNLINK_ARCH_TAG_CORTEX_M0PLUS     0x02
+#define UDYNLINK_ARCH_TAG_CORTEX_M3         0x03
+#define UDYNLINK_ARCH_TAG_CORTEX_M4         0x04
+#define UDYNLINK_ARCH_TAG_CORTEX_M4F        0x54
+#define UDYNLINK_ARCH_TAG_CORTEX_M7         0x57
+#define UDYNLINK_ARCH_TAG_CORTEX_M33        0x08
+#define UDYNLINK_ARCH_TAG_CORTEX_M55        0x59
+#define UDYNLINK_ARCH_TAG_CORTEX_M85        0x5A
+
 // Convenience macros
 #define UDYNLINK_MAKE_VERSION(major, minor)   (((major) << 8) | (minor))
-#define UDYNLINK_GET_MAJOR_VERSION(v)         (((v) >> 16) & 0xFF)
+#define UDYNLINK_GET_MAJOR_VERSION(v)         (((v) >> 8) & 0xFF)
 #define UDYNLINK_GET_MINOR_VERSION(v)         ((v) & 0xFF)
 
 #define UDYNLINK_DEBUG(...)                   udynlink_debug(__func__, __LINE__, __VA_ARGS__)

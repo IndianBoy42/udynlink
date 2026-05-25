@@ -189,6 +189,38 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
         goto exit;
     }
 
+    // Check loader ABI version
+    if (p_header->udynlink_version > UDYNLINK_LOADER_ABI_VERSION) {
+        UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, "Module udynlink version %d.%d > loader version %d.%d\n",
+            UDYNLINK_GET_MAJOR_VERSION(p_header->udynlink_version), UDYNLINK_GET_MINOR_VERSION(p_header->udynlink_version),
+            UDYNLINK_GET_MAJOR_VERSION(UDYNLINK_LOADER_ABI_VERSION), UDYNLINK_GET_MINOR_VERSION(UDYNLINK_LOADER_ABI_VERSION));
+        res = UDYNLINK_ERR_LOAD_VERSION_MISMATCH;
+        goto exit;
+    }
+
+    // Check architecture tag compatibility
+    {
+        uint16_t host_arch = UDYNLINK_HOST_ARCH_TAG;
+        uint16_t mod_arch = p_header->arch_tag;
+        if ((mod_arch & UDYNLINK_ARCH_FAMILY_MASK) != (host_arch & UDYNLINK_ARCH_FAMILY_MASK)) {
+            UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, "Module architecture family mismatch (mod=0x%04X, host=0x%04X)\n", mod_arch, host_arch);
+            res = UDYNLINK_ERR_LOAD_ARCH_MISMATCH;
+            goto exit;
+        }
+        uint16_t mod_float = (mod_arch >> UDYNLINK_ARCH_FLOAT_ABI_SHIFT) & 0x03;
+        uint16_t host_float = (host_arch >> UDYNLINK_ARCH_FLOAT_ABI_SHIFT) & 0x03;
+        if (mod_float == UDYNLINK_ARCH_FLOAT_ABI_HARD && host_float != UDYNLINK_ARCH_FLOAT_ABI_HARD) {
+            UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, "Module requires hard-float, host has soft-float\n");
+            res = UDYNLINK_ERR_LOAD_ARCH_MISMATCH;
+            goto exit;
+        }
+        if (mod_float == UDYNLINK_ARCH_FLOAT_ABI_SOFTFP && host_float == UDYNLINK_ARCH_FLOAT_ABI_SOFT) {
+            UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, "Module requires softfp, host has soft-float\n");
+            res = UDYNLINK_ERR_LOAD_ARCH_MISMATCH;
+            goto exit;
+        }
+    }
+
     UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Processing module at %p named '%s' with load mode %d\n", base_addr, udynlink_get_module_name(p_mod), (int)load_mode);
 
     // Allocate RAM or check given RAM region, as needed

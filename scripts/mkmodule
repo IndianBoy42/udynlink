@@ -4,6 +4,7 @@ from udynlink_utils import *
 from jinja2 import FileSystemLoader
 from jinja2.environment import Environment
 import struct
+import targets
 
 sectname_code = '.text'
 sectname_data = '.data'
@@ -279,7 +280,10 @@ def process(output, args):
     img = bytearray("UDLM".encode('ascii'))  # Signature (4b)
     # The first entry in the symbol table is always the module name
     slist_all = [s for s in sym_map if (s in reloc_name_to_idx) or sym_map[s] == "external" or sym_map[s] == "exported"]
-    img += struct.pack("<H", lot_entries) # LOT size (4b)
+    img += struct.pack("<H", args.mod_version_val)    # Module ABI version (2b)
+    img += struct.pack("<H", args.udynlink_version_val)  # Loader ABI version (2b)
+    img += struct.pack("<H", args.arch_tag_val)        # Architecture tag (2b)
+    img += struct.pack("<H", lot_entries)              # LOT size (2b)
 
     # Compute len of symbol table in advance (also name to symbol table index mapping (symt_mapping))
     slist = [args.name]
@@ -327,7 +331,8 @@ def process(output, args):
         realocs += struct.pack("<II", offset, value)
         total_relocs += 1
     debug("== RelocationTable, entries: %d" % total_relocs, args)
-    img += struct.pack("<H", total_relocs)  # Total number of relocations (4b)
+    img += struct.pack("<H", total_relocs)  # Total number of relocations (2b)
+    img += struct.pack("<H", 0)             # Padding to align symt_size to 4 bytes (2b)
     
     symt_len = len(slist) * 8 + 4 # 2 4-byte entry for each symbol: (offset to name, offset in image) + initial word which is the number of entries
     for i, s in enumerate(slist):
@@ -436,8 +441,28 @@ parser.add_argument("--build_flags", dest="build_flags", default=None)
 parser.add_argument("--public-symbols", dest="public_symbols", default=None)
 parser.add_argument("--bin-name", dest="bin_name", default=None)
 parser.add_argument("--mcpu", dest="mcpu", default="cortex-m4", help="Target CPU (default: cortex-m4)")
+parser.add_argument("--target", dest="target", default=targets.DEFAULT_TARGET, help="Target name (default: %s)" % targets.DEFAULT_TARGET)
+parser.add_argument("--mod-version", dest="mod_version", default="1.0", help="Module ABI version (default: 1.0)")
+parser.add_argument("--udynlink-version", dest="udynlink_version", default="1.0", help="Loader ABI version (default: 1.0)")
 
 args, rest = parser.parse_known_args()
+
+# Resolve target metadata
+try:
+    target_meta = targets.get_target(args.target)
+except ValueError as e:
+    error(str(e))
+
+# --mcpu overrides target default
+if not any(a.startswith("--mcpu") for a in sys.argv[1:]):
+    args.mcpu = target_meta["mcpu"]
+
+# Parse version strings (major.minor) into uint16_t
+mv_parts = args.mod_version.split(".")
+args.mod_version_val = (int(mv_parts[0]) << 8) | int(mv_parts[1] if len(mv_parts) > 1 else "0")
+uv_parts = args.udynlink_version.split(".")
+args.udynlink_version_val = (int(uv_parts[0]) << 8) | int(uv_parts[1] if len(uv_parts) > 1 else "0")
+args.arch_tag_val = target_meta["arch_tag"]
 if len(rest) == 0:
     error("Empty file/macro list")
 # Look in "rest" for definitions (-Dmacro or -Dmacro=value)
