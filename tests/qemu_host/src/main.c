@@ -49,7 +49,11 @@ uint32_t udynlink_external_resolve_symbol(const char *name) {
 extern int test_qemu(void);
 
 int main() {
-    udynlink_set_debug_level(UDYNLINK_DEBUG_INFO);
+#ifdef UDYNLINK_TEST_DEBUG_LEVEL
+    udynlink_set_debug_level(UDYNLINK_TEST_DEBUG_LEVEL);
+#else
+    udynlink_set_debug_level(UDYNLINK_DEBUG_NONE);
+#endif
     int ok = test_qemu();
     printf (ok ? "*** TEST OK ***\n" : "*** TEST FAILED! ***\n");
     exit(ok ? 0 : 1);
