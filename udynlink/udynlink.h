@@ -122,6 +122,10 @@ typedef enum {
 #define UDYNLINK_HOST_ARCH_TAG UDYNLINK_ARCH_TAG_CORTEX_M4
 #endif
 
+#ifndef UDYNLINK_LOT_BASE_ADDR
+#define UDYNLINK_LOT_BASE_ADDR 0x20000000
+#endif
+
 #define UDYNLINK_LOADER_ABI_VERSION           UDYNLINK_MAKE_VERSION(1, 0)
 
 // Architecture tag constants (uint16_t)

@@ -42,7 +42,7 @@ int check_extern_symbols(const udynlink_module_t *p_mod, const char *slist[]) {
 int run_test_func(const udynlink_module_t *p_mod) {
     udynlink_sym_t sym;
 
-    uint32_t* mod_base = (uint32_t*)0x20000000; //see asm_template.tmpl
+    uint32_t* mod_base = (uint32_t*)UDYNLINK_LOT_BASE_ADDR;
     *mod_base = p_mod->ram_base;
 
     // Run test

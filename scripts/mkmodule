@@ -95,7 +95,7 @@ def compile(src_name, args, public_symbols, macros=[]):
         loader = FileSystemLoader(os.path.dirname(os.path.abspath(__file__)))
         env = Environment(loader = loader)
         tmpl = env.get_template("asm_template.tmpl")
-        data = tmpl.render({"sym_names": sym_renames})
+        data = tmpl.render({"sym_names": sym_renames, "lot_base": "0x%08X" % args.lot_base})
         p_fname = os.path.join(objname + "_prologue.s")
         with open(p_fname, "wt") as f:
             f.write(str(data))
@@ -444,6 +444,7 @@ parser.add_argument("--mcpu", dest="mcpu", default="cortex-m4", help="Target CPU
 parser.add_argument("--target", dest="target", default=targets.DEFAULT_TARGET, help="Target name (default: %s)" % targets.DEFAULT_TARGET)
 parser.add_argument("--mod-version", dest="mod_version", default="1.0", help="Module ABI version (default: 1.0)")
 parser.add_argument("--udynlink-version", dest="udynlink_version", default="1.0", help="Loader ABI version (default: 1.0)")
+parser.add_argument("--lot-base", dest="lot_base", default="0x20000000", help="LOT base address (default: 0x20000000)")
 
 args, rest = parser.parse_known_args()
 
@@ -463,6 +464,7 @@ args.mod_version_val = (int(mv_parts[0]) << 8) | int(mv_parts[1] if len(mv_parts
 uv_parts = args.udynlink_version.split(".")
 args.udynlink_version_val = (int(uv_parts[0]) << 8) | int(uv_parts[1] if len(uv_parts) > 1 else "0")
 args.arch_tag_val = target_meta["arch_tag"]
+args.lot_base = int(args.lot_base, 0)
 if len(rest) == 0:
     error("Empty file/macro list")
 # Look in "rest" for definitions (-Dmacro or -Dmacro=value)

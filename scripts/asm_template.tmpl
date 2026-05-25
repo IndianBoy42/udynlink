@@ -22,7 +22,7 @@
     pop     {r9, pc}
 
 .L1{{s}}:
-    .word   0x20000000
+    .word   {{lot_base}}
     .size   {{s}}, . - {{s}}
 {% endfor %}
 
