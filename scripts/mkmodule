@@ -14,9 +14,9 @@ linker_script = os.path.join(os.path.dirname(__file__), "code_before_data.ld")
 ################################################################################
 # Compilation
 ################################################################################
-compile_cmd = "-fPIE -msingle-pic-base -mcpu={mcpu} -mthumb -fomit-frame-pointer {extra} {input} -c -o {output}"
-asm_cmd = "-x assembler-with-cpp -mcpu={mcpu} -mthumb {input} -c -o {output}"
-link_cmd = "-mcpu={mcpu} -mthumb -T {ld} -nostartfiles -nodefaultlibs -nostdlib -Wl,--unresolved-symbols=ignore-in-object-files -Wl,--emit-relocs {input} -Wl,-e,0 -o {output}"
+compile_cmd = "-fPIE -msingle-pic-base -mcpu={mcpu} -mthumb{fpu}{float_abi} -fomit-frame-pointer {extra} {input} -c -o {output}"
+asm_cmd = "-x assembler-with-cpp -mcpu={mcpu} -mthumb{fpu}{float_abi} {input} -c -o {output}"
+link_cmd = "-mcpu={mcpu} -mthumb{fpu}{float_abi} -T {ld} -nostartfiles -nodefaultlibs -nostdlib -Wl,--unresolved-symbols=ignore-in-object-files -Wl,--emit-relocs {input} -Wl,-e,0 -o {output}"
 
 compile_cmd = "-ffunction-sections -fdata-sections " + compile_cmd
 link_cmd = "-Wl,--gc-sections " + link_cmd
@@ -38,7 +38,7 @@ def make_symbols_local(obj, symlist, args):
 def assemble(src_name, args):
     path, fname, ext = split_fname(src_name)
     objname = os.path.join(path, fname + ".o")
-    asm_data = {"input": src_name, "output": objname, "mcpu": args.mcpu}
+    asm_data = {"input": src_name, "output": objname, "mcpu": args.mcpu, "fpu": args.fpu_flag, "float_abi": args.float_abi_flag}
     debug("Assembling '%s'" % src_name, args)
     execute(get_tool("gcc") + " " + asm_cmd.format(**asm_data), args)
     return objname
@@ -56,7 +56,7 @@ def compile(src_name, args, public_symbols, macros=[]):
     extra += " -O3" if args.no_opt else " -Os"
     if macros:
         extra = extra + " " + " ".join(macros)
-    compile_data = {"input": src_name, "extra": extra, "output": main_obj, "mcpu": args.mcpu}
+    compile_data = {"input": src_name, "extra": extra, "output": main_obj, "mcpu": args.mcpu, "fpu": args.fpu_flag, "float_abi": args.float_abi_flag}
     # Execute compile command
     if src_name.endswith(".cpp") or src_name.endswith(".cxx"):
         compile_data["extra"] += " -fno-use-cxa-atexit"
@@ -72,7 +72,9 @@ def compile(src_name, args, public_symbols, macros=[]):
             "input": os.path.dirname(os.path.abspath(__file__)) + "/cpp_init_fini.c",
             "extra": extra + " -x c ",
             "output": libc_obj,
-            "mcpu": args.mcpu
+            "mcpu": args.mcpu,
+            "fpu": args.fpu_flag,
+            "float_abi": args.float_abi_flag
         }
         # Execute compile command
         debug("Compiling '%s'" % src_name, args)
@@ -94,7 +96,7 @@ def compile(src_name, args, public_symbols, macros=[]):
         debug("Generating ASM file for public function prologues", args)
         loader = FileSystemLoader(os.path.dirname(os.path.abspath(__file__)))
         env = Environment(loader = loader)
-        tmpl = env.get_template("asm_template.tmpl")
+        tmpl = env.get_template(args.template)
         data = tmpl.render({"sym_names": sym_renames, "lot_base": "0x%08X" % args.lot_base})
         p_fname = os.path.join(objname + "_prologue.s")
         with open(p_fname, "wt") as f:
@@ -114,7 +116,7 @@ def link(objects, output, args):
         path, fname, ext = split_fname(args.source[0])
         output = os.path.join(path, fname + ".elf")
     # Prepare link
-    link_data = {"input": " ".join(objects), "output": output, "ld": linker_script, "mcpu": args.mcpu}
+    link_data = {"input": " ".join(objects), "output": output, "ld": linker_script, "mcpu": args.mcpu, "fpu": args.fpu_flag, "float_abi": args.float_abi_flag}
     debug("Linking (%s -> %s)" % (" + ".join(objects), output), args)
     execute(get_tool("gcc") + " " + link_cmd.format(**link_data), args)
     # Change visibility of wrapped symbols to "local"
@@ -465,6 +467,9 @@ uv_parts = args.udynlink_version.split(".")
 args.udynlink_version_val = (int(uv_parts[0]) << 8) | int(uv_parts[1] if len(uv_parts) > 1 else "0")
 args.arch_tag_val = target_meta["arch_tag"]
 args.lot_base = int(args.lot_base, 0)
+args.template = target_meta["template"]
+args.fpu_flag = " -mfpu=" + target_meta["fpu"] if target_meta.get("fpu") else ""
+args.float_abi_flag = " -mfloat-abi=" + target_meta["float_abi"] if target_meta.get("float_abi") else ""
 if len(rest) == 0:
     error("Empty file/macro list")
 # Look in "rest" for definitions (-Dmacro or -Dmacro=value)

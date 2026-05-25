@@ -1,0 +1,31 @@
+    .syntax unified
+    .arch armv6-m
+
+    .text
+    .thumb
+
+{% for s, actname in sym_names.items() %}
+    .thumb_func
+    .align 1
+    .section .text_nogc, "x"
+    .globl {{s}}
+    .type {{s}}, %function
+    .extern {{actname}}
+    .type {{actname}}, %function
+{{s}}:
+    mov     r2, r9
+    push    {r1, r2, lr}
+    ldr     r1, .L1{{s}}
+    ldr     r2, [r1]
+    mov     r9, r2
+    bl      {{actname}}
+    ldr     r2, [sp, #4]
+    mov     r9, r2
+    pop     {r1, r2, pc}
+
+.L1{{s}}:
+    .word   {{lot_base}}
+    .size   {{s}}, . - {{s}}
+{% endfor %}
+
+    .end

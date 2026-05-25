@@ -49,7 +49,9 @@ qemu_extra_flags = os.environ.get("UDYNLINK_QEMU_EXTRA_FLAGS", "")
 is_legacy = os.path.basename(qemu_bin) == "qemu-system-gnuarmeclipse"
 
 default_qemu_timeout = 5
-compile_cmd = '%s ../../scripts/mkmodule --disasm --gen-c-header --header-path ../qemu_host/src %%s%%s' % sys.executable
+module_target = os.environ.get("UDYNLINK_MODULE_TARGET", "")
+module_target_flag = " --target %s " % module_target if module_target else " "
+compile_cmd = '%s ../../scripts/mkmodule --disasm --gen-c-header --header-path ../qemu_host/src%s%%s%%s' % (sys.executable, module_target_flag)
 cleaned = False
 
 # Simple decorator that keeps the curent directory unchanged after running
