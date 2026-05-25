@@ -17,20 +17,17 @@ os.chdir(os.path.dirname(os.path.realpath(__file__)))
 # experiment with other QEMU binaries or target boards.
 # ---------------------------------------------------------------------------
 
-# QEMU binary path.
-#   Default: auto-locate the xPack legacy QEMU in tests/xpack-qemu-arm-*
-default_qemu_dir = None
-for entry in os.listdir("."):
-    if entry.startswith("xpack-qemu-arm-") and os.path.isdir(entry):
-        default_qemu_dir = entry
-        break
+def find_qemu_in_path():
+    for path_dir in os.environ.get("PATH", "").split(os.pathsep):
+        candidate = os.path.join(path_dir, "qemu-system-gnuarmeclipse")
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
 
-default_qemu_bin = os.path.join(
-    os.path.dirname(os.path.realpath(__file__)),
-    default_qemu_dir or "xpack-qemu-arm-7.2.5-1",
-    "bin",
-    "qemu-system-gnuarmeclipse",
-) if default_qemu_dir else "qemu-system-gnuarmeclipse"
+# QEMU binary path.
+#   Default: search PATH for the legacy QEMU, fall back to bare name.
+qemu_from_path = find_qemu_in_path()
+default_qemu_bin = qemu_from_path or "qemu-system-gnuarmeclipse"
 
 qemu_bin = os.environ.get("UDYNLINK_QEMU_BIN", default_qemu_bin)
 
@@ -52,7 +49,7 @@ qemu_extra_flags = os.environ.get("UDYNLINK_QEMU_EXTRA_FLAGS", "")
 is_legacy = os.path.basename(qemu_bin) == "qemu-system-gnuarmeclipse"
 
 default_qemu_timeout = 5
-compile_cmd = '../../scripts/mkmodule --disasm --gen-c-header --header-path ../qemu_host/src %s%s'
+compile_cmd = '%s ../../scripts/mkmodule --disasm --gen-c-header --header-path ../qemu_host/src %%s%%s' % sys.executable
 cleaned = False
 
 # Simple decorator that keeps the curent directory unchanged after running
@@ -130,7 +127,8 @@ def test_one(full_path, opt):
             return False, "Unable to compile module(s) " + srcs
         with open(full_path + "/output_build_%s.txt" % aopt, 'w') as fout:
             fout.write(out)
-        cmd = "arm-none-eabi-objdump -Dztr --source ./%s.elf" % os.path.splitext(m[0])[0]
+        objdump = f"{os.environ.get('UDYNLINK_CC_PREFIX', 'arm-none-eabi-')}objdump"
+        cmd = f"{objdump} -Dztr --source ./{os.path.splitext(m[0])[0]}.elf"
         res, out = run_cmd(cmd)
         out = out.decode() 
         with open(full_path + "/output_objdump_%s.txt" % aopt, 'w') as fout:
@@ -139,17 +137,19 @@ def test_one(full_path, opt):
     # Copy qemu test in its directory
     shutil.copyfile("test_qemu.c", os.path.join("../qemu_host/src", "test_qemu.c"))
     # Build qemu test
-    os.chdir("../qemu_host/Debug")
+    cmake_build_dir = "../build"
     global cleaned
     if not cleaned:
-        if not run_cmd("make clean")[0]:
-            return False
+        # Remove the build directory to force a clean rebuild
+        shutil.rmtree(cmake_build_dir, ignore_errors=True)
         cleaned = True
-    if not run_cmd("make test1.elf")[0]:
+    if not run_cmd("cmake -B %s -S ../qemu_host" % cmake_build_dir)[0]:
+        return False, "Unable to configure test"
+    if not run_cmd("cmake --build %s --target test1.elf" % cmake_build_dir)[0]:
         return False, "Unable to build test"
     # Run QEMU with the freshly compiled test
     print("--- Running QEMU ---")
-    qemu_cmd = build_qemu_cmd("test1.elf")
+    qemu_cmd = build_qemu_cmd(os.path.join(cmake_build_dir, "test1.elf"))
     res, out = run_cmd(qemu_cmd, timeout=default_qemu_timeout)
     out = out.decode() 
     if not res:

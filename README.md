@@ -57,10 +57,32 @@
 - The code can only be compiled with [GCC ARM Embedded](https://launchpad.net/gcc-arm-embedded).
 - The code was only tested for C code, not C++. Although it could work for some C++ code, assume that it'll fail for most C++ code.
 
+# Building with CMake
+
+The core udynlink library builds with CMake ≥ 3.16. To build and install:
+
+```bash
+cmake -B build -S .
+cmake --build build
+```
+
+This produces `build/libudynlink.a` and makes the headers available. Downstream CMake projects can consume the library via `add_subdirectory()` or `find_package(udynlink)` after install.
+
+To build the QEMU test host firmware in-tree:
+```bash
+cmake -B build -S . -DUDYNLINK_BUILD_TESTS=ON
+cmake --build build --target test1.elf
+```
+
+Or standalone:
+```bash
+cmake -B tests/build -S tests/qemu_host -DUDYNLINK_BUILD_TESTS=ON
+cmake --build tests/build
+```
+
 # License
 
 The dynamic linker code is licensed under the Apache 2.0 license.
-The test suite uses the [GNU MCU Eclipse](https://gnu-mcu-eclipse.github.io/) project, which in turn uses code from the [micro-os-plus-iii](https://github.com/micro-os-plus/micro-os-plus-iii), which is licensed under the MIT license.
 
 # How it works
 

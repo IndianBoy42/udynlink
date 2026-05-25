@@ -12,5 +12,11 @@ tests/qemu_host/src/test_qemu.c
 *.pyc
 temp/*
 *.txt
+tests/build/
+build/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
 tests/xpack-qemu-arm-*
 !tests/xpack-qemu-arm-*/README.md

@@ -92,6 +92,10 @@ def print_list(l, header, args, col = None):
 def round_to(n, sz):
     return (n + sz - 1) & ~(sz - 1);
 
+def get_tool(name):
+    prefix = os.environ.get("UDYNLINK_CC_PREFIX", "arm-none-eabi-")
+    return f"{prefix}{name}"
+
 # http://stackoverflow.com/a/4999321
 class RejectingDict(dict):
     def __setitem__(self, k, v):

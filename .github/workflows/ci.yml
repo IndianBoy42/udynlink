@@ -11,12 +11,9 @@ jobs:
         fetch-depth: 0
     - name: pre
       run: |
-        sudo apt-get install -y gcc-arm-none-eabi
+        sudo apt-get install -y gcc-arm-none-eabi cmake
         pip install subprocess32 pyelftools Jinja2
-        wget https://github.com/xpack-dev-tools/qemu-arm-xpack/releases/download/v7.2.5-1/xpack-qemu-arm-7.2.5-1-linux-x64.tar.gz
-        tar xvfz xpack-qemu-arm-7.2.5-1-linux-x64.tar.gz
     - name: test
       run: |
-        export PATH=$PATH:$(readlink -f ./xpack-qemu-arm-7.2.5-1/bin)
         cd tests 
         python ./test_driver.py

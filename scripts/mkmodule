@@ -13,22 +13,22 @@ linker_script = os.path.join(os.path.dirname(__file__), "code_before_data.ld")
 ################################################################################
 # Compilation
 ################################################################################
-compile_cmd = "-fPIE -msingle-pic-base -mcpu=cortex-m4 -mthumb -fomit-frame-pointer {extra} {input} -c -o {output}"
-asm_cmd = "-x assembler-with-cpp -mcpu=cortex-m4 -mthumb {input} -c -o {output}"
-link_cmd = "-mcpu=cortex-m4 -mthumb -T {ld} -nostartfiles -nodefaultlibs -nostdlib -Wl,--unresolved-symbols=ignore-in-object-files -Wl,--emit-relocs {input} -Wl,-e,0 -o {output}"
+compile_cmd = "-fPIE -msingle-pic-base -mcpu={mcpu} -mthumb -fomit-frame-pointer {extra} {input} -c -o {output}"
+asm_cmd = "-x assembler-with-cpp -mcpu={mcpu} -mthumb {input} -c -o {output}"
+link_cmd = "-mcpu={mcpu} -mthumb -T {ld} -nostartfiles -nodefaultlibs -nostdlib -Wl,--unresolved-symbols=ignore-in-object-files -Wl,--emit-relocs {input} -Wl,-e,0 -o {output}"
 
 compile_cmd = "-ffunction-sections -fdata-sections " + compile_cmd
 link_cmd = "-Wl,--gc-sections " + link_cmd
 
 def rename_symbols(src, dest, name_map, args):
-    cmdline = "arm-none-eabi-objcopy"
+    cmdline = get_tool("objcopy")
     for n in name_map:
         cmdline = cmdline + " --redefine-sym %s=%s" % (n, name_map[n])
     cmdline = cmdline + " %s %s" % (src, dest)
     execute(cmdline, args)
 
 def make_symbols_local(obj, symlist, args):
-    cmdline = "arm-none-eabi-objcopy"
+    cmdline = get_tool("objcopy")
     for n in symlist:
         cmdline = cmdline + " -L %s" % symlist[n]
     cmdline = cmdline + " %s %s" % (obj, obj)
@@ -37,9 +37,9 @@ def make_symbols_local(obj, symlist, args):
 def assemble(src_name, args):
     path, fname, ext = split_fname(src_name)
     objname = os.path.join(path, fname + ".o")
-    asm_data = {"input": src_name, "output": objname}
+    asm_data = {"input": src_name, "output": objname, "mcpu": args.mcpu}
     debug("Assembling '%s'" % src_name, args)
-    execute("arm-none-eabi-gcc " + asm_cmd.format(**asm_data), args)
+    execute(get_tool("gcc") + " " + asm_cmd.format(**asm_data), args)
     return objname
 
 sym_renames = {}
@@ -55,26 +55,27 @@ def compile(src_name, args, public_symbols, macros=[]):
     extra += " -O3" if args.no_opt else " -Os"
     if macros:
         extra = extra + " " + " ".join(macros)
-    compile_data = {"input": src_name, "extra": extra, "output": main_obj}
+    compile_data = {"input": src_name, "extra": extra, "output": main_obj, "mcpu": args.mcpu}
     # Execute compile command
     if src_name.endswith(".cpp") or src_name.endswith(".cxx"):
         compile_data["extra"] += " -fno-use-cxa-atexit"
         compile_data["extra"] += " -fno-exceptions"
         compile_data["extra"] += " -fno-rtti"
     debug("Compiling '%s'" % src_name, args)
-    execute("arm-none-eabi-gcc " + compile_cmd.format(**compile_data), args)
+    execute(get_tool("gcc") + " " + compile_cmd.format(**compile_data), args)
     object_files += [main_obj]
 
     if src_name.endswith(".cpp") or src_name.endswith(".cxx"):
         libc_obj = os.path.join(path, "cpp_init_fini.o")
         compile_data = {
-            "input": os.path.dirname(os.path.abspath(__file__)) + "/cpp_init_fini.c", 
-            "extra": extra + " -x c ", 
-            "output": libc_obj
+            "input": os.path.dirname(os.path.abspath(__file__)) + "/cpp_init_fini.c",
+            "extra": extra + " -x c ",
+            "output": libc_obj,
+            "mcpu": args.mcpu
         }
         # Execute compile command
         debug("Compiling '%s'" % src_name, args)
-        execute("arm-none-eabi-gcc " + compile_cmd.format(**compile_data), args)
+        execute(get_tool("gcc") + " " + compile_cmd.format(**compile_data), args)
         object_files += [libc_obj]
     
     # Relocate symbols if needed
@@ -112,9 +113,9 @@ def link(objects, output, args):
         path, fname, ext = split_fname(args.source[0])
         output = os.path.join(path, fname + ".elf")
     # Prepare link
-    link_data = {"input": " ".join(objects), "output": output, "ld": linker_script}
+    link_data = {"input": " ".join(objects), "output": output, "ld": linker_script, "mcpu": args.mcpu}
     debug("Linking (%s -> %s)" % (" + ".join(objects), output), args)
-    execute("arm-none-eabi-gcc " + link_cmd.format(**link_data), args)
+    execute(get_tool("gcc") + " " + link_cmd.format(**link_data), args)
     # Change visibility of wrapped symbols to "local"
     debug("Changing visiblity of wrapped symbols to 'local' in %s" % output, args)
     make_symbols_local(output, sym_renames, args)
@@ -396,7 +397,7 @@ def process(output, args):
 
 def disasm(output, args):
     if args.disasm:
-        execute("arm-none-eabi-objdump -D -j .text -w -z %s" % output, args)
+        execute(get_tool("objdump") + " -D -j .text -w -z %s" % output, args)
 
 def gen_c_header(bin_name, header_path, args):
     path, fname, ext = split_fname(bin_name)
@@ -434,6 +435,7 @@ parser.add_argument("--name", dest="name", default=None, help="Module name (defa
 parser.add_argument("--build_flags", dest="build_flags", default=None)
 parser.add_argument("--public-symbols", dest="public_symbols", default=None)
 parser.add_argument("--bin-name", dest="bin_name", default=None)
+parser.add_argument("--mcpu", dest="mcpu", default="cortex-m4", help="Target CPU (default: cortex-m4)")
 
 args, rest = parser.parse_known_args()
 if len(rest) == 0:

@@ -18,12 +18,22 @@ This repo is based on the **eh2k fork** which adds: C++ support (`__init_array`)
 ## Toolchain Requirements
 
 - **`arm-none-eabi-gcc`** / **`arm-none-eabi-g++`** / **`arm-none-eabi-objcopy`** (GCC ARM Embedded)
+- **CMake** ≥ 3.16
 - **Python 3** with `pyelftools`, `Jinja2` (managed via `uv` / `pyproject.toml`)
 - **QEMU** for tests. Defaults to the legacy xPack `qemu-system-gnuarmeclipse`, but the harness now supports any QEMU binary via `UDYNLINK_QEMU_BIN` env var
 
 All Python scripts are **Python 3** (migrated in eh2k's [1]).
 
 ## Build & Test Commands
+
+### Build the core library with CMake
+The core `udynlink` library can be built standalone for use in downstream projects:
+```bash
+cmake -B build -S .
+cmake --build build
+```
+
+This produces `build/libudynlink.a` and install targets for headers (`udynlink.h`, `udynlink_externals.h`). Downstream projects can consume it via `add_subdirectory()` or `find_package(udynlink)` after install.
 
 ### Build a loadable module
 ```bash
@@ -36,8 +46,11 @@ Additional flags:
 - `--no-opt` — compile with `-O3` instead of default `-Os`
 - `--bin-name <path>` — custom output binary name
 - `--build_flags=<flags>` — prepend extra compiler flags
+- `--mcpu <cpu>` — target CPU (default: `cortex-m4`)
 
 For C++ sources (`.cpp`/`.cxx`), the toolchain automatically adds `-fno-exceptions -fno-rtti -fno-use-cxa-atexit` and compiles `cpp_init_fini.c` for `__init_array` support.
+
+The compiler prefix can be overridden via the `UDYNLINK_CC_PREFIX` environment variable (default: `arm-none-eabi-`).
 
 ### Run all tests
 ```bash
@@ -53,19 +66,33 @@ Each test is executed **twice**: once with `-O0` and once with `-Os`.
 The test driver orchestrates several steps:
 1. Compiles module C files via `../../scripts/mkmodule`
 2. Copies `test_qemu.c` into `tests/qemu_host/src/`
-3. Builds `test1.elf` in `tests/qemu_host/Debug/` via Eclipse-generated `makefile`
+3. Builds `test1.elf` in the CMake build directory:
+   ```bash
+   cmake -B tests/build -S tests/qemu_host -DUDYNLINK_BUILD_TESTS=ON
+   cmake --build tests/build --target test1.elf
+   ```
 4. Runs QEMU with the freshly compiled `test1.elf`
    - Default: `qemu-system-gnuarmeclipse -board STM32F429I-Discovery -image test1.elf -nographic`
    - Override via env vars: `UDYNLINK_QEMU_BIN`, `UDYNLINK_QEMU_MACHINE`, `UDYNLINK_QEMU_CPU`, `UDYNLINK_QEMU_EXTRA_FLAGS`
 5. Checks output for `*** TEST OK ***` and regex matches from `test_data.py`
 
 ### Build the test host firmware
+
+**In-tree** (from repo root, builds the core library as a dependency):
 ```bash
-cd tests/qemu_host/Debug
-make test1.elf
+cmake -B build -S . -DUDYNLINK_BUILD_TESTS=ON
+cmake --build build --target test1.elf
 ```
 
-The `Debug/` directory contains **Eclipse-generated makefiles**. Do not hand-edit `subdir.mk` or `sources.mk`; they are stamped by the IDE. The build pulls `udynlink.c` from `../../../udynlink/` via relative path.
+**Standalone** (from `tests/qemu_host/`, builds the core library automatically):
+```bash
+cmake -B tests/build -S tests/qemu_host -DUDYNLINK_BUILD_TESTS=ON
+cmake --build tests/build
+```
+
+The platform is selected via `-DUDYNLINK_PLATFORM=<name>` (default: `stm32f429_discovery`), which loads the corresponding file from `cmake/platforms/`. Adding support for a new MCU family is a matter of creating a new platform file there.
+
+The test host build pulls `udynlink.c` from the repo root via a `if(NOT TARGET udynlink)` guard, so it works both standalone and as part of the in-tree build.
 
 ## Architecture & Key Constraints
 
@@ -125,7 +152,7 @@ The `.gitignore` and test harness generate these artifacts; do not commit them:
 
 ## CI
 
-`.github/workflows/ci.yml` runs the test suite via GitHub Actions. It installs `gcc-arm-embedded`, Python 3 deps, and downloads the GNU MCU Eclipse QEMU.
+`.github/workflows/ci.yml` runs the test suite via GitHub Actions. It installs `gcc-arm-embedded`, CMake, Python 3 deps, and QEMU.
 
 ## Next Steps Roadmap
 
@@ -139,7 +166,7 @@ The `.gitignore` and test harness generate these artifacts; do not commit them:
 | 6 | ~~Fix typos in `udynlink.h`~~ | ~~Low~~ | Done |
 | 7 | Guard module unload against dependents | Medium | Track which modules resolve symbols from which others |
 | 8 | Migrate from `qemu-system-gnuarmeclipse` to mainstream QEMU | Medium | Test harness is now configurable via env vars; next step is porting the test firmware to an upstream-supported board |
-| 9 | Replace Eclipse-generated makefiles with CMake or Makefile | Low | Current build system is IDE-specific and not easily CI-friendly |
+| 9 | ~~Replace Eclipse-generated makefiles with CMake or Makefile~~ | ~~Low~~ | Done |
 | 10 | Add Cortex-M0+/M3/M7 support | Low | Compilation flags hardcode `-mcpu=cortex-m4` |
 | 11 | Add unit tests for Python toolchain | Low | Only integration tests via QEMU currently exist |
 | 12 | Add `UDYNLINK_MAX_HANDLES` as a required compile-time constant | Low | Fail compilation if not explicitly set, instead of defaulting to 1 |
