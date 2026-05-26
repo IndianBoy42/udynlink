@@ -139,7 +139,7 @@ def test_one(full_path, opt):
     sys.path.remove(full_path)
     test_name = os.path.basename(full_path)
     aopt = "Os" if opt else "O3"
-    safe_print("--- Running test '%s' in '%s' with opt %s ---" % (test_data["desc"], test_name, "-Os" if opt else "-O0"))
+    safe_print("--- Running test '%s' in '%s' with opt %s ---" % (test_data["desc"], test_name, "-Os" if opt else "-O3"))
     os.chdir(full_path)
 
     # Isolated working directories so tests can run in parallel.

@@ -1,7 +1,7 @@
 # tests/
 
 ## Responsibility
-Integration test suite for udynlink, validating the full pipeline from C/C++ source → loadable module → QEMU execution on a simulated STM32F429I-Discovery board. Tests cover all three load modes (`COPY_ALL`, `COPY_CODE`, `XIP`) and both optimization levels (`-O0`, `-Os`).
+Integration test suite for udynlink, validating the full pipeline from C/C++ source → loadable module → QEMU execution on a simulated STM32F429I-Discovery board. Tests cover all three load modes (`COPY_ALL`, `COPY_TEXT_DATA`, `XIP`) and both optimization levels (`-O0`, `-Os`).
 
 ## Design Patterns
 - **Data-Driven Test Cases**: Each `test-*/` directory contains a `test_data.py` dict describing module sources, expected output regexes, and load count.
@@ -32,7 +32,7 @@ Integration test suite for udynlink, validating the full pipeline from C/C++ sou
      - `udynlink_external_resolve_symbol` → resolves `printf` statically; delegates to weak `test_resolve_symbol` for test-specific symbols.
    - Calls `test_qemu()` (injected per-test) and prints `*** TEST OK ***` or `*** TEST FAILED! ***`.
 3. **Per-Test Harness** (`test_qemu.c` in each `test-*/`):
-   - Iterates over all load modes (`_UDYNLINK_LOAD_MODE_FIRST` to `_UDYNLINK_LOAD_MODE_LAST`).
+   - Iterates over all load modes (`UDYNLINK_LOAD_MODE_COPY_ALL` to `UDYNLINK_LOAD_MODE_XIP`).
    - Loads module, checks RAM size, validates exported/extern symbols, runs test functions.
    - For C++ tests: calls `udynlink_cpp_init(&mod)` before running functions.
    - Unloads module after each mode.

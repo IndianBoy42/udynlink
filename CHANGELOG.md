@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Streaming I/O module loading** — load modules from SD card, SPI flash, or any non-memory-mapped source via the `udynlink_io_t` callback interface without pre-buffering the entire image. Introduces `udynlink_load_module_stream()`, `udynlink_get_ram_requirements_stream()`, and `udynlink_get_stream_metadata_size()`.
+- **Streaming I/O module loading** — load modules from SD card, SPI flash, or any non-memory-mapped source via the `udynlink_io_t` callback interface without pre-buffering the entire image. Introduces `udynlink_load_module_from_stream()`, `udynlink_get_ram_requirements_stream()`, and `udynlink_get_stream_metadata_size()`.
 - **Hash-based O(1) symbol resolution** — optional GNU hash table for host firmware symbol lookup. Adds `udynlink_hash.h`/`udynlink_hash.c` and the `scripts/mkhostsyms` tool that generates a const hash table from a host ELF.
 - **Module dependency tracking** — declare dependencies at build time with `mkmodule --depends mod_a,mod_b`. The loader enforces that all declared dependencies are already loaded. Three-tier symbol resolution: critical host symbols → dependency modules → fallback host symbols. Safe unload via `dep_refcount` prevents unloading a module that has active dependents.
 - **ABI versioning and architecture tag validation** — module headers include `mod_version`, `udynlink_version`, and `arch_tag`. The loader validates compatibility at load time and rejects modules compiled for a mismatched core family, FPU, or float ABI.
@@ -20,8 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Selective symbol exporting** — `mkmodule --public-symbols func1,func2` wraps and exports only the named globals, reducing binary size and attack surface.
 - **`mkmodule --bin-name <path>`** for custom output binary names.
 - **`udynlink_error_msg()`** to convert error enums to human-readable strings.
-- **`udynlink_get_module_name2()`** to read a module name directly from a base address without fully loading.
-- **`udynlink_get_module_size()`** and **`udynlink_get_code_pointer()`** for runtime introspection of loaded modules.
+- **`udynlink_get_module_name_from_image()`** to read a module name directly from a base address without fully loading.
+- **`udynlink_get_image_size()`** and **`udynlink_get_text_pointer()`** for runtime introspection of loaded modules.
 - **Justfile** for convenient test and build command running.
 - **Multi-target QEMU test host infrastructure** with 9 test platforms including MPS2-AN386 (Cortex-M4), MPS2-AN385 (M3), MPS2-AN500 (M7), MPS2-AN505 (M33), olimex-h405 (M4F hard-float), microbit (M0), and STM32F429.
 - **`UDYNLINK_SYMBOL(sym)`** convenience macro for building host symbol tables.

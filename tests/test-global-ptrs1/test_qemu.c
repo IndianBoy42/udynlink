@@ -11,7 +11,7 @@ int test_qemu(void) {
     udynlink_module_t mod;
     int res = 0;
 
-    for (int i = (int)_UDYNLINK_LOAD_MODE_FIRST; i <= (int)_UDYNLINK_LOAD_MODE_LAST; i ++) {
+    for (int i = (int)UDYNLINK_LOAD_MODE_COPY_ALL; i <= (int)UDYNLINK_LOAD_MODE_XIP; i ++) {
         if (udynlink_load_module(&mod, mod_global_ptrs1_module_data, NULL, 0, (udynlink_load_mode_t)i))
             return 0;
         CHECK_RAM_SIZE(&mod, sizeof(int) + 3 * sizeof(void*));

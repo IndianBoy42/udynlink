@@ -17,7 +17,7 @@ network requires pre-copying the entire file into RAM first.
 
 **Integration plan**:
 1. Define `udynlink_io_t` in `udynlink.h` with read/get_size callbacks
-2. Add `udynlink_load_module_stream()` API
+2. Add `udynlink_load_module_from_stream()` API
 3. Internally, use the `read` callback to fetch header + symbol table + sections
 4. XIP mode should return error (requires memory-mapped pointer)
 5. Requires a small static buffer (64-256 bytes) for chunked reads

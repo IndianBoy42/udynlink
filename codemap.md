@@ -22,7 +22,7 @@ This repository is the **eh2k fork** of the original udynlink project. It adds C
 ## Key Design Notes
 - **Position Independence**: Relies on GCC ARM Embedded flags (`-fPIE`, `-msingle-pic-base`) and an `r9`-relative LOT (Linker Offset Table) instead of a traditional GOT.
 - **External Symbol Resolution**: Host must provide `udynlink_external_resolve_symbol` to bind foreign symbols at load time, enabling inter-module dependencies.
-- **Load Modes**: Three modes supported (`COPY_ALL`, `COPY_CODE`, `XIP`) trade RAM usage vs. execution flexibility.
+- **Load Modes**: Three modes supported (`COPY_ALL`, `COPY_TEXT_DATA`, `XIP`) trade RAM usage vs. execution flexibility.
 - **Module Identity**: Signature `UDLM` + module name symbol enforce uniqueness at load time.
 - **C++ Support**: The eh2k fork adds `-fno-exceptions -fno-rtti -fno-use-cxa-atexit` compilation, `__init_array` constructor invocation via `udynlink_cpp_init()`, and a `cpp_init_fini.c` runtime helper.
 - **Fixed LOT Base**: The original `udynlink_get_lot_base(pc)` function pointer at address `0x1c` was replaced by a fixed memory location at `0x20000000` (RAM base). The host must write `p_mod->ram_base` to `*(uint32_t*)0x20000000` before calling any module function.
@@ -46,11 +46,11 @@ This repository is the **eh2k fork** of the original udynlink project. It adds C
 - v1.0 backward compatibility: `get_header_size()` returns 32 for v1.0, 36 for v2.0+
 
 ### Streaming I/O Module Loading
-- New API: `udynlink_load_module_stream()` loads modules from a `udynlink_io_t` callback interface (random-access `read` + `get_size`), enabling loading from SD card, SPI flash, network streams, or any non-memory-mapped source without pre-buffering the entire image
+- New API: `udynlink_load_module_from_stream()` loads modules from a `udynlink_io_t` callback interface (random-access `read` + `get_size`), enabling loading from SD card, SPI flash, network streams, or any non-memory-mapped source without pre-buffering the entire image
 - Caller provides a work buffer (minimum 64 bytes, optimal size from `udynlink_get_stream_metadata_size()`); the loader reads metadata and copies sections through this buffer in chunks
 - On-demand symbol resolution: symbol entries and names are read from the stream during relocation processing, avoiding pre-loading the entire symbol table into RAM
-- Supports COPY_ALL and COPY_CODE modes; XIP returns `UDYNLINK_ERR_LOAD_UNABLE_TO_XIP`
-- For COPY_CODE streaming, the loader uses a COPY_ALL-style RAM layout so that `udynlink_lookup_symbol` works after loading
+- Supports COPY_ALL and COPY_TEXT_DATA modes; XIP returns `UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED`
+- For COPY_TEXT_DATA streaming, the loader uses a COPY_ALL-style RAM layout so that `udynlink_lookup_symbol` works after loading
 - Query functions: `udynlink_get_ram_requirements()`, `udynlink_get_ram_requirements_stream()`, `udynlink_get_stream_metadata_size()`
 - New error code: `UDYNLINK_ERR_LOAD_IO_ERROR` for stream read failures
 - New helper macro: `UDYNLINK_SYMBOL(sym)` for building host symbol tables
@@ -59,12 +59,12 @@ This repository is the **eh2k fork** of the original udynlink project. It adds C
 
 ## Changelog Summary (eh2k fork)
 - `[12]` 2024-12-01: `--gc-sections` + readonly data & reloc optimizations
-- `[11]` 2024-09-25: Added `udynlink_get_module_size`, `udynlink_get_code_pointer`
+- `[11]` 2024-09-25: Added `udynlink_get_image_size`, `udynlink_get_text_pointer`
 - `[10]` 2024-09-25: Fixed multiple relocations to same symbol in arrays
 - `[9]` 2023-11-12: Removed hardcoded `-fno-inline`, added `-fno-rtti` for C++
 - `[8]` 2023-11-10: `udynlink_cpp_init` for C++ global constructors
 - `[7]` 2023-11-08: `--public-symbols` flag to write only public symbols
-- `[5]` 2023-11-06: `--bin-name` arg, `udynlink_error_msg`, `udynlink_get_module_name2`
+- `[5]` 2023-11-06: `--bin-name` arg, `udynlink_error_msg`, `udynlink_get_module_name_from_image`
 - `[4]` 2023-11-02: `R_ARM_ABS32` data relocation support, `-O3` option
 - `[3]` 2023-11-01: Fixed LOT base at `0x20000000`, no module reuse
 - `[2]` 2023-11-01: C++ compilation support (`-fno-exceptions`), `--build_flags`

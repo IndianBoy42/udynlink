@@ -27,10 +27,10 @@ A test passes only if QEMU output contains the string `*** TEST OK ***`. In addi
 Inside each `test_qemu.c`, the harness iterates over all three load modes:
 
 - `UDYNLINK_LOAD_MODE_COPY_ALL` — copy header, text, and data to RAM.
-- `UDYNLINK_LOAD_MODE_COPY_CODE` — copy text and data to RAM; leave header at `base_addr`.
+- `UDYNLINK_LOAD_MODE_COPY_TEXT_DATA` — copy text and data to RAM; leave header at `base_addr`.
 - `UDYNLINK_LOAD_MODE_XIP` — copy only data to RAM; execute code in place from flash.
 
-The loop uses `_UDYNLINK_LOAD_MODE_FIRST` to `_UDYNLINK_LOAD_MODE_LAST`, so adding a new load mode in the future will automatically be exercised by every existing test.
+The loop iterates over `UDYNLINK_LOAD_MODE_COPY_ALL` through `UDYNLINK_LOAD_MODE_XIP`, so adding a new load mode in the future will automatically be exercised by every existing test.
 
 ### Optimization Coverage
 
@@ -186,8 +186,8 @@ int test_qemu(void) {
     udynlink_module_t mod;
     int res = 0;
 
-    for (int i = (int)_UDYNLINK_LOAD_MODE_FIRST;
-         i <= (int)_UDYNLINK_LOAD_MODE_LAST; i++) {
+    for (int i = (int)UDYNLINK_LOAD_MODE_COPY_ALL;
+         i <= (int)UDYNLINK_LOAD_MODE_XIP; i++) {
         if (udynlink_load_module(&mod, mod_foo_module_data, NULL, 0,
                                  (udynlink_load_mode_t)i))
             return 0;

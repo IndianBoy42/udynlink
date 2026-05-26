@@ -41,7 +41,7 @@ static int test_dep_single(udynlink_load_mode_t mode) {
 }
 
 int test_qemu(void) {
-    for (int i = (int)_UDYNLINK_LOAD_MODE_FIRST; i <= (int)_UDYNLINK_LOAD_MODE_LAST; i++) {
+    for (int i = (int)UDYNLINK_LOAD_MODE_COPY_ALL; i <= (int)UDYNLINK_LOAD_MODE_XIP; i++) {
         if (!test_dep_single((udynlink_load_mode_t)i))
             return 0;
     }

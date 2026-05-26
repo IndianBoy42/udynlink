@@ -369,10 +369,10 @@ The symbol table begins with a 4-byte word containing the number of symbol entri
   - Bits `[27:0]` — byte offset from the start of the symbol table to the NUL-terminated name string.
   - Bit `30` — `1` if the symbol is in the code section, `0` if in data.
   - Bits `[29:28]` — visibility: `0` local, `1` exported, `2` external, `3` module name.
-  - Local symbols have `name_offset = 0` and no name string in the table.
+  - Internal symbols have `name_offset = 0` and no name string in the table.
 - **Word 1**: `value` — the symbol's address (relative to its section base for local/exported symbols; undefined for external symbols).
 
-The first entry (index 0) is always the **module name symbol** (`type_data = 3`).
+The first entry (index 0) is always the **module name entry** (`type_data = 3`).
 
 ### Relocation Table Entries
 
@@ -431,7 +431,7 @@ This converts the linker-time absolute address into a runtime absolute address b
 When the module contains absolute pointers to its own code (e.g., a jump table), `symt_offset` has bit 30 set. The loader patches the `.data` word:
 
 ```c
-p_data[lot_offset - num_lot] = (uint32_t)get_code_pointer(p_mod) + *p_data_word;
+p_data[lot_offset - num_lot] = (uint32_t)get_text_pointer(p_mod) + *p_data_word;
 ```
 
 ### Deduplication
@@ -471,7 +471,7 @@ The entire module image (header, relocation table, symbol table, dependency stri
 
 This mode is the safest: after loading, the original image can be discarded. It uses the most RAM.
 
-### COPY_CODE
+### COPY_TEXT_DATA
 
 Only `.text` and `.data` are copied into RAM. The header, relocation table, symbol table, and dependency string table remain at the original `base_addr` (which must remain accessible for symbol lookups and future unloading).
 
@@ -515,7 +515,7 @@ The loader computes required RAM as:
 
 ```c
 uint32_t ram = num_lot * sizeof(uint32_t) + data_size + bss_size;
-if (mode == COPY_CODE)   ram += code_size;
+if (mode == COPY_TEXT_DATA)   ram += code_size;
 if (mode == COPY_ALL)    ram += header_offset + code_size;
 ```
 
@@ -664,7 +664,7 @@ A module with `dep_refcount > 0` cannot be unloaded:
 
 ```c
 if (p_mod->dep_refcount > 0)
-    return UDYNLINK_ERR_MODULE_IN_USE;
+    return UDYNLINK_ERR_MODULE_HAS_DEPENDENTS;
 ```
 
 When a module is unloaded, the loader decrements the `dep_refcount` of all its dependencies. This prevents a host from accidentally unloading a shared library module while other modules still reference its symbols.
@@ -700,7 +700,7 @@ typedef struct {
 ### Loading Function
 
 ```c
-udynlink_error_t udynlink_load_module_stream(
+udynlink_error_t udynlink_load_module_from_stream(
     udynlink_module_t *p_mod,
     const udynlink_io_t *p_io,
     void *load_addr,        // NULL = auto-allocate
@@ -713,8 +713,8 @@ udynlink_error_t udynlink_load_module_stream(
 
 ### Supported Modes and Restrictions
 
-- **COPY_ALL** and **COPY_CODE** are supported.
-- **XIP is not supported** — returns `UDYNLINK_ERR_LOAD_UNABLE_TO_XIP`. Streaming from a non-memory-mapped source directly into executable flash is not practical in the general case.
+- **COPY_ALL** and **COPY_TEXT_DATA** are supported.
+- **XIP is not supported** — returns `UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED`. Streaming from a non-memory-mapped source directly into executable flash is not practical in the general case.
 
 ### Work Buffer
 
@@ -731,9 +731,9 @@ A typical default is 512 bytes (matching FatFS sector size), defined as `UDYNLIN
 
 Unlike the memory-mapped path, the streaming loader does not hold the entire symbol table in RAM. During relocation processing, it reads individual symbol entries and their names from the stream as needed. This minimizes RAM usage for large modules with large symbol tables.
 
-### COPY_CODE Streaming Internals
+### COPY_TEXT_DATA Streaming Internals
 
-When `COPY_CODE` is requested via the streaming loader, the implementation internally loads the module as if `COPY_ALL` was requested (copying header + metadata + code + data into RAM). After loading, the module structure is adjusted so that `udynlink_lookup_symbol` and subsequent operations work correctly. The effect on the caller is the same: code and data are in RAM, metadata is accessible.
+When `COPY_TEXT_DATA` is requested via the streaming loader, the implementation internally loads the module as if `COPY_ALL` was requested (copying header + metadata + code + data into RAM). After loading, the module structure is adjusted so that `udynlink_lookup_symbol` and subsequent operations work correctly. The effect on the caller is the same: text and data sections are in RAM, metadata is accessible.
 
 ---
 

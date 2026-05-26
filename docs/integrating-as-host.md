@@ -111,7 +111,7 @@ This controls the size of the internal module table. Every loaded module needs a
 #define UDYNLINK_MAX_HANDLES 8
 ```
 
-**Pitfall:** If you set this to 1, you can only load one module at a time. If you try to load a second module while the first is still loaded, you will get `UDYNLINK_ERR_LOAD_NO_MORE_HANDLES`.
+**Pitfall:** If you set this to 1, you can only load one module at a time. If you try to load a second module while the first is still loaded, you will get `UDYNLINK_ERR_LOAD_MAX_HANDLES_EXCEEDED`.
 
 **`UDYNLINK_HOST_ARCH_TAG`**
 
@@ -221,7 +221,7 @@ int udynlink_external_is_pointer_in_ram(const void *p) {
 void *udynlink_external_malloc(size_t size);
 ```
 
-**When it is called:** During `udynlink_load_module()` and `udynlink_load_module_stream()` when `load_addr` is `NULL` (auto-allocation mode).
+**When it is called:** During `udynlink_load_module()` and `udynlink_load_module_from_stream()` when `load_addr` is `NULL` (auto-allocation mode).
 
 **What it must do:** Allocate `size` bytes of RAM and return a pointer to it. The memory must be writable and readable by the module.
 
@@ -306,7 +306,7 @@ void udynlink_external_vprintf(const char *s, va_list va) {
 uint32_t udynlink_external_resolve_symbol(const char *name);
 ```
 
-**When it is called:** During relocation in `udynlink_load_module()` and `udynlink_load_module_stream()`, for each `UDYNLINK_SYM_TYPE_EXTERN` symbol that was not resolved by `udynlink_external_resolve_critical_symbol` and was not found in any dependency module.
+**When it is called:** During relocation in `udynlink_load_module()` and `udynlink_load_module_from_stream()`, for each `UDYNLINK_SYM_TYPE_EXTERN` symbol that was not resolved by `udynlink_external_resolve_critical_symbol` and was not found in any dependency module.
 
 **What it must do:** Look up `name` in the host firmware's exported API and return the 32-bit address of the symbol. Return `0` if the symbol is not found.
 
@@ -371,7 +371,7 @@ uint32_t udynlink_external_resolve_critical_symbol(const char *name) {
 udynlink_module_t *udynlink_external_get_module_handle(const char *module_name);
 ```
 
-**When it is called:** During `udynlink_load_module()` and `udynlink_load_module_stream()` when validating dependencies. The loader iterates over the module's dependency list and calls this for each dependency name.
+**When it is called:** During `udynlink_load_module()` and `udynlink_load_module_from_stream()` when validating dependencies. The loader iterates over the module's dependency list and calls this for each dependency name.
 
 **What it must do:** Search your firmware's module table and return a pointer to the handle of the already-loaded module with the given name. Return `NULL` if no such module is loaded.
 
@@ -667,7 +667,7 @@ if (err != UDYNLINK_OK) {
 ```
 
 `udynlink_unload_module()` will:
-- Check `dep_refcount`. If another module depends on this one, it returns `UDYNLINK_ERR_MODULE_IN_USE`.
+- Check `dep_refcount`. If another module depends on this one, it returns `UDYNLINK_ERR_MODULE_HAS_DEPENDENTS`.
 - Decrement `dep_refcount` on all modules this module depends on.
 - Free the auto-allocated RAM.
 - Zero out the module handle.
@@ -702,7 +702,7 @@ udynlink_unload_module(&provider);
 | Mode | Behavior | RAM Needed | Use Case |
 |------|----------|------------|----------|
 | `UDYNLINK_LOAD_MODE_COPY_ALL` | Copy header, code, and data to RAM | Largest | Module blob is in a temporary buffer |
-| `UDYNLINK_LOAD_MODE_COPY_CODE` | Copy code and data to RAM; header stays at `base_addr` | Medium | Module is in flash, but code must run from RAM |
+| `UDYNLINK_LOAD_MODE_COPY_TEXT_DATA` | Copy text and data sections to RAM; header stays at `base_addr` | Medium | Module is in flash, but code must run from RAM |
 | `UDYNLINK_LOAD_MODE_XIP` | Copy only data to RAM; execute code from flash | Smallest | Module is in flash and supports XIP |
 
 **Pitfall:** XIP mode requires that the module's code section is in an execute-in-place capable region (typically internal flash). The host must also ensure the flash is memory-mapped and readable at the `base_addr`.
@@ -769,7 +769,7 @@ udynlink_error_t load_module_from_sd(const char *path, udynlink_module_t *p_mod)
     // Allocate a work buffer on the stack or from a pool
     uint8_t work_buf[512];
 
-    udynlink_error_t err = udynlink_load_module_stream(
+    udynlink_error_t err = udynlink_load_module_from_stream(
         p_mod, &io,
         NULL, 0,                    // Auto-allocate RAM
         UDYNLINK_LOAD_MODE_COPY_ALL,
@@ -796,9 +796,9 @@ If you allocate a buffer of at least this size, the loader can read all metadata
 
 ### Supported Modes for Streaming
 
-Streaming supports `UDYNLINK_LOAD_MODE_COPY_ALL` and `UDYNLINK_LOAD_MODE_COPY_CODE`.
+Streaming supports `UDYNLINK_LOAD_MODE_COPY_ALL` and `UDYNLINK_LOAD_MODE_COPY_TEXT_DATA`.
 
-`UDYNLINK_LOAD_MODE_XIP` is **not supported** and returns `UDYNLINK_ERR_LOAD_UNABLE_TO_XIP`, because streaming implies the module is not in a memory-mapped execute region.
+`UDYNLINK_LOAD_MODE_XIP` is **not supported** and returns `UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED`, because streaming implies the module is not in a memory-mapped execute region.
 
 ### RAM Pre-Calculation
 
@@ -825,8 +825,8 @@ This is useful for pre-allocating a memory pool slot or checking free space befo
 | `UDYNLINK_ERR_LOAD_INVALID_SIGN` | Module signature does not match `UDLM` | Reject the module; it is either corrupted or not a udynlink module |
 | `UDYNLINK_ERR_LOAD_RAM_LEN_LOW` | Provided `load_size` is smaller than required RAM | Increase the allocated RAM region or use auto-allocation (`load_addr = NULL`) |
 | `UDYNLINK_ERR_LOAD_OUT_OF_MEMORY` | `udynlink_external_malloc` returned `NULL` | Free other modules or increase heap size |
-| `UDYNLINK_ERR_LOAD_UNABLE_TO_XIP` | XIP mode requested but module cannot execute in place | Use `COPY_ALL` or `COPY_CODE` instead |
-| `UDYNLINK_ERR_LOAD_NO_MORE_HANDLES` | Module table is full | Unload unused modules or increase `UDYNLINK_MAX_HANDLES` |
+| `UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED` | XIP is not supported for this load configuration | Use `COPY_ALL` or `COPY_TEXT_DATA` instead |
+| `UDYNLINK_ERR_LOAD_MAX_HANDLES_EXCEEDED` | Maximum handle count reached | Unload unused modules or increase `UDYNLINK_MAX_HANDLES` |
 | `UDYNLINK_ERR_LOAD_INVALID_MODE` | Unknown load mode value | Check that you are passing a valid `udynlink_load_mode_t` |
 | `UDYNLINK_ERR_LOAD_BAD_RELOCATION_TABLE` | Relocation data is malformed or points to an invalid symbol | The module is corrupted or was built with a buggy toolchain |
 | `UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL` | An extern symbol could not be resolved by any tier | Ensure the symbol is exported by the host or by a loaded dependency module |
@@ -835,7 +835,7 @@ This is useful for pre-allocating a memory pool slot or checking free space befo
 | `UDYNLINK_ERR_LOAD_ARCH_MISMATCH` | Module CPU/float ABI is incompatible with host | Rebuild the module with the correct `--target` or `--mcpu` |
 | `UDYNLINK_ERR_LOAD_MISSING_DEP` | A dependency declared via `--depends` is not loaded | Load the dependency module first |
 | `UDYNLINK_ERR_LOAD_IO_ERROR` | Streaming I/O read failed | Check SD card, SPI flash, or network connection |
-| `UDYNLINK_ERR_MODULE_IN_USE` | Cannot unload because other modules depend on it | Unload dependent modules first |
+| `UDYNLINK_ERR_MODULE_HAS_DEPENDENTS` | Cannot unload because module has active dependents | Unload dependent modules first |
 | `UDYNLINK_ERR_INVALID_MODULE` | NULL or invalid module handle passed | Check your code for uninitialized handles |
 
 ### Human-Readable Error Messages
@@ -875,7 +875,7 @@ At `UDYNLINK_DEBUG_INFO`, the loader prints the module name, RAM allocation deta
 
 **Solution:** Add `printf` (or your firmware's equivalent) to `udynlink_external_resolve_symbol`. If using newlib nano, the actual symbol may be `_printf` or `_write`.
 
-**Problem:** Unloading a module returns `UDYNLINK_ERR_MODULE_IN_USE`.
+**Problem:** Unloading a module returns `UDYNLINK_ERR_MODULE_HAS_DEPENDENTS`.
 
 **Solution:** Another loaded module declared this one as a dependency via `--depends`. Unload the dependent module first.
 

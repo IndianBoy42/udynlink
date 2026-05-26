@@ -102,7 +102,7 @@ static uint32_t get_code_offset_from_header(const udynlink_module_header_t *p_he
 static uint8_t *get_code_pointer(const udynlink_module_t *p_mod) {
     const udynlink_module_header_t *p_header = p_mod->p_header;
 
-    if (UDYNLINK_LOAD_GET_MODE(p_mod) == UDYNLINK_LOAD_MODE_COPY_CODE) { // the code is after the LOT in RAM.
+    if (UDYNLINK_LOAD_GET_MODE(p_mod) == UDYNLINK_LOAD_MODE_COPY_TEXT_DATA) { // the code is after the LOT in RAM.
         return (uint8_t*)p_mod->p_ram + p_header->num_lot * sizeof(uint32_t);// the code is after the LOT in RAM.
     } else { // the code is after the module header, the relocations and the symbol table
         return (uint8_t*)p_header + get_code_offset_from_header(p_header);
@@ -116,7 +116,7 @@ static uint8_t *get_data_pointer(const udynlink_module_t *p_mod) {
     switch (UDYNLINK_LOAD_GET_MODE(p_mod)) {
         case UDYNLINK_LOAD_MODE_XIP: // the data is after the LOT
             return (uint8_t*)p_mod->p_ram + p_header->num_lot * sizeof(uint32_t);
-        case UDYNLINK_LOAD_MODE_COPY_CODE: // the data is after the code in RAM (which is in turn after the LOT)
+        case UDYNLINK_LOAD_MODE_COPY_TEXT_DATA: // the data is after the code in RAM (which is in turn after the LOT)
             return (uint8_t*)p_mod->p_ram + p_header->num_lot * sizeof(uint32_t) + p_header->code_size;
         case UDYNLINK_LOAD_MODE_COPY_ALL: // use directly the data section from the module header (after the code section)
             return (uint8_t*)p_header + get_code_offset_from_header(p_header) + p_header->code_size;
@@ -163,12 +163,12 @@ static udynlink_sym_t *get_sym_at(const udynlink_module_header_t *p_header, uint
     p_sym->type = info & UDYNLINK_SYM_INFO_TYPE_MASK;
     p_sym->location = (info & UDYNLINK_SYM_INFO_CODE_MASK) ? UDYNLINK_SYM_LOCATION_CODE : UDYNLINK_SYM_LOCATION_DATA;
     // Sanity check
-    if ((index == UDYNLINK_SYM_NAME_OFFSET) && (p_sym->type != UDYNLINK_SYM_TYPE_NAME)) {
+    if ((index == UDYNLINK_SYM_NAME_OFFSET) && (p_sym->type != UDYNLINK_SYM_TYPE_MODULE_NAME)) {
         UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, "Module name symbol doesn't have the correct type!\n");
         return NULL;
     }
     // Get name pointer (if available)
-    if (p_sym->type != UDYNLINK_SYM_TYPE_LOCAL) { // local symbols don't have names
+    if (p_sym->type != UDYNLINK_SYM_TYPE_INTERNAL) { // local symbols don't have names
         p_sym->name = (const char*)p_symt + (name_off & UDYNLINK_SYM_OFFSET_MASK);
     } else {
         p_sym->name = "(N/A)";
@@ -181,7 +181,7 @@ static udynlink_sym_t *get_sym_at(const udynlink_module_header_t *p_header, uint
 static udynlink_sym_t *offset_sym(const udynlink_module_t *p_mod, udynlink_sym_t *p_sym) {
     uint32_t prev_val = p_sym->val;
 
-    if ((p_sym->type == UDYNLINK_SYM_TYPE_LOCAL) || (p_sym->type == UDYNLINK_SYM_TYPE_EXPORTED)) {
+    if ((p_sym->type == UDYNLINK_SYM_TYPE_INTERNAL) || (p_sym->type == UDYNLINK_SYM_TYPE_EXPORTED)) {
         if (p_sym->location == UDYNLINK_SYM_LOCATION_CODE) {
             p_sym->val += (uint32_t)(uintptr_t)get_code_pointer(p_mod);
         } else {
@@ -197,7 +197,7 @@ static udynlink_sym_t *offset_sym(const udynlink_module_t *p_mod, udynlink_sym_t
 
 static uint32_t get_ram_size_for_header(const udynlink_module_header_t *p_header, udynlink_load_mode_t load_mode) {
     uint32_t tot_size = p_header->num_lot * sizeof(uint32_t) + p_header->data_size + p_header->bss_size;
-    if (load_mode == UDYNLINK_LOAD_MODE_COPY_CODE) {
+    if (load_mode == UDYNLINK_LOAD_MODE_COPY_TEXT_DATA) {
         tot_size += p_header->code_size;
     } else if (load_mode == UDYNLINK_LOAD_MODE_COPY_ALL) {
         tot_size += get_code_offset_from_header(p_header) + p_header->code_size;
@@ -370,7 +370,7 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
         UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Copied module at %p to RAM at %p (%u bytes)\n", base_addr, p_temp8, load_size + p_header->code_size + p_header->data_size);
         // Since we copied everything, move the pointer to the header to RAM, since the original (base_addr) might be freed eventually.
         p_mod->p_header = p_header = (const udynlink_module_header_t*)p_temp8;
-    } else if (load_mode == UDYNLINK_LOAD_MODE_COPY_CODE) {
+    } else if (load_mode == UDYNLINK_LOAD_MODE_COPY_TEXT_DATA) {
         // Copy just code and data
         memcpy(p_temp8, (const uint8_t*)base_addr + load_size, p_header->code_size + p_header->data_size);
         UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Copied code and data of module %p to RAM at %p (%u bytes)\n", base_addr, p_temp8, p_header->code_size + p_header->data_size);
@@ -417,7 +417,7 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
         // If lot_offset is larger than or equal to the number of LOT entries, this relocation applies to data, not to LOT.
         uint32_t *p_rel_location = (lot_offset < p_header->num_lot) ? p_lot + lot_offset : p_data + lot_offset - p_header->num_lot;
         switch (sym.type) {
-            case UDYNLINK_SYM_TYPE_LOCAL:
+            case UDYNLINK_SYM_TYPE_INTERNAL:
             case UDYNLINK_SYM_TYPE_EXPORTED:
                 UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Applying relocation for symbol at index %u, name=%s, type=%d, data_reloc=%d at lot_offset=%u, value=%08X\n", symt_offset, sym.name, sym.type, sym.location, lot_offset, sym.val);
                 *p_rel_location = offset_sym(p_mod, &sym)->val;
@@ -449,7 +449,7 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
                 }
                 break;
 
-            case UDYNLINK_SYM_TYPE_NAME: // no relocations should be emitted against the name of the module
+            case UDYNLINK_SYM_TYPE_MODULE_NAME: // no relocations should be emitted against the name of the module
                 res = UDYNLINK_ERR_LOAD_BAD_RELOCATION_TABLE;
                 goto exit;
         }
@@ -491,7 +491,7 @@ udynlink_error_t udynlink_unload_module(udynlink_module_t *p_mod) {
     }
     if (p_mod->dep_refcount > 0) {
         UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, "Cannot unload module: %u other modules depend on it\n", p_mod->dep_refcount);
-        return UDYNLINK_ERR_MODULE_IN_USE;
+        return UDYNLINK_ERR_MODULE_HAS_DEPENDENTS;
     }
     UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Unloading module at %p\n", p_mod);
     for (uint8_t i = 0; i < p_mod->num_deps; i++) {
@@ -521,7 +521,7 @@ uint32_t udynlink_get_ram_size(const udynlink_module_t *p_mod) {
     // Depending on the copy mode, more RAM might be needed:
     // - if only code is copied, add size of the code
     // - if everything is copied, add the size of the header (including the symbol table and the relocations) and the code
-    if (load_mode == UDYNLINK_LOAD_MODE_COPY_CODE) {
+    if (load_mode == UDYNLINK_LOAD_MODE_COPY_TEXT_DATA) {
         tot_size += p_header->code_size;
     }
     else if (load_mode == UDYNLINK_LOAD_MODE_COPY_ALL) {
@@ -541,7 +541,7 @@ const char *udynlink_get_module_name(const udynlink_module_t *p_mod) {
     }
 }
 
-const char *udynlink_get_module_name2(const void *base_addr) {
+const char *udynlink_get_module_name_from_image(const void *base_addr) {
 
     const udynlink_module_header_t *p_header = (const udynlink_module_header_t*)base_addr;
     udynlink_sym_t sym;
@@ -581,7 +581,7 @@ void udynlink_set_debug_level(udynlink_debug_level_t level) {
     debug_level = level;
 }
 
-uint32_t udynlink_get_module_size(const void *base_addr)
+uint32_t udynlink_get_image_size(const void *base_addr)
 {
     if (memcmp(base_addr, "UDLM", 4))
         return 0;
@@ -596,14 +596,14 @@ uint32_t udynlink_get_module_size(const void *base_addr)
     return tot_size;
 }
 
-uint8_t *udynlink_get_code_pointer(const udynlink_module_t *p_mod) {
+uint8_t *udynlink_get_text_pointer(const udynlink_module_t *p_mod) {
     return get_code_pointer(p_mod);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // Streaming I/O public interface
 
-udynlink_error_t udynlink_load_module_stream(udynlink_module_t *p_mod,
+udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
     const udynlink_io_t *p_io, void *load_addr, uint32_t load_size,
     udynlink_load_mode_t load_mode, void *work_buf, uint32_t work_buf_size) {
 
@@ -612,7 +612,7 @@ udynlink_error_t udynlink_load_module_stream(udynlink_module_t *p_mod,
     udynlink_module_header_t header;
 
     if (!p_mod) return UDYNLINK_ERR_INVALID_MODULE;
-    if (load_mode == UDYNLINK_LOAD_MODE_XIP) return UDYNLINK_ERR_LOAD_UNABLE_TO_XIP;
+    if (load_mode == UDYNLINK_LOAD_MODE_XIP) return UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED;
     if (work_buf == NULL || work_buf_size < UDYNLINK_STREAM_MIN_WORK_BUF_SIZE)
         return UDYNLINK_ERR_LOAD_INVALID_MODE;
 
@@ -683,7 +683,7 @@ udynlink_error_t udynlink_load_module_stream(udynlink_module_t *p_mod,
     }
 
     uint32_t ram_size = get_ram_size_for_header(&header, load_mode);
-    if (load_mode == UDYNLINK_LOAD_MODE_COPY_CODE)
+    if (load_mode == UDYNLINK_LOAD_MODE_COPY_TEXT_DATA)
         ram_size += get_code_offset_from_header(&header);
 
     if (ram_size > 0) {
@@ -794,7 +794,7 @@ udynlink_error_t udynlink_load_module_stream(udynlink_module_t *p_mod,
             uint8_t sym_location = (info & UDYNLINK_SYM_INFO_CODE_MASK) ?
                 UDYNLINK_SYM_LOCATION_CODE : UDYNLINK_SYM_LOCATION_DATA;
 
-            if (sym_type == UDYNLINK_SYM_TYPE_NAME) {
+            if (sym_type == UDYNLINK_SYM_TYPE_MODULE_NAME) {
                 res = UDYNLINK_ERR_LOAD_BAD_RELOCATION_TABLE;
                 goto exit;
             }
@@ -802,7 +802,7 @@ udynlink_error_t udynlink_load_module_stream(udynlink_module_t *p_mod,
             uint32_t *p_rel_location = (lot_offset < header.num_lot) ?
                 p_lot + lot_offset : p_data + lot_offset - header.num_lot;
 
-            if (sym_type == UDYNLINK_SYM_TYPE_LOCAL || sym_type == UDYNLINK_SYM_TYPE_EXPORTED) {
+            if (sym_type == UDYNLINK_SYM_TYPE_INTERNAL || sym_type == UDYNLINK_SYM_TYPE_EXPORTED) {
                 if (sym_location == UDYNLINK_SYM_LOCATION_CODE)
                     sym_val += (uint32_t)(uintptr_t)get_code_pointer(p_mod);
                 else
@@ -866,7 +866,7 @@ uint32_t udynlink_get_ram_requirements_stream(const udynlink_io_t *p_io, udynlin
     if (n < 0 || (uint32_t)n != sizeof(header)) return 0;
     if (header.sign != UDYNLINK_MODULE_SIGN) return 0;
     uint32_t ram_size = get_ram_size_for_header(&header, mode);
-    if (mode == UDYNLINK_LOAD_MODE_COPY_CODE)
+    if (mode == UDYNLINK_LOAD_MODE_COPY_TEXT_DATA)
         ram_size += get_code_offset_from_header(&header);
     return ram_size;
 }

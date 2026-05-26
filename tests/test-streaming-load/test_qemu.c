@@ -32,7 +32,7 @@ static int test_streaming_load(uint32_t work_buf_size, udynlink_load_mode_t mode
 
     if (work_buf_size > sizeof(work_buf)) work_buf_size = sizeof(work_buf);
 
-    udynlink_error_t err = udynlink_load_module_stream(&mod, &io, NULL, 0, mode, work_buf, work_buf_size);
+    udynlink_error_t err = udynlink_load_module_from_stream(&mod, &io, NULL, 0, mode, work_buf, work_buf_size);
     if (err != UDYNLINK_OK) {
         printf("Streaming load failed: err=%d mode=%d wbsz=%u\n", err, (int)mode, work_buf_size);
         return 0;
@@ -68,9 +68,9 @@ static int test_xip_rejected(void) {
     g_stream_data = mod_hello_module_data;
     g_stream_size = sizeof(mod_hello_module_data);
 
-    if (udynlink_load_module_stream(&mod, &io, NULL, 0,
+    if (udynlink_load_module_from_stream(&mod, &io, NULL, 0,
                                      UDYNLINK_LOAD_MODE_XIP, work_buf, sizeof(work_buf))
-        != UDYNLINK_ERR_LOAD_UNABLE_TO_XIP) {
+        != UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED) {
         printf("XIP streaming should have been rejected\n");
         return 0;
     }
@@ -84,7 +84,7 @@ static int test_ram_requirements_stream(void) {
     g_stream_size = sizeof(mod_hello_module_data);
 
     uint32_t ram_copy_all = udynlink_get_ram_requirements_stream(&io, UDYNLINK_LOAD_MODE_COPY_ALL);
-    uint32_t ram_copy_code = udynlink_get_ram_requirements_stream(&io, UDYNLINK_LOAD_MODE_COPY_CODE);
+    uint32_t ram_copy_code = udynlink_get_ram_requirements_stream(&io, UDYNLINK_LOAD_MODE_COPY_TEXT_DATA);
 
     if (ram_copy_all == 0) {
         printf("ram_requirements_stream COPY_ALL returned 0\n");
@@ -141,10 +141,10 @@ int test_qemu(void) {
     ok = test_streaming_load(128, UDYNLINK_LOAD_MODE_COPY_ALL) && ok;
 
     printf("== Streaming: COPY_CODE, 512B work_buf ==\n");
-    ok = test_streaming_load(512, UDYNLINK_LOAD_MODE_COPY_CODE) && ok;
+    ok = test_streaming_load(512, UDYNLINK_LOAD_MODE_COPY_TEXT_DATA) && ok;
 
     printf("== Streaming: COPY_CODE, 64B work_buf ==\n");
-    ok = test_streaming_load(64, UDYNLINK_LOAD_MODE_COPY_CODE) && ok;
+    ok = test_streaming_load(64, UDYNLINK_LOAD_MODE_COPY_TEXT_DATA) && ok;
 
     printf("== Streaming: XIP rejection ==\n");
     ok = test_xip_rejected() && ok;

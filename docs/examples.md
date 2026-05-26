@@ -403,7 +403,7 @@ For a module with 1 KiB code, 256 bytes `.data`, 64 bytes `.bss`, and 16 LOT ent
 | Load mode | RAM usage |
 |-----------|-----------|
 | `COPY_ALL` | 16*4 + 1024 + 256 + 64 = **1392 bytes** |
-| `COPY_CODE` | 16*4 + 1024 + 256 + 64 = **1392 bytes** |
+| `COPY_TEXT_DATA` | 16*4 + 1024 + 256 + 64 = **1392 bytes** |
 | `XIP` | 16*4 + 256 + 64 = **384 bytes** |
 
 XIP saves **1008 bytes** in this example because the 1 KiB code section stays in flash.
@@ -454,7 +454,7 @@ python3 mkmodule --gen-c-header --header-path ../host_firmware \
     ../modules/mod_consumer.c
 ```
 
-The module name used in `--depends` must match the module's own name symbol (derived from the first source file name or `--module-name`).
+The module name used in `--depends` must match the module's own name entry (derived from the first source file name or `--module-name`).
 
 ### Host code loading both modules
 
@@ -570,7 +570,7 @@ int main(void) {
 
 ### Unload order rules
 
-- A module with `dep_refcount > 0` cannot be unloaded (`UDYNLINK_ERR_MODULE_IN_USE`).
+- A module with `dep_refcount > 0` cannot be unloaded (`UDYNLINK_ERR_MODULE_HAS_DEPENDENTS`).
 - Always unload **consumers** before **providers**.
 - If you try to unload `mod_provider` while `mod_consumer` is still loaded, the loader will reject it.
 
@@ -689,7 +689,7 @@ int main(void) {
 
 ## Streaming Load from SD Card
 
-Use `udynlink_load_module_stream` when the module image is too large to buffer entirely in RAM (e.g., stored on an SD card as a file).
+Use `udynlink_load_module_from_stream` when the module image is too large to buffer entirely in RAM (e.g., stored on an SD card as a file).
 
 ### FatFS I/O adapter
 
@@ -766,7 +766,7 @@ int load_module_from_sd(const char *path, udynlink_module_t *p_mod) {
     printf("Module needs %u bytes of RAM\n", ram_needed);
 
     /* Load the module */
-    udynlink_error_t err = udynlink_load_module_stream(
+    udynlink_error_t err = udynlink_load_module_from_stream(
         p_mod, &io, NULL, 0,          /* auto-allocate RAM */
         UDYNLINK_LOAD_MODE_COPY_ALL,
         work_buf, work_size);
@@ -791,8 +791,8 @@ int load_module_from_sd(const char *path, udynlink_module_t *p_mod) {
 
 ### Streaming limitations
 
-- **XIP is not supported** (`UDYNLINK_LOAD_MODE_XIP` returns `UDYNLINK_ERR_LOAD_UNABLE_TO_XIP`).
-- `COPY_CODE` mode is internally converted to `COPY_ALL` because the header must be present in RAM for relocation processing.
+- **XIP is not supported** (`UDYNLINK_LOAD_MODE_XIP` returns `UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED`).
+- `COPY_TEXT_DATA` mode is internally converted to `COPY_ALL` because the header must be present in RAM for relocation processing.
 
 ---
 
@@ -1078,7 +1078,7 @@ if (ram_needed == 0) {
 }
 
 void *load_addr = pool_malloc(ram_needed);
-udynlink_error_t err = udynlink_load_module_stream(
+udynlink_error_t err = udynlink_load_module_from_stream(
     &mod, &io, load_addr, ram_needed,
     UDYNLINK_LOAD_MODE_COPY_ALL, work_buf, work_size);
 ```

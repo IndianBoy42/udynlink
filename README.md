@@ -156,7 +156,7 @@ just ci                   # Full CI suite (parallel)
 just test-mps2-single test-globals1   # Single test
 ```
 
-Each test validates all three load modes (COPY_ALL, COPY_CODE, XIP) at both `-O0` and `-Os`. See the [Testing Guide](docs/testing.md) for adding test cases, adding platforms, and debugging.
+Each test validates all three load modes (COPY_ALL, COPY_TEXT_DATA, XIP) at both `-O0` and `-Os`. See the [Testing Guide](docs/testing.md) for adding test cases, adding platforms, and debugging.
 
 ## Platform Test Matrix
 

@@ -284,7 +284,7 @@ udynlink_unload_module(&consumer);   // OK
 udynlink_unload_module(&provider);   // OK — no more dependents
 ```
 
-If you try to unload `provider` while `consumer` is still loaded, the call returns `UDYNLINK_ERR_MODULE_IN_USE`.
+If you try to unload `provider` while `consumer` is still loaded, the call returns `UDYNLINK_ERR_MODULE_HAS_DEPENDENTS`.
 
 ### Example: Provider and Consumer
 
@@ -597,7 +597,7 @@ The RAM required to load a module depends on the load mode:
 | Mode | RAM Used |
 |------|----------|
 | `UDYNLINK_LOAD_MODE_COPY_ALL` | header + relocations + symbol table + code + data + LOT + bss |
-| `UDYNLINK_LOAD_MODE_COPY_CODE` | code + data + LOT + bss (header stays at `base_addr`) |
+| `UDYNLINK_LOAD_MODE_COPY_TEXT_DATA` | code + data + LOT + bss (header stays at `base_addr`) |
 | `UDYNLINK_LOAD_MODE_XIP` | data + LOT + bss only (code executes from flash) |
 
 Use `udynlink_get_ram_requirements()` to compute the exact size before loading.
@@ -729,7 +729,7 @@ Inside a module, `&my_exported_func` gives you the address of the **wrapper prol
 
 ### Unloading a Module That Has Dependents
 
-`udynlink_unload_module` returns `UDYNLINK_ERR_MODULE_IN_USE` if another loaded module still declares this one as a dependency. Unload dependents first, then dependencies.
+`udynlink_unload_module` returns `UDYNLINK_ERR_MODULE_HAS_DEPENDENTS` if another loaded module still declares this one as a dependency. Unload dependents first, then dependencies.
 
 ---
 

@@ -79,12 +79,10 @@ typedef struct {
 typedef enum {
     /** Copy header, code, and data into RAM. */
     UDYNLINK_LOAD_MODE_COPY_ALL,
-    _UDYNLINK_LOAD_MODE_FIRST = UDYNLINK_LOAD_MODE_COPY_ALL, /* for testing only */
     /** Copy code and data into RAM; leave the header at @c base_addr. */
-    UDYNLINK_LOAD_MODE_COPY_CODE,
+    UDYNLINK_LOAD_MODE_COPY_TEXT_DATA,
     /** Execute code in place (XIP); copy only data into RAM. */
     UDYNLINK_LOAD_MODE_XIP,
-    _UDYNLINK_LOAD_MODE_LAST = UDYNLINK_LOAD_MODE_XIP /* for testing only */
 } udynlink_load_mode_t;
 
 #ifndef UDYNLINK_MAX_DEPS
@@ -129,20 +127,20 @@ typedef struct {
     const char *name;
     /** Symbol value (offset or absolute address, depending on load phase). */
     uint32_t val;
-    /** Symbol type (see ::UDYNLINK_SYM_TYPE_LOCAL et al.). */
+    /** Symbol type (see ::UDYNLINK_SYM_TYPE_INTERNAL et al.). */
     uint8_t type;
     /** Memory location (code or data, see ::UDYNLINK_SYM_LOCATION_CODE). */
     uint8_t location;
 } udynlink_sym_t;
 
 /** Static (module-local) symbol. */
-#define UDYNLINK_SYM_TYPE_LOCAL               0
+#define UDYNLINK_SYM_TYPE_INTERNAL               0
 /** Exported symbol (visible to other modules and the host). */
 #define UDYNLINK_SYM_TYPE_EXPORTED            1
 /** Extern symbol (unresolved at link time; resolved by the host at load time). */
 #define UDYNLINK_SYM_TYPE_EXTERN              2
 /** Special symbol representing the module name. */
-#define UDYNLINK_SYM_TYPE_NAME                3
+#define UDYNLINK_SYM_TYPE_MODULE_NAME                3
 
 /** Symbol resides in the code (.text) section. */
 #define UDYNLINK_SYM_LOCATION_CODE            0
@@ -160,8 +158,8 @@ _UDYNLINK_EXPAND(UDYNLINK_OK),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_INVALID_SIGN),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_RAM_LEN_LOW),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_OUT_OF_MEMORY),\
-_UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_UNABLE_TO_XIP),\
-_UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_NO_MORE_HANDLES),\
+_UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED),\
+_UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_MAX_HANDLES_EXCEEDED),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_INVALID_MODE),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_BAD_RELOCATION_TABLE),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL),\
@@ -170,7 +168,7 @@ _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_VERSION_MISMATCH),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_ARCH_MISMATCH),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_MISSING_DEP),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_IO_ERROR),\
-_UDYNLINK_EXPAND(UDYNLINK_ERR_MODULE_IN_USE),\
+_UDYNLINK_EXPAND(UDYNLINK_ERR_MODULE_HAS_DEPENDENTS),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_INVALID_MODULE)
 
 #define _UDYNLINK_EXPAND(x)                   x
@@ -306,7 +304,7 @@ typedef int32_t (*udynlink_get_size_cb_t)(void *pv_ctx);
 /**
  * @brief Streaming I/O descriptor.
  *
- * Passed to udynlink_load_module_stream() to abstract the module
+ * Passed to udynlink_load_module_from_stream() to abstract the module
  * image source (e.g., a file system, serial flash, or network buffer).
  */
 typedef struct {
@@ -323,7 +321,7 @@ typedef struct {
 #define UDYNLINK_STREAM_BUF_SIZE 512
 #endif
 
-/** Minimum work-buffer size for udynlink_load_module_stream() (64 bytes). */
+/** Minimum work-buffer size for udynlink_load_module_from_stream() (64 bytes). */
 #define UDYNLINK_STREAM_MIN_WORK_BUF_SIZE 64
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -361,7 +359,7 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
  * @param[in] p_mod Pointer to the loaded module handle.
  *
  * @return ::UDYNLINK_OK on success, or ::UDYNLINK_ERR_INVALID_MODULE /
- *         ::UDYNLINK_ERR_MODULE_IN_USE if the module is still referenced.
+ *         ::UDYNLINK_ERR_MODULE_HAS_DEPENDENTS if the module is still referenced.
  */
 udynlink_error_t udynlink_unload_module(udynlink_module_t *p_mod);
 
@@ -416,7 +414,7 @@ const char *udynlink_get_module_name(const udynlink_module_t *p_mod);
  *
  * @return Pointer to the null-terminated module name, or NULL on error.
  */
-const char *udynlink_get_module_name2(const void *base_addr);
+const char *udynlink_get_module_name_from_image(const void *base_addr);
 
 /**
  * @brief Look up a symbol in a module.
@@ -459,7 +457,7 @@ void udynlink_set_debug_level(udynlink_debug_level_t level);
  * @return Total size in bytes (header + code + data), or 0 if the
  *         signature is invalid.
  */
-uint32_t udynlink_get_module_size(const void *base_addr);
+uint32_t udynlink_get_image_size(const void *base_addr);
 
 /**
  * @brief Get the pointer to the code (.text) memory.
@@ -468,14 +466,14 @@ uint32_t udynlink_get_module_size(const void *base_addr);
  *
  * @return Pointer to the module's code section.
  */
-uint8_t *udynlink_get_code_pointer(const udynlink_module_t *p_mod);
+uint8_t *udynlink_get_text_pointer(const udynlink_module_t *p_mod);
 
 /**
  * @brief Load a module from a streaming I/O source.
  *
  * Similar to udynlink_load_module() but reads the image incrementally
  * via callbacks.  XIP mode is not supported and returns
- * ::UDYNLINK_ERR_LOAD_UNABLE_TO_XIP.
+ * ::UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED.
  *
  * @param[out] p_mod          Module handle to populate on success.
  * @param[in]  p_io           Streaming I/O callbacks.
@@ -487,7 +485,7 @@ uint8_t *udynlink_get_code_pointer(const udynlink_module_t *p_mod);
  *
  * @return ::UDYNLINK_OK on success, or an error code on failure.
  */
-udynlink_error_t udynlink_load_module_stream(udynlink_module_t *p_mod,
+udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
     const udynlink_io_t *p_io, void *load_addr, uint32_t load_size,
     udynlink_load_mode_t load_mode, void *work_buf, uint32_t work_buf_size);
 

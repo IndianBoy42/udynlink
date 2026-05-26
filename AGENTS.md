@@ -196,7 +196,7 @@ The header contains `mod_version`, `udynlink_version`, `arch_tag`, `num_deps`, a
 ### Three Load Modes
 All tests validate all three modes by default:
 - `UDYNLINK_LOAD_MODE_COPY_ALL`: copy header + text + data to RAM
-- `UDYNLINK_LOAD_MODE_COPY_CODE`: copy text + data to RAM (header stays at base_addr)
+- `UDYNLINK_LOAD_MODE_COPY_TEXT_DATA`: copy text + data to RAM (header stays at base_addr)
 - `UDYNLINK_LOAD_MODE_XIP`: copy only data to RAM; execute code in place from flash
 
 ### Module Uniqueness
