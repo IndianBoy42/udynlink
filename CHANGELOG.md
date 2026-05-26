@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Streaming I/O module loading** — load modules from SD card, SPI flash, or any non-memory-mapped source via the `udynlink_io_t` callback interface without pre-buffering the entire image. Introduces `udynlink_load_module_stream()`, `udynlink_get_ram_requirements_stream()`, and `udynlink_get_stream_work_buf_size()`.
+- **Streaming I/O module loading** — load modules from SD card, SPI flash, or any non-memory-mapped source via the `udynlink_io_t` callback interface without pre-buffering the entire image. Introduces `udynlink_load_module_stream()`, `udynlink_get_ram_requirements_stream()`, and `udynlink_get_stream_metadata_size()`.
 - **Hash-based O(1) symbol resolution** — optional GNU hash table for host firmware symbol lookup. Adds `udynlink_hash.h`/`udynlink_hash.c` and the `scripts/mkhostsyms` tool that generates a const hash table from a host ELF.
 - **Module dependency tracking** — declare dependencies at build time with `mkmodule --depends mod_a,mod_b`. The loader enforces that all declared dependencies are already loaded. Three-tier symbol resolution: critical host symbols → dependency modules → fallback host symbols. Safe unload via `dep_refcount` prevents unloading a module that has active dependents.
 - **ABI versioning and architecture tag validation** — module headers include `mod_version`, `udynlink_version`, and `arch_tag`. The loader validates compatibility at load time and rejects modules compiled for a mismatched core family, FPU, or float ABI.
@@ -37,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Update test harness for GCC 15 / latest toolchain** compatibility.
 - **Allow multiple instances of the same module** — removes deduplication by name so the same module image can be loaded more than once.
 - **Enable `--gc-sections` dead code elimination** during module linking, with `KEEP` directives preserving prologues and `.init_array`.
-- **Support `-O3` build option** in `mkmodule` (`--no-opt` disables the default `-Os`).
+- **Support `-O <level>` build option** in `mkmodule` (replaces `--no-opt`; accepts `0`, `s` (default), `2`, `3`, `z` like GCC).
 - **Make QEMU binary and target configurable** via environment variables (`UDYNLINK_QEMU_BIN`, `UDYNLINK_QEMU_MACHINE`, `UDYNLINK_QEMU_CPU`, `UDYNLINK_QEMU_EXTRA_FLAGS`).
 - **Move `.rodata` into `.data`** section to support `R_ARM_ABS32` and `R_ARM_TARGET1` data relocations.
 - **Module binary layout expansion** — ABI v2.0+ header grows from 32 to 36 bytes to include `num_deps` and `deps_strtab_size` fields.

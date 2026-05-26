@@ -160,7 +160,7 @@ The module name is derived from the first source file by default:
 - `hello.c` produces a module named `hello`.
 - `sensor_driver.cpp` produces a module named `sensor_driver`.
 
-You can override it with `--name my_module`.
+You can override it with `--module-name my_module`.
 
 ## Consuming Host Symbols
 
@@ -518,7 +518,7 @@ python3 mkmodule --mcpu cortex-m4f --target cortex-m4 hello.c
 Pass extra flags to the compiler:
 
 ```bash
-python3 mkmodule --build_flags="-Wall -Wextra -DENABLE_FAST_PATH" hello.c
+python3 mkmodule --build-flags="-Wall -Wextra -DENABLE_FAST_PATH" hello.c
 ```
 
 ## The mkmodule Command Reference
@@ -553,8 +553,8 @@ Source files are compiled with:
 | `--mod-version <ver>` | Module ABI version in `major.minor` format. Default: `1.0`. |
 | `--udynlink-version <ver>` | Minimum loader ABI version required. Default: `2.0`. |
 | `--lot-base <addr>` | LOT base address written into the assembly prologue. Default: `0x20000000`. |
-| `--build_flags <flags>` | Extra compiler flags prepended to the compile command. |
-| `--name <name>` | Explicit module name. Default is derived from the first source file name. |
+| `--build-flags <flags>` | Extra compiler flags prepended to the compile command. |
+| `--module-name <name>` | Explicit module name. Default is derived from the first source file name. |
 | `--disasm` | Show disassembly of `.text` after linking. |
 | `--pc-rel` | Allow pc-relative addressing. |
 | `--no-long-calls` | Do not use `-mlong-calls`. |
@@ -716,7 +716,7 @@ python3 mkmodule --depends math_service client.c
 
 - Likely undefined behavior in your C/C++ code (uninitialized variables, out-of-bounds access, strict aliasing violations).
 - Missing `volatile` on memory-mapped hardware access.
-- Add `-Wall -Wextra` with `--build_flags` and fix all warnings.
+- Add `-Wall -Wextra` with `--build-flags` and fix all warnings.
 
 ### C++ Constructors Not Running
 

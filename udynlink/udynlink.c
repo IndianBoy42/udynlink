@@ -208,8 +208,6 @@ static uint32_t get_ram_size_for_header(const udynlink_module_header_t *p_header
 ////////////////////////////////////////////////////////////////////////////////
 // Streaming I/O helpers
 
-#define UDYNLINK_STREAM_MIN_WORK_BUF_SIZE 64
-
 static int32_t stream_read_exact(const udynlink_io_t *p_io, void *dest,
                                  uint32_t offset, uint32_t len,
                                  void *work_buf, uint32_t work_buf_size) {

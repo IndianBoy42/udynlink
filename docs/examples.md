@@ -454,7 +454,7 @@ python3 mkmodule --gen-c-header --header-path ../host_firmware \
     ../modules/mod_consumer.c
 ```
 
-The module name used in `--depends` must match the module's own name symbol (derived from the first source file name or `--name`).
+The module name used in `--depends` must match the module's own name symbol (derived from the first source file name or `--module-name`).
 
 ### Host code loading both modules
 

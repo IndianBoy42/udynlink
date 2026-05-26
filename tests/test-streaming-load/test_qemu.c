@@ -98,18 +98,18 @@ static int test_ram_requirements_stream(void) {
     return 1;
 }
 
-static int test_stream_work_buf_size(void) {
+static int test_stream_metadata_size(void) {
     udynlink_io_t io = { mock_read, mock_get_size, NULL };
 
     g_stream_data = mod_hello_module_data;
     g_stream_size = sizeof(mod_hello_module_data);
 
-    uint32_t wbsz = udynlink_get_stream_work_buf_size(&io);
+    uint32_t wbsz = udynlink_get_stream_metadata_size(&io);
     if (wbsz == 0) {
-        printf("get_stream_work_buf_size returned 0\n");
+        printf("get_stream_metadata_size returned 0\n");
         return 0;
     }
-    printf("stream work_buf_size=%u\n", wbsz);
+    printf("stream metadata_size=%u\n", wbsz);
     return 1;
 }
 
@@ -153,7 +153,7 @@ int test_qemu(void) {
     ok = test_ram_requirements_stream() && ok;
 
     printf("== Streaming: stream_work_buf_size ==\n");
-    ok = test_stream_work_buf_size() && ok;
+    ok = test_stream_metadata_size() && ok;
 
     printf("== Streaming: ram_requirements compat ==\n");
     ok = test_ram_requirements_compat() && ok;

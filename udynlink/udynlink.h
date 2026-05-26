@@ -319,9 +319,12 @@ typedef struct {
 } udynlink_io_t;
 
 #ifndef UDYNLINK_STREAM_BUF_SIZE
-/** Default scratch-buffer size for streaming loads. */
+/** Default scratch-buffer size for streaming loads (512 bytes, matches FatFS sector size). */
 #define UDYNLINK_STREAM_BUF_SIZE 512
 #endif
+
+/** Minimum work-buffer size for udynlink_load_module_stream() (64 bytes). */
+#define UDYNLINK_STREAM_MIN_WORK_BUF_SIZE 64
 
 ////////////////////////////////////////////////////////////////////////////////
 // Public interface

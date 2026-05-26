@@ -51,7 +51,7 @@ Additional flags:
 - `--depends mod_a,mod_b` — declare module dependencies by name; the loader enforces that all named dependencies are already loaded before loading this module
 - `-O <level>` — optimization level (`0`, `s`, `2`, `3`, `z`; default: `s`)
 - `--bin-name <path>` — custom output binary name
-- `--build_flags=<flags>` — prepend extra compiler flags
+- `--build-flags=<flags>` — prepend extra compiler flags
 - `--mcpu <cpu>` — target CPU (default: `cortex-m4`)
 - `--target <name>` — target from the target database (default: `cortex-m4`). Supported: `cortex-m0`, `cortex-m0plus`, `cortex-m3`, `cortex-m4`, `cortex-m4f`, `cortex-m7`, `cortex-m33`, `cortex-m55`, `cortex-m85`
 - `--mod-version <ver>` — module ABI version (default: `1.0`)
@@ -106,7 +106,7 @@ Additional flags:
 - `--depends mod_a,mod_b` — declare module dependencies by name; the loader enforces that all named dependencies are already loaded before loading this module
 - `-O <level>` — optimization level (`0`, `s`, `2`, `3`, `z`; default: `s`)
 - `--bin-name <path>` — custom output binary name
-- `--build_flags=<flags>` — prepend extra compiler flags
+- `--build-flags=<flags>` — prepend extra compiler flags
 - `--mcpu <cpu>` — target CPU (default: `cortex-m4`)
 - `--target <name>` — target from the target database (default: `cortex-m4`). Supported: `cortex-m0`, `cortex-m0plus`, `cortex-m3`, `cortex-m4`, `cortex-m4f`, `cortex-m7`, `cortex-m33`, `cortex-m55`, `cortex-m85`
 - `--mod-version <ver>` — module ABI version (default: `1.0`)
