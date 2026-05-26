@@ -28,8 +28,8 @@ Each direction is independent enough to be developed, tested, and merged separat
 | Decision | Chosen Approach | Rationale |
 |----------|----------------|-----------|
 | **Direction priority** | Rust Module first, then Rust Host | User explicitly asked to start with post-processing module support |
-| **Module relocation model** | Post-process Rust ELF to existing UDLM format | No C loader modifications needed; leverages mature loader; avoids Rust PIC/RWPI bugs |
-| **Export mechanism** | Proc-macro `#[udynlink_export]` with inline asm prologues | Idiomatic Rust; avoids objcopy symbol mangling issues; same runtime semantics as C wrappers |
+| **Module relocation model** | `static` with MOVW/MOVT loader extension | Investigation shows no Rust model produces `R_ARM_GOT_BREL`; `static` model works reliably with existing `core` lib |
+| **Export mechanism** | Proc-macro `#[udynlink_export]` with generated assembly prologues | Idiomatic Rust; avoids objcopy symbol mangling; post-processor generates wrappers like C toolchain |
 | **Build tool style** | Standalone CLI (`rust2udynlink`) first, then `cargo-udynlink` subcommand | Immediate CLI for experimentation, then cargo integration for real workflows |
 | **Host API safety** | Both: `udynlink-sys` (raw unsafe FFI) + `udynlink-rs` (safe wrappers) | Users choose their abstraction level |
 | **Target support** | All 9 targets via `scripts/targets.py` database | Match existing C toolchain; arch-tag validation in loader ensures safety |
@@ -41,18 +41,24 @@ Each direction is independent enough to be developed, tested, and merged separat
 
 **Goal:** Compile `no_std` Rust code into a `.bin` file that `udynlink_load_module()` can load.
 
-**Key Insight:** The C toolchain produces a UDLM binary by:
-1. Compiling C with GCC flags that generate specific relocations (`-fPIE -msingle-pic-base -mno-pic-data-is-text-relative`)
-2. Wrapping exported functions with assembly prologues (save/restore r9, load LOT base)
-3. Post-processing the ELF: extracting sections, classifying symbols, building a LOT, patching `R_ARM_GOT_BREL` relocations, emitting UDLM
+**Key Insight (from investigation):**
+- **No Rust relocation model produces `R_ARM_GOT_BREL`** (the relocation type the existing loader is built around).
+- The `core` library is **always compiled with `static` relocation**, so even `-C relocation-model=pic` produces thousands of absolute `MOVW`/`MOVT` relocations.
+- **Recommended model:** `-C relocation-model=static` — simplest, most reliable, and matches `core`.
+- **Required change:** Extend the C loader to patch `R_ARM_THM_MOVW_ABS_NC` and `R_ARM_THM_MOVT_ABS` relocations (decode/encode Thumb-2 immediate fields).
+- The existing `R_ARM_ABS32` and `R_ARM_TARGET1` data relocation handling in the loader already works for Rust.
 
-For Rust, we replicate this pipeline:
-1. **Compile** Rust with flags and custom linker script to generate relocatable ELF
-2. **Export** functions via `#[udynlink_export]` proc-macro (injects inline asm prologue + `#[no_mangle]`)
-3. **Post-process** the Rust ELF with `rust2udynlink` tool, converting Rust relocations into udynlink's LOT format
-4. **Emit** standard UDLM binary
+The C toolchain pipeline (for comparison):
+1. Compile C with GCC flags that generate `R_ARM_GOT_BREL` + `R_ARM_ABS32` relocations
+2. Wrap exported functions with assembly prologues
+3. Post-process ELF: build LOT, patch code, emit UDLM
 
-The critical uncertainty is: **what relocation types does Rust generate, and can they be mapped to udynlink's model?** This is answered in the sub-plan's Phase 0 (investigation spike).
+The Rust pipeline (new):
+1. Compile Rust with `-C relocation-model=static -C panic=abort -C codegen-units=1`
+2. Use custom linker script (code at 0x0, .data after, .bss after)
+3. Mark exports with `#[udynlink_export]` proc-macro (metadata in custom ELF section)
+4. Post-process with Python tool: handle MOVW/MOVT relocations, generate assembly prologues, emit UDLM
+5. Extended loader patches MOVW/MOVT instructions at load time
 
 **Sub-plan:** [`.opencode/plans/rust-module.md`](./rust-module.md)
 
@@ -107,7 +113,7 @@ udynlink/
 ## 7. Execution Order
 
 1. **Phase 0** (both paths): Read and validate this plan with user → refine → approve
-2. **Phase 1** (Rust Module): Investigation spike → standalone tool → proc-macro → first Rust module test
+2. **Phase 1** (Rust Module): Extend C loader for MOVW/MOVT → Python post-processor → proc-macro → first Rust module test
 3. **Phase 2** (Rust Host): FFI crate → safe wrapper → Rust host test loading C module
 4. **Phase 3** (Integration): Cross-test Rust host loading Rust module, cargo-udynlink, CI, docs
 
