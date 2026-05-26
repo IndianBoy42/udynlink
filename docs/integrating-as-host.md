@@ -38,7 +38,7 @@ Follow this checklist to integrate udynlink into your firmware:
 
 1. **Add libudynlink to your build** — as a CMake subdirectory, an installed package, or vendored source files.
 2. **Define compile-time constants** — `UDYNLINK_MAX_HANDLES`, `UDYNLINK_HOST_ARCH_TAG`, and `UDYNLINK_LOT_BASE_ADDR`.
-3. **Implement all external callbacks** — the 7 functions declared in `udynlink_externals.h`.
+3. **Implement all external callbacks** — the 8 functions declared in `udynlink_externals.h`.
 4. **Set up the LOT base address** before calling any module function (`udynlink_cpp_init()` sets it internally, so you only need to re-set it before other module calls).
 5. **Build a host symbol table** — decide how your firmware will resolve symbols requested by modules.
 6. **Write module loading/unloading code** — call `udynlink_load_module()`, manage handles, and call `udynlink_unload_module()` when done.
@@ -190,7 +190,7 @@ A `library.json` exists in the repository, but the version field may be outdated
 
 ## Implementing the External Callbacks
 
-These 7 functions form the integration contract between udynlink and your firmware. They are declared in `udynlink/udynlink_externals.h` and **must** be defined by your project. The linker will fail if any are missing.
+These 8 functions form the integration contract between udynlink and your firmware. They are declared in `udynlink/udynlink_externals.h` and **must** be defined by your project. The linker will fail if any are missing.
 
 ### a. `udynlink_external_is_pointer_in_ram`
 
@@ -405,6 +405,61 @@ udynlink_module_t *udynlink_external_get_module_handle(const char *module_name) 
 - You must maintain your own list of loaded modules. udynlink does not provide a global registry.
 - Return `NULL` if the dependency is missing; the loader will abort with `UDYNLINK_ERR_LOAD_MISSING_DEP`.
 - The dependency name is the exact string provided to `mkmodule --depends <name>` when the module was built.
+
+### h. `udynlink_external_is_module_loading`
+
+```c
+int udynlink_external_is_module_loading(const char *module_name);
+```
+
+**When it is called:** During `udynlink_load_module()` and `udynlink_load_module_from_stream()` when validating dependencies, immediately after `udynlink_external_get_module_handle()` returns `NULL`. The loader asks the host whether the missing dependency is currently in the middle of being loaded.
+
+**What it must do:** Return a non-zero value if a module with the given `module_name` is currently being loaded by the host (i.e., `udynlink_load_module` was called for it but has not yet completed). Return `0` if no such load is in progress.
+
+**Why it matters:** This callback enables detection of circular dependencies. If `mod_a` depends on `mod_b` and `mod_b` depends on `mod_a`, the loader will:
+1. Start loading `mod_a`
+2. See that `mod_b` is not yet loaded (`get_module_handle` returns `NULL`)
+3. Ask `is_module_loading("mod_b")` — if the host returns non-zero, the loader aborts with `UDYNLINK_ERR_LOAD_CIRCULAR_DEP`
+
+A weak default returning `0` is provided, so hosts that do not track load state are not required to implement this. However, without it, cross-module circular dependencies will only be detected when the missing dependency is finally looked up (resulting in `UDYNLINK_ERR_LOAD_MISSING_DEP`), not as a specific circular-dependency error.
+
+Self-dependencies (a module listing itself in `--depends`) are always detected and rejected with `UDYNLINK_ERR_LOAD_CIRCULAR_DEP` regardless of this callback.
+
+**Minimal implementation:**
+
+```c
+#define MAX_LOADING_MODULES 8
+
+static const char *g_loading_modules[MAX_LOADING_MODULES];
+static int g_loading_count = 0;
+
+void host_mark_loading(const char *name) {
+    if (g_loading_count < MAX_LOADING_MODULES)
+        g_loading_modules[g_loading_count++] = name;
+}
+
+void host_unmark_loading(const char *name) {
+    for (int i = 0; i < g_loading_count; i++) {
+        if (g_loading_modules[i] && !strcmp(g_loading_modules[i], name)) {
+            g_loading_modules[i] = NULL;
+            break;
+        }
+    }
+}
+
+int udynlink_external_is_module_loading(const char *module_name) {
+    for (int i = 0; i < g_loading_count; i++) {
+        if (g_loading_modules[i] && !strcmp(g_loading_modules[i], module_name))
+            return 1;
+    }
+    return 0;
+}
+```
+
+**Common pitfalls:**
+- The host must track which modules are *currently* loading, not which modules are already loaded. Use a separate list from the one used for `udynlink_external_get_module_handle`.
+- Remember to unmark a module when loading finishes (successfully or with an error), or stale entries will falsely trigger circular-dependency errors later.
+- This callback is only called after `get_module_handle` returns `NULL`. If the dependency is already loaded, this function is never invoked for that dependency.
 
 ---
 

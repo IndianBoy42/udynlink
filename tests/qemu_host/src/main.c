@@ -20,6 +20,23 @@
 static udynlink_module_t *g_modules[UDYNLINK_MAX_MODULES];
 static int g_module_count = 0;
 
+static const void *g_loading_addrs[UDYNLINK_MAX_MODULES];
+static int g_loading_count = 0;
+
+void udynlink_test_register_loading(const void *base_addr) {
+    if (g_loading_count < UDYNLINK_MAX_MODULES)
+        g_loading_addrs[g_loading_count++] = base_addr;
+}
+
+void udynlink_test_unregister_loading(const void *base_addr) {
+    for (int i = 0; i < g_loading_count; i++) {
+        if (g_loading_addrs[i] == base_addr) {
+            g_loading_addrs[i] = g_loading_addrs[--g_loading_count];
+            return;
+        }
+    }
+}
+
 void udynlink_test_register_module(udynlink_module_t *p_mod) {
     if (g_module_count < UDYNLINK_MAX_MODULES) {
         g_modules[g_module_count++] = p_mod;
@@ -82,6 +99,14 @@ udynlink_module_t *udynlink_external_get_module_handle(const char *module_name) 
             return g_modules[i];
     }
     return NULL;
+}
+
+int udynlink_external_is_module_loading(const char *module_name) {
+    for (int i = 0; i < g_loading_count; i++) {
+        const char *name = udynlink_get_module_name_from_image(g_loading_addrs[i]);
+        if (name && !strcmp(name, module_name)) return 1;
+    }
+    return 0;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

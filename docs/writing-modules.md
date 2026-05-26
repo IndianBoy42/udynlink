@@ -545,7 +545,7 @@ Source files are compiled with:
 | `--target <name>` | Target from the database. Default: `cortex-m4`. |
 | `--mcpu <cpu>` | Raw GCC `-mcpu` flag. Overrides the target's default. |
 | `--public-symbols func1,func2` | Comma-separated list of symbols to export and wrap. If omitted, all global symbols are exported. |
-| `--depends mod_a,mod_b` | Comma-separated list of dependency module names. The loader will enforce that these modules are already loaded. |
+| `--depends mod_a,mod_b` | Comma-separated list of dependency module names. The loader will enforce that these modules are already loaded. **Avoid circular dependencies** — they cannot load and will deadlock the reference counts. |
 | `-O <level>` | Optimization level: `0`, `s` (default, size), `2`, `3`, `z`. |
 | `--bin-name <path>` | Custom output path for the `.bin` file. Default is derived from the first source file. |
 | `--gen-c-header` | Generate a C header file containing the binary as a `static const unsigned char` array. |

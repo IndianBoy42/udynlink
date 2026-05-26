@@ -1,33 +1,47 @@
-# Plan: Circular Dependency Support for udynlink
+# Plan: Backwards-Compatible Circular Dependency Support
 
-## Current State Summary
+> **Status**: Phase 0 (detection & rejection) is **COMPLETE**. This plan describes the opt-in extension for hosts that need to load circular dependency graphs.
 
-The udynlink loader (ABI v2.0+) supports module dependency tracking:
+## Current State (As of Today)
 
-- **Declaration**: `mkmodule --depends mod_a,mod_b` encodes dependency names in the module header's `deps_strtab`.
-- **Runtime validation**: During `udynlink_load_module()`, the loader iterates over `num_deps` names and calls `udynlink_external_get_module_handle(name)`. If any dependency is not already loaded, the load fails with `UDYNLINK_ERR_LOAD_MISSING_DEP`.
-- **Reference counting**: On successful load, `dep_mod->dep_refcount++` is incremented. `udynlink_unload_module()` rejects unloading if `dep_refcount > 0`, and decrements refcounts of its own dependencies.
-- **Three-tier symbol resolution**: Critical host → dependency modules → fallback host.
+The loader already detects and **rejects** circular dependencies by default:
 
-**Key constraint**: The loader has **no global state** and no module table of its own. It relies entirely on host callbacks (`udynlink_external_get_module_handle`) to discover already-loaded modules.
+| Feature | Status | Details |
+|---------|--------|---------|
+| `UDYNLINK_ERR_LOAD_CIRCULAR_DEP` | ✅ Done | Error code added to enum |
+| Self-dependency detection | ✅ Always active | `strcmp` against current module name in `udynlink_load_module()` |
+| Cross-module cycle detection | ✅ Opt-in via host callback | `udynlink_external_is_module_loading()` weak callback; host overrides to enable |
+| `udynlink_get_module_deps()` | ✅ Done | Read-only header inspection helper (no loading required) |
+| Documentation | ✅ Done | Failure mode documented; circular deps discouraged |
+| Integration test | ✅ Done | `test-circular-deps` verifies self-dep rejection |
 
-## Revised Goal
+**Default behavior**: `udynlink_load_module()` fails with `UDYNLINK_ERR_LOAD_CIRCULAR_DEP` when a cycle is detected. This is the **recommended** behavior for most systems.
 
-**Allow circular dependencies to load successfully**, rather than rejecting them. The loader remains stateless; the host orchestrates load order. We provide:
+## Goal
 
-1. A **two-phase loading API** so the host can load all modules in a cycle first, then resolve their dependencies and extern symbols in a second pass.
-2. **Helper functions** to inspect a module's dependencies before loading, so the host can plan or detect cycles if it wants to.
-3. **Clear documentation** of the refcount implications of circular dependencies.
+Provide an **opt-in, backwards-compatible** two-phase loading path for advanced use cases where modules genuinely need mutual references. The default `udynlink_load_module()` remains strict.
 
-## Why Not Reject Cycles?
+## Design Principles
 
-In embedded systems, modules may legitimately need mutual interaction (e.g., a protocol stack module and a HAL module that call each other's exported functions). The cleanest architectural fix is a host-mediated pubsub channel, but udynlink should not prevent users from using direct mutual references if they choose to. The loader's job is to load safely; the host's job is to manage lifecycle.
+1. **Never break existing behavior.** `udynlink_load_module()` keeps rejecting cycles.
+2. **Opt-in via new API.** Two-phase loading is a separate code path that hosts must explicitly choose.
+3. **Loader stays stateless.** The host orchestrates load order and tracks state.
+4. **Refcount semantics are unchanged.** Circular deps still create un-unloadable modules. Document this clearly.
+5. **Minimal API surface.** Only add what's strictly necessary.
 
----
+## Proposed API
 
-## Proposed API Additions
+### Already Implemented (Phase 0)
 
-### 1. `udynlink_load_module_deferred()` — Phase 1 Load
+```c
+uint32_t udynlink_get_module_deps(const void *base_addr, const char **deps, uint32_t max_deps);
+```
+
+Hosts can use this today to inspect module headers before loading, build dependency graphs, and plan load order.
+
+### Phase 1: Two-Phase Loading (Deferred + Link)
+
+#### `udynlink_load_module_deferred()`
 
 ```c
 udynlink_error_t udynlink_load_module_deferred(
@@ -40,50 +54,30 @@ udynlink_error_t udynlink_load_module_deferred(
 ```
 
 **Behavior**: Identical to `udynlink_load_module()` **except**:
-- Skips dependency validation (does not call `udynlink_external_get_module_handle`).
-- Skips extern symbol resolution in the relocation loop.
-- Still performs all other steps: signature/version/arch checks, RAM allocation, section copying, BSS zeroing, **internal** relocations (internal/exported symbols only), and relocation-table bounds validation.
+- **No dependency validation** — does not call `udynlink_external_get_module_handle()`.
+- **No extern symbol resolution** — for `UDYNLINK_SYM_TYPE_EXTERN` relocations, writes `0` as a placeholder instead of resolving.
 - Sets `p_mod->num_deps = 0` and does not populate `p_mod->deps[]`.
 - Does not increment any `dep_refcount`.
+- Still performs: signature/version/arch validation, RAM allocation, section copying, BSS zeroing, internal relocations.
 
 **Error handling**: On failure, cleanup is identical to normal load (free RAM, zero handle).
 
-### 2. `udynlink_link_module()` — Phase 2 Link
+#### `udynlink_link_module()`
 
 ```c
 udynlink_error_t udynlink_link_module(udynlink_module_t *p_mod);
 ```
 
 **Behavior**:
-- Reads `num_deps` and dependency names from `p_mod->p_header`.
+- Reads dependency names from `p_mod->p_header`.
 - For each dependency name, calls `udynlink_external_get_module_handle(name)`.
-  - If NULL → `UDYNLINK_ERR_LOAD_MISSING_DEP` (dependency was not loaded in Phase 1).
+  - If NULL → `UDYNLINK_ERR_LOAD_MISSING_DEP`.
   - If found → stores handle in `p_mod->deps[]`, increments `dep_mod->dep_refcount`, increments `p_mod->num_deps`.
-- Re-runs the relocation loop (or re-scans only extern relocations) to resolve `UDYNLINK_SYM_TYPE_EXTERN` symbols.
+- Re-scans the relocation table and resolves `UDYNLINK_SYM_TYPE_EXTERN` symbols.
   - Resolution order: critical host → dependency modules → fallback host.
-  - Dependency modules are now guaranteed to be loaded, so their exported symbols are available.
+- **Idempotent**: If `p_mod->num_deps > 0` (already linked), returns `UDYNLINK_OK` immediately. This allows hosts to call `link_module()` on a mixed set of deferred and normally-loaded modules.
 
-**Important**: A module may be linked multiple times? No — linking should be idempotent or guarded. Better: linking should fail if `num_deps > 0` already (module already linked). Add a check: if `p_mod->num_deps > 0`, return `UDYNLINK_ERR_INVALID_MODULE` or `UDYNLINK_OK` (already linked). Decision needed.
-
-> **Recommendation**: Return `UDYNLINK_OK` if already linked, or `UDYNLINK_ERR_INVALID_MODULE` to catch misuse. The safer choice is `UDYNLINK_OK` (idempotent) since a host might call link on all modules in a loop, and some may already be linked from a previous batch.
-
-Actually, no — if a module was loaded normally (not deferred), it's already linked. A host that loads some normally and some deferred, then calls `udynlink_link_module()` on all of them, should not get an error for the normally-loaded ones. So `link_module()` should return `UDYNLINK_OK` for already-linked modules (or simply skip them).
-
-Wait, but `udynlink_load_module()` already does everything including linking. We don't want `link_module()` to re-resolve externs for normally-loaded modules (that would be harmless but redundant). Simpler: `link_module()` only works on modules where `num_deps == 0` and the header says `num_deps > 0` (deferred load). If `num_deps > 0` already, return `UDYNLINK_OK` with a debug log. If `num_deps == 0` and header says `num_deps == 0`, also return `UDYNLINK_OK` (no deps to link).
-
-### 3. `udynlink_get_module_deps()` — Pre-Load Inspection Helper
-
-```c
-// Reads dependency names from a module image without loading it.
-// Returns the number of dependencies (0 if none, v1.0 module, or error).
-// Writes up to max_deps pointers into the deps array.
-// The returned pointers point into the module image's string table and are valid as long as base_addr is valid.
-uint32_t udynlink_get_module_deps(const void *base_addr, const char **deps, uint32_t max_deps);
-```
-
-**Use case**: Host reads all module headers, builds a dependency graph, detects cycles if desired, and decides load order. The loader remains stateless; the helper is pure read-only header parsing.
-
-### 4. Streaming Variant
+#### Streaming Variant
 
 ```c
 udynlink_error_t udynlink_load_module_from_stream_deferred(
@@ -97,15 +91,13 @@ udynlink_error_t udynlink_load_module_from_stream_deferred(
 );
 ```
 
-Same deferred semantics: skip dep validation and extern resolution. Still copies data, applies internal relocations, zeros BSS.
+Same deferred semantics as the memory-path variant.
 
-### 5. Optional: `udynlink_analyze_deps()` — Host Convenience
+### Phase 2: Convenience Helpers (Optional)
+
+#### `udynlink_analyze_deps()`
 
 ```c
-// Given an array of module base addresses, inspect each header and build a dependency graph.
-// If load_order_out is non-NULL, fills it with a topological sort order (indices into base_addrs).
-// If a cycle is detected, returns UDYNLINK_ERR_LOAD_CIRCULAR_DEP and load_order_out is undefined.
-// This is a pure helper; it does not load anything.
 udynlink_error_t udynlink_analyze_deps(
     const void **base_addrs,
     uint32_t count,
@@ -114,132 +106,211 @@ udynlink_error_t udynlink_analyze_deps(
 );
 ```
 
-**Algorithm**: Stack-only Kahn's topological sort or DFS. Uses `udynlink_get_module_deps()` to read edges. Bounded by `count * UDYNLINK_MAX_DEPS` edges. No heap allocation. Returns `UDYNLINK_OK` for acyclic graphs, `UDYNLINK_ERR_LOAD_CIRCULAR_DEP` if cycle found.
+Stack-only topological sort / cycle detection using `udynlink_get_module_deps()`. Returns `UDYNLINK_OK` with a load order for acyclic graphs, or `UDYNLINK_ERR_LOAD_CIRCULAR_DEP` if a cycle is found. Pure helper — does not load anything.
 
-**Note**: This is strictly optional. The host can implement its own graph logic. But providing a small, correct, stack-only implementation improves portability and reduces host-side bugs.
+**Why this is Phase 2**: Hosts can build their own graph logic. This is a nice-to-have for portability.
 
 ---
 
-## Decision Points
+## Backwards Compatibility Analysis
 
-| # | Decision | Options | Recommendation |
-|---|----------|---------|----------------|
-| D1 | `link_module()` idempotency | (a) Error if already linked, (b) OK/skip if already linked | **(b)** — host may call link on mixed set of deferred and normal modules |
-| D2 | Streaming deferred variant | (a) New function, (b) Add flags parameter to existing function | **(a)** — keeps existing API stable, new function mirrors existing streaming API pattern |
-| D3 | `udynlink_analyze_deps()` scope | (a) Include in plan, (b) Skip — let host do its own graph logic | **(a)** — small convenience helper, ~150 lines, improves embedded portability |
-| D4 | Error code for cycle in analyzer | (a) Reuse `UDYNLINK_ERR_LOAD_CIRCULAR_DEP`, (b) New `UDYNLINK_ERR_CIRCULAR_DEP` | **(a)** — single error code is simpler. Add it to the enum even if the loader never emits it directly (analyzer does). |
+| Aspect | Before | After Phase 1 | After Phase 2 |
+|--------|--------|---------------|---------------|
+| `udynlink_load_module()` | Rejects cycles | **Unchanged** — still rejects cycles | **Unchanged** |
+| `udynlink_load_module_from_stream()` | Rejects cycles | **Unchanged** — still rejects cycles | **Unchanged** |
+| Error codes | `MISSING_DEP` for all missing deps | `CIRCULAR_DEP` for detected cycles (already done) | **Unchanged** |
+| Host callbacks | 7 required | **Unchanged** — `is_module_loading` is still optional/weak | **Unchanged** |
+| `dep_refcount` semantics | Incremented on load | **Unchanged** — deferred load skips it; `link_module()` adds it | **Unchanged** |
+| Existing tests | All pass | All pass + new deferred-load tests | All pass + new analyzer tests |
+
+**Guarantee**: No existing host firmware needs to change. The new APIs are strictly additive.
+
+---
+
+## Migration Path for Hosts
+
+### Stage 0: Today (No Changes Needed)
+
+Use `udynlink_load_module()` as always. Circular deps are rejected. If you need to plan load order, use `udynlink_get_module_deps()` to inspect module headers first.
+
+### Stage 1: Adopting Two-Phase Loading (Opt-In)
+
+For a circular pair `mod_a ↔ mod_b`:
+
+```c
+// 1. Deferred load both (no dep checks, no extern resolution)
+udynlink_load_module_deferred(&mod_a, mod_a_image, NULL, 0, UDYNLINK_LOAD_MODE_COPY_ALL);
+udynlink_host_register_module(&mod_a);  // make findable by get_module_handle
+
+udynlink_load_module_deferred(&mod_b, mod_b_image, NULL, 0, UDYNLINK_LOAD_MODE_COPY_ALL);
+udynlink_host_register_module(&mod_b);  // make findable by get_module_handle
+
+// 2. Link both (resolves deps and extern symbols)
+udynlink_link_module(&mod_a);
+udynlink_link_module(&mod_b);
+```
+
+**Important**: Both modules must be deferred-loaded **and** registered in the host's module table before either is linked. If `mod_a` is linked before `mod_b` is registered, `get_module_handle("mod_b")` will return NULL and linking fails.
+
+### Stage 2: Mixed Normal + Deferred Loads
+
+You can load some modules normally and some deferred in the same system, as long as dependency directionality is respected:
+
+```c
+// Normal load: provider must not depend on deferred modules
+udynlink_load_module(&provider, provider_image, NULL, 0, UDYNLINK_LOAD_MODE_COPY_ALL);
+udynlink_host_register_module(&provider);
+
+// Deferred load: consumer can depend on provider (already loaded)
+// But if consumer also has a circular dep on another deferred module,
+// that other module must also be deferred-loaded and registered first.
+```
+
+### Stage 3: Using `udynlink_analyze_deps()` (If Implemented)
+
+```c
+const void *images[] = {mod_a_image, mod_b_image, mod_c_image};
+uint32_t order[3];
+uint32_t order_count;
+
+udynlink_error_t err = udynlink_analyze_deps(images, 3, order, &order_count);
+if (err == UDYNLINK_ERR_LOAD_CIRCULAR_DEP) {
+    // Graph has a cycle. Decide: reject, or use deferred loading.
+}
+
+// Load in the returned order (acyclic case)
+for (uint32_t i = 0; i < order_count; i++) {
+    udynlink_load_module(&mods[i], images[order[i]], NULL, 0, UDYNLINK_LOAD_MODE_COPY_ALL);
+}
+```
 
 ---
 
 ## Task Breakdown
 
-### Phase 1: Core Two-Phase Loading
+### Phase 0: Detection & Rejection (COMPLETE)
 
-| Task | Description | Agent | Deliverable |
-|------|-------------|-------|-------------|
-| **1.1** | Implement `udynlink_load_module_deferred()` in `udynlink.c` | `agent` | New function, ~60% duplicate of `udynlink_load_module()` — refactor shared logic into static helpers to avoid duplication |
-| **1.2** | Implement `udynlink_link_module()` in `udynlink.c` | `agent` | New function: dep validation + extern resolution. Handles already-linked modules gracefully. |
-| **1.3** | Implement `udynlink_load_module_from_stream_deferred()` in `udynlink.c` | `agent` | New function, mirrors streaming path with deferred semantics |
-| **1.4** | Implement `udynlink_get_module_deps()` in `udynlink.c` | `quick` | Read-only helper, ~30 lines |
-| **1.5** | Add new error code `UDYNLINK_ERR_LOAD_CIRCULAR_DEP` to `udynlink.h` | `quick` | One line in error enum |
-| **1.6** | Add public declarations to `udynlink.h` | `quick` | Declarations for all 4 new functions |
-| **1.7** | Update test host (`tests/qemu_host/src/main.c`) to support deferred loading in registry | `quick` | Ensure deferred-loaded modules can be found via `udynlink_external_get_module_handle()` before linking |
-| **1.8** | End-to-end test: new `test-circular-deps/` | `agent` | Test with circular A↔B and acyclic A→B→C graphs, all load modes, -O0 and -Os |
+| Task | Status | Commit |
+|------|--------|--------|
+| Add `UDYNLINK_ERR_LOAD_CIRCULAR_DEP` | ✅ Done | Already in tree |
+| Add `udynlink_external_is_module_loading()` callback | ✅ Done | Already in tree |
+| Wire checks into memory + streaming load paths | ✅ Done | Already in tree |
+| Update test host with loading-state tracking | ✅ Done | Already in tree |
+| Add self-dependency detection | ✅ Done | Already in tree |
+| Create `test-circular-deps` integration test | ✅ Done | Already in tree |
+| Update documentation | ✅ Done | Already in tree |
 
-### Phase 2: Convenience Helper (Optional but Recommended)
+### Phase 1: Two-Phase Loading API
 
-| Task | Description | Agent | Deliverable |
-|------|-------------|-------|-------------|
-| **2.1** | Implement `udynlink_analyze_deps()` | `agent` | Stack-only topological sort / cycle detection. ~150 lines. |
-| **2.2** | Test `udynlink_analyze_deps()` in QEMU test | `agent` | Verify cycle detection and topological order for known graphs |
+| Task | Description | Agent | Notes |
+|------|-------------|-------|-------|
+| **1.1** | Refactor shared load logic into static helpers | `agent` | Extract validation, RAM alloc, copy, internal relocations so `load_module` and `load_module_deferred` share code |
+| **1.2** | Implement `udynlink_load_module_deferred()` | `agent` | Uses shared helpers; skips dep validation and extern resolution |
+| **1.3** | Implement `udynlink_link_module()` | `agent` | Dep validation + extern resolution; idempotent for already-linked modules |
+| **1.4** | Implement `udynlink_load_module_from_stream_deferred()` | `agent` | Mirrors streaming path with deferred semantics |
+| **1.5** | Add public declarations to `udynlink.h` | `quick` | All 3 new functions |
+| **1.6** | Add deferred-load wrappers to test host | `quick` | `test_load_module_deferred()` that registers in host table |
+| **1.7** | Create `test-circular-deps-deferred` integration test | `agent` | Load circular A↔B via deferred + link; verify both modules work; all load modes, -O3/-Os |
+| **1.8** | CI verification | `agent` | All existing tests pass + new deferred test passes |
 
-### Phase 3: Documentation
+### Phase 2: Convenience Helpers (Optional)
 
-| Task | Description | Agent | Deliverable |
-|------|-------------|-------|-------------|
-| **3.1** | Update README / docs with circular dep loading pattern | `quick` | Document: Phase 1 deferred → register → Phase 2 link. Document refcount trap. |
-| **3.2** | Update `AGENTS.md` or codemap with new API | `quick` | Reference new functions and loading pattern |
-| **3.3** | CI verification | `agent` | All existing tests pass + new circular dep test passes |
+| Task | Description | Agent | Notes |
+|------|-------------|-------|-------|
+| **2.1** | Implement `udynlink_analyze_deps()` | `agent` | Stack-only Kahn's sort. ~150 lines. Pure helper. |
+| **2.2** | Add test for `udynlink_analyze_deps()` | `agent` | Verify topological order and cycle detection |
+| **2.3** | Update documentation with `analyze_deps` usage | `quick` | Add to docs/how-it-works.md and api-reference.md |
+
+### Phase 3: Documentation Updates
+
+| Task | Description | Agent | Notes |
+|------|-------------|-------|-------|
+| **3.1** | Document two-phase loading in `docs/how-it-works.md` | `quick` | Show the deferred → register → link pattern |
+| **3.2** | Document `udynlink_load_module_deferred()` in `docs/api-reference.md` | `quick` | Semantics, parameters, error codes |
+| **3.3** | Document `udynlink_link_module()` in `docs/api-reference.md` | `quick` | Semantics, idempotency, refcount side effects |
+| **3.4** | Document `udynlink_load_module_from_stream_deferred()` in `docs/api-reference.md` | `quick` | Streaming variant |
+| **3.5** | Add migration guide to `docs/integrating-as-host.md` | `quick` | Stage 0 → Stage 1 → Stage 2 |
+| **3.6** | Update `AGENTS.md` roadmap | `quick` | Mark two-phase loading as in-progress |
+
+---
+
+## Critical Design Decisions
+
+| # | Decision | Rationale |
+|---|----------|-----------|
+| D1 | Separate functions vs flags parameter | **Separate functions** (`_deferred` suffix). Keeps existing API signatures stable. No risk of breaking ABI or existing callers. |
+| D2 | `link_module()` idempotency | **Return `UDYNLINK_OK` for already-linked modules**. Hosts may call it on mixed sets of deferred and normal modules. |
+| D3 | Extern placeholder in deferred load | **Write `0`**. Safer than leaving garbage; signals "not yet linked" if accidentally called. |
+| D4 | Refcount in deferred load | **Do not increment**. Deferred modules are "invisible" as dependencies until linked. This allows hosts to abort a batch without leaving dangling refcounts. |
+| D5 | Streaming deferred variant | **Add as separate function**. Matches existing pattern (`load_module` / `load_module_from_stream`). |
+| D6 | `analyze_deps()` scope | **Phase 2, optional**. Not required for correctness. Hosts can build their own logic. |
 
 ---
 
 ## Context Guide for Implementation Agents
 
-### Key Files
+### Existing Code to Leverage
 
-| File | Relevance | Key Lines |
-|------|-----------|-----------|
-| `udynlink/udynlink.h` | Error codes (line 156), module struct (line 98), public API | Add declarations after existing load functions |
-| `udynlink/udynlink.c` | Core loader | `udynlink_load_module()` (line 252), `udynlink_load_module_from_stream()` (line 606), dependency block (305-336), extern resolution (426-450) |
-| `udynlink/udynlink_externals.h` | Host callbacks | No new callbacks needed! Existing `udynlink_external_get_module_handle` is sufficient. |
-| `tests/qemu_host/src/main.c` | Test host registry | `g_modules[]` (line 20), `udynlink_external_get_module_handle()` (line 77) |
-| `tests/test-deps/` | Existing dependency test | Reference for `--depends` test harness |
+| File | What to Reuse |
+|------|---------------|
+| `udynlink/udynlink.c` | `get_deps_strtab()`, `get_deps_strtab_offset()`, `get_code_offset_from_header()`, `get_header_size()` — already compute header layout correctly |
+| `udynlink/udynlink.c` | Relocation loop pattern in `udynlink_load_module()` (lines ~370-450) — copy and filter for EXTERN-only in `link_module()` |
+| `udynlink/udynlink.c` | Dependency validation loop (lines ~305-350) — reuse essentially verbatim in `link_module()` |
+| `tests/qemu_host/src/main.c` | `g_modules[]` registry pattern — `test_load_module_deferred()` should register immediately so `link_module()` can find deps |
 
-### Critical Design Constraints
+### Refactoring Strategy for Shared Load Logic
 
-1. **Do not add global state to the loader.** The deferred/link split keeps the loader stateless. The host decides when to link.
-2. **Refactor, don't copy-paste.** `udynlink_load_module()` and `udynlink_load_module_deferred()` share ~80% of their logic (signature checks, RAM allocation, copy, internal relocations). Extract shared helpers:
-   - `validate_and_setup_header(p_mod, p_header, load_mode)` — signature, version, arch, header field validation
-   - `allocate_ram(p_mod, p_header, load_addr, load_size, load_mode)` — RAM size computation and allocation
-   - `copy_sections(p_mod, p_header, base_addr, load_mode)` — memcpy logic for COPY_ALL / COPY_TEXT_DATA / XIP
-   - `apply_internal_relocations(p_mod, p_header)` — relocation loop but only for INTERNAL/EXPORTED symbols
-   - `resolve_extern_relocations(p_mod, p_header)` — relocation loop but only for EXTERN symbols (used by `link_module`)
-   
-   However, be careful: the relocation loop in `udynlink_load_module()` is a single loop that handles all symbol types. Splitting it cleanly might require iterating over the relocation table twice (once for internal/exported, once for extern). That's acceptable for deferred/link since `link_module` only needs to process externs.
-
-   **Better approach**: Keep the relocation loop as-is but parameterize it with a callback or symbol-type filter. Or, simpler: in deferred load, process all relocations but for EXTERN symbols, skip resolution (leave LOT/data entry as 0 or unmodified). In `link_module()`, re-scan only EXTERN relocations and resolve them.
-
-   Wait — can we skip extern relocations in deferred load? The relocation table says "at this lot_offset/data_offset, write the address of this extern symbol." If we skip it, the slot contains garbage (whatever was in the module image). We should probably write 0 as a placeholder, or leave it as-is (it will be overwritten in link). Leaving it as-is is fine if the host guarantees not to call module functions before linking. Writing 0 is safer.
-
-   **Recommendation**: In deferred load, for EXTERN relocations, write `0` to `p_rel_location` and skip the resolution. This prevents accidental use of unlinked extern symbols. In `link_module()`, re-scan all relocations and for EXTERN symbols, perform full resolution.
-
-3. **`link_module()` must handle the fact that `p_mod->p_header` might be in RAM (COPY_ALL mode) or flash (XIP / COPY_TEXT_DATA).** It only reads the header and relocation table, which is safe in all modes.
-
-4. **Streaming deferred load**: Similar to memory path — read all metadata and data, apply internal relocations, write 0 for extern relocations. Skip dep validation.
-
-5. **Test host registry**: The test host currently registers modules in `test_load_module()` *after* `udynlink_load_module()` succeeds. For deferred loading, the host test helper should provide a `test_load_module_deferred()` that also registers immediately after deferred load, so that `link_module()` can find dependencies.
-
-### Example: Loading a Circular Pair
+The current `udynlink_load_module()` is a single long function. Extract these static helpers:
 
 ```c
-// Host has discovered mod_a and mod_b images
-// Both declare --depends on each other
+// 1. Header validation (signature, version, arch, bounds)
+static udynlink_error_t validate_header(const udynlink_module_header_t *p_header);
 
-udynlink_module_t mod_a, mod_b;
+// 2. RAM allocation + ownership flag setup
+static udynlink_error_t setup_ram(udynlink_module_t *p_mod, const udynlink_module_header_t *p_header, void *load_addr, uint32_t load_size, udynlink_load_mode_t load_mode);
 
-// Phase 1: Deferred load both
-udynlink_load_module_deferred(&mod_a, mod_a_image, NULL, 0, UDYNLINK_LOAD_MODE_COPY_ALL);
-udynlink_test_register_module(&mod_a);  // make it findable
-udynlink_load_module_deferred(&mod_b, mod_b_image, NULL, 0, UDYNLINK_LOAD_MODE_COPY_ALL);
-udynlink_test_register_module(&mod_b);  // make it findable
+// 3. Copy header/code/data based on load mode
+static void copy_module_sections(udynlink_module_t *p_mod, const void *base_addr, const udynlink_module_header_t *p_header, udynlink_load_mode_t load_mode);
 
-// Phase 2: Link both (order doesn't matter for exported-only mutual refs)
-udynlink_link_module(&mod_a);
-udynlink_link_module(&mod_b);
-
-// Both are now fully operational
-// NOTE: mod_a->dep_refcount == 1, mod_b->dep_refcount == 1
-// Individual unload will fail until both are explicitly unloaded together
-// (or a future cycle-break API is used)
+// 4. Relocation loop with a symbol-type filter
+// 'resolve_extern' = false for deferred load (write 0 for EXTERN)
+// 'resolve_extern' = true for normal load (full resolution)
+static udynlink_error_t apply_relocations(udynlink_module_t *p_mod, const udynlink_module_header_t *p_header, int resolve_extern);
 ```
 
-### Refcount Implications
+Then:
+- `udynlink_load_module()` = `validate_header` → `setup_ram` → `copy_sections` → `apply_relocations(p_mod, p_header, 1)` → dep validation
+- `udynlink_load_module_deferred()` = `validate_header` → `setup_ram` → `copy_sections` → `apply_relocations(p_mod, p_header, 0)` → skip dep validation
+- `udynlink_link_module()` = dep validation → `apply_relocations(p_mod, p_header, 1)` (but only for EXTERN symbols; internal/exported already done)
 
-After linking a circular dependency:
-- Every module in the cycle has `dep_refcount >= 1` (from at least one other module in the cycle).
-- `udynlink_unload_module()` will return `UDYNLINK_ERR_MODULE_HAS_DEPENDENTS` for every module in the cycle.
-- **This is by design.** The cycle represents a mutual obligation; none can be safely unloaded while the others remain because their symbol tables are referenced.
-- **Host strategy**: If the host wants to tear down a circular group, it must either:
-  1. Unload all modules in the group simultaneously (future API).
-  2. Break the cycle first by having one module deregister its exported symbols (host-mediated).
-  3. Use a refcount-weak dependency model (not implemented; would require distinguishing strong vs weak deps).
+**Important**: `apply_relocations` with `resolve_extern=0` must still write a placeholder (0) to EXTERN relocation slots so the memory is in a known state.
 
-Document this clearly. Do not attempt to solve automatic circular unloading now.
+### Testing the Deferred Path
+
+The `test-circular-deps-deferred` test should:
+1. Build `mod_a.c` with `--depends mod_b`
+2. Build `mod_b.c` with `--depends mod_a`
+3. In `test_qemu.c`:
+   - Deferred load A, register in host table
+   - Deferred load B, register in host table
+   - Link A, link B
+   - Verify `run_test_func()` works on both modules (call exported functions)
+   - Verify `dep_refcount` on both is 1
+   - Verify `udynlink_unload_module()` fails with `UDYNLINK_ERR_MODULE_HAS_DEPENDENTS` for both
+   - Print `*** TEST OK ***`
+
+### Pitfalls
+
+1. **Do not change `udynlink_load_module()` behavior.** The existing strict path must remain untouched except for the static helper extraction.
+2. **`link_module()` must not re-apply internal/exported relocations.** Those were already done in deferred load. Only scan for EXTERN symbols.
+3. **The test host's `udynlink_external_get_module_handle()` must find deferred-loaded modules.** `test_load_module_deferred()` should register in `g_modules[]` immediately after deferred load succeeds, just like `test_load_module()` does after normal load.
+4. **Placeholder 0 for EXTERN relocations**: If a deferred-loaded module is accidentally called before linking, it will dereference a null function pointer (LOT entry = 0). This is a clean crash, not a jump to random memory. Acceptable for a power-user API.
 
 ---
 
 ## Open Questions
 
-1. Should `udynlink_link_module()` write a debug log when it skips an already-linked module?
-2. Should `udynlink_load_module_deferred()` accept a new `udynlink_load_mode_t` value, or should we add a separate `uint32_t flags` parameter to the load API? (Current plan: new function, no flags — simplest and most backward-compatible.)
-3. Should `udynlink_analyze_deps()` be in Phase 1 (core) or Phase 2 (convenience)? Recommendation: Phase 2, since it's a nice-to-have and not required for correctness.
+1. **Should `udynlink_link_module()` emit a debug log when it skips an already-linked module?** Low priority — a single `UDYNLINK_DEBUG_INFO` line is fine.
+2. **Should we add a `udynlink_unlink_module()` to reverse `link_module()` without unloading?** This would enable breaking cycles by decrementing refcounts and zeroing deps. Could be useful for graceful teardown. **Recommendation**: Defer to a future plan. Not needed for initial two-phase support.
+3. **Should `udynlink_analyze_deps()` also report the cycle path?** (e.g., which modules form the cycle). **Recommendation**: No — keep the helper minimal. Returning the error code is sufficient; hosts can do their own DFS if they need the exact path.
+

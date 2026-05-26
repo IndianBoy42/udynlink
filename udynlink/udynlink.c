@@ -4,6 +4,11 @@
 #include <stdint.h>
 #include <stdarg.h>
 
+__attribute__((weak))
+int udynlink_external_is_module_loading(const char *module_name) {
+    (void)module_name;
+    return 0;
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // Local macros and data
@@ -324,6 +329,21 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
             }
             udynlink_module_t *dep_mod = udynlink_external_get_module_handle(dep_str);
             if (dep_mod == NULL) {
+                const char *mod_name = udynlink_get_module_name(p_mod);
+                if (mod_name && !strcmp(dep_str, mod_name)) {
+                    UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR,
+                        "Circular dependency detected: module '%s' depends on itself\n",
+                        mod_name);
+                    res = UDYNLINK_ERR_LOAD_CIRCULAR_DEP;
+                    goto exit;
+                }
+                if (udynlink_external_is_module_loading(dep_str)) {
+                    UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR,
+                        "Circular dependency detected: module '%s' depends on '%s' which is currently loading\n",
+                        mod_name ? mod_name : "(unknown)", dep_str);
+                    res = UDYNLINK_ERR_LOAD_CIRCULAR_DEP;
+                    goto exit;
+                }
                 UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, "Dependency '%s' not found\n", dep_str);
                 res = UDYNLINK_ERR_LOAD_MISSING_DEP;
                 goto exit;
@@ -671,6 +691,21 @@ udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
             if (dep_name[0] == '\0') { res = UDYNLINK_ERR_LOAD_MISSING_DEP; goto exit; }
             udynlink_module_t *dep_mod = udynlink_external_get_module_handle(dep_name);
             if (dep_mod == NULL) {
+                const char *mod_name = udynlink_get_module_name_from_image(&header);
+                if (mod_name && !strcmp(dep_name, mod_name)) {
+                    UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR,
+                        "Circular dependency detected: module '%s' depends on itself\n",
+                        mod_name);
+                    res = UDYNLINK_ERR_LOAD_CIRCULAR_DEP;
+                    goto exit;
+                }
+                if (udynlink_external_is_module_loading(dep_name)) {
+                    UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR,
+                        "Circular dependency detected: module '%s' depends on '%s' which is currently loading\n",
+                        mod_name ? mod_name : "(unknown)", dep_name);
+                    res = UDYNLINK_ERR_LOAD_CIRCULAR_DEP;
+                    goto exit;
+                }
                 UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, "Dependency '%s' not found\n", dep_name);
                 res = UDYNLINK_ERR_LOAD_MISSING_DEP;
                 goto exit;

@@ -669,9 +669,19 @@ if (p_mod->dep_refcount > 0)
 
 When a module is unloaded, the loader decrements the `dep_refcount` of all its dependencies. This prevents a host from accidentally unloading a shared library module while other modules still reference its symbols.
 
-### Circular Dependency Detection
+### Circular Dependencies
 
-Circular dependency detection is **not yet implemented** (marked TODO in the codebase). Host firmware should avoid creating circular dependency chains.
+Circular dependencies are **not supported** and should be avoided. If `mod_a` depends on `mod_b` and `mod_b` depends on `mod_a`, neither can load because each requires the other to already be loaded.
+
+**What happens:**
+- `mod_a` tries to load → loader looks for `mod_b` → not loaded yet → `UDYNLINK_ERR_LOAD_MISSING_DEP`
+- `mod_b` tries to load → loader looks for `mod_a` → not loaded yet → `UDYNLINK_ERR_LOAD_MISSING_DEP`
+
+Both modules fail with the same generic error. In addition, even if modules were somehow loaded (e.g., via a host-mediated mechanism), the reference-counting unload protection means modules in a cycle can **never be individually unloaded** because each module's `dep_refcount` would remain ≥ 1.
+
+**Recommendation:** Use a host-mediated pubsub channel, event queue, or callback registration system instead of direct mutual module references. This keeps module dependencies acyclic and the loader simple.
+
+**Detection:** If the host tracks which modules are currently loading, the loader can detect cycles via `udynlink_external_is_module_loading()`. A module depending on itself (self-dependency) is always detected and rejected with `UDYNLINK_ERR_LOAD_CIRCULAR_DEP` regardless of host support.
 
 ---
 

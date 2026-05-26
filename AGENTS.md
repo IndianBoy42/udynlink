@@ -232,7 +232,7 @@ QEMU's `microbit` machine does not properly load ELF files via `-kernel` at `0x0
 - ~~**`UDYNLINK_MAKE_VERSION` macro is broken**~~ — Fixed. Both shift by 8.
 - ~~**Version fields still commented out**~~ — Fixed. Header now includes `mod_version`, `udynlink_version`, `arch_tag`.
 - **No thread safety** — `module_table` is a bare static array with no locking. Cortex-M targets often use interrupts; concurrent load/unload from different interrupt levels will corrupt state.
-- ~~**Module unload doesn't verify dependents**~~ — Fixed. Dependency tracking via `dep_refcount` prevents unloading a module that has active dependents. Circular dependency detection is still TODO.
+- ~~**Module unload doesn't verify dependents**~~ — Fixed. Dependency tracking via `dep_refcount` prevents unloading a module that has active dependents. Self-dependency (a module depending on itself) is always detected and rejected with `UDYNLINK_ERR_LOAD_CIRCULAR_DEP`. Cross-module circular dependency detection requires the host to implement `udynlink_external_is_module_loading()`.
 - ~~**`0x20000000` is hardcoded**~~ — Fixed. Configurable via `UDYNLINK_LOT_BASE_ADDR` macro.
 - ~~**`UDYNLINK_MAX_HANDLES` defaults to 1**~~ — Fixed. Now requires explicit definition (`#error` if unset).
 - **M3/M0 QEMU hosts have Flash→RAM call quirk** — Modules calling host functions (e.g. `printf`) hang under `qemu-system-gnuarmeclipse` for STM32F103/STM32F051 boards, but work correctly on STM32F429. This is a known `qemu-system-gnuarmeclipse` emulation bug; mainline QEMU (`qemu-system-arm`) does **not** exhibit this issue.

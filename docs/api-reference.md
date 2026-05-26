@@ -244,9 +244,10 @@ Error codes returned by loader functions.
 | `10` | `UDYNLINK_ERR_LOAD_VERSION_MISMATCH` | The module's `udynlink_version` is greater than the loader's `UDYNLINK_LOADER_ABI_VERSION`. |
 | `11` | `UDYNLINK_ERR_LOAD_ARCH_MISMATCH` | The module's `arch_tag` is incompatible with the host (different core family or stricter float ABI). |
 | `12` | `UDYNLINK_ERR_LOAD_MISSING_DEP` | A declared dependency was not found, the dependency string table is missing, or `num_deps > UDYNLINK_MAX_DEPS`. |
-| `13` | `UDYNLINK_ERR_LOAD_IO_ERROR` | A streaming read operation failed (returned `-1` or short count). |
-| `14` | `UDYNLINK_ERR_MODULE_HAS_DEPENDENTS` | `udynlink_unload_module` was called on a module that other loaded modules still depend on. |
-| `15` | `UDYNLINK_ERR_INVALID_MODULE` | A `NULL` module pointer was passed, or the module handle is uninitialized. |
+| `13` | `UDYNLINK_ERR_LOAD_CIRCULAR_DEP` | A circular dependency was detected: a module depends on itself, or the host reported a dependency is already being loaded via `udynlink_external_is_module_loading()`. |
+| `14` | `UDYNLINK_ERR_LOAD_IO_ERROR` | A streaming read operation failed (returned `-1` or short count). |
+| `15` | `UDYNLINK_ERR_MODULE_HAS_DEPENDENTS` | `udynlink_unload_module` was called on a module that other loaded modules still depend on. |
+| `16` | `UDYNLINK_ERR_INVALID_MODULE` | A `NULL` module pointer was passed, or the module handle is uninitialized. |
 
 ---
 
@@ -886,3 +887,19 @@ Looks up a loaded module by its name string.
 **Semantics:** Must search the host's module registry and return the matching `udynlink_module_t *`, or `NULL` if not found. The host is responsible for tracking loaded modules (e.g., in a static array or linked list).
 
 **Note:** The eh2k fork allows multiple instances of the same module name; this callback should return **any** matching instance for dependency resolution.
+
+---
+
+### `udynlink_external_is_module_loading`
+
+```c
+int udynlink_external_is_module_loading(const char *module_name);
+```
+
+Checks whether a module is currently in the middle of being loaded.
+
+**Called by:** `udynlink_load_module` and `udynlink_load_module_from_stream` during dependency validation, immediately after `udynlink_external_get_module_handle` returns `NULL` for a missing dependency.
+
+**Semantics:** Must return a non-zero value if the host has an in-progress load for the named module, and `0` otherwise. A weak default returning `0` is provided. Hosts that track load state can override this to enable cross-module circular dependency detection.
+
+**Note:** Self-dependencies (a module depending on itself) are always detected and rejected with `UDYNLINK_ERR_LOAD_CIRCULAR_DEP` regardless of this callback.

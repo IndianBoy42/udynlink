@@ -155,6 +155,21 @@ uint32_t udynlink_external_resolve_critical_symbol(const char *name);
 struct _udynlink_module_t *udynlink_external_get_module_handle(const char *module_name);
 
 /**
+ * @brief Check if a module is currently being loaded.
+ *
+ * Called during dependency validation. If a module declares a dependency
+ * on a module that is already in the middle of being loaded, a circular
+ * dependency exists.
+ *
+ * @param module_name Null-terminated module name.
+ * @return Non-zero if a load for this module name is in progress, 0 otherwise.
+ *
+ * @note A weak default returning 0 is provided. Hosts that track load
+ *       state can override this to enable cycle detection.
+ */
+int udynlink_external_is_module_loading(const char *module_name);
+
+/**
  * @brief Maximum number of concurrently loaded modules.
  *
  * Must be defined by the host project before including this header

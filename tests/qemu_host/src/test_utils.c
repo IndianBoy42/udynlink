@@ -1,6 +1,8 @@
 #include "udynlink.h"
 #include <stdio.h>
 
+extern void udynlink_test_register_loading(const void *base_addr);
+extern void udynlink_test_unregister_loading(const void *base_addr);
 extern void udynlink_test_register_module(udynlink_module_t *p_mod);
 extern void udynlink_test_unregister_module(udynlink_module_t *p_mod);
 
@@ -58,9 +60,13 @@ int run_test_func(const udynlink_module_t *p_mod) {
 }
 
 udynlink_error_t test_load_module(udynlink_module_t *p_mod, const void *base_addr, void *load_addr, uint32_t load_size, udynlink_load_mode_t load_mode) {
+    udynlink_test_register_loading(base_addr);
     udynlink_error_t err = udynlink_load_module(p_mod, base_addr, load_addr, load_size, load_mode);
     if (err == UDYNLINK_OK) {
+        udynlink_test_unregister_loading(base_addr);
         udynlink_test_register_module(p_mod);
+    } else {
+        udynlink_test_unregister_loading(base_addr);
     }
     return err;
 }
