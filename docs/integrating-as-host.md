@@ -788,7 +788,7 @@ The work buffer is a scratch area used by the streaming loader for temporary rea
 To find the optimal size for a single-shot metadata read:
 
 ```c
-uint32_t optimal_size = udynlink_get_stream_work_buf_size(&io);
+uint32_t optimal_size = udynlink_get_stream_metadata_size(&io);
 // This returns: byte offset to the code section (header + relocs + symtab + deps strtab + padding)
 ```
 

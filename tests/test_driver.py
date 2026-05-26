@@ -175,7 +175,7 @@ def test_one(full_path, opt):
     for m in test_data["modules"]:
         srcs = " ".join(m)
         compile_cmd = '%s ../../scripts/mkmodule --disasm --gen-c-header --header-path .%s%%s%%s' % (sys.executable, module_target_flag)
-        cmd = compile_cmd % ("" if opt else "--no-opt ", srcs)
+        cmd = compile_cmd % ("" if opt else "-O3 ", srcs)
         res, out = run_cmd(cmd, show_output=False)
         out = out.decode()
         if not res:

@@ -873,7 +873,7 @@ uint32_t udynlink_get_ram_requirements_stream(const udynlink_io_t *p_io, udynlin
     return ram_size;
 }
 
-uint32_t udynlink_get_stream_work_buf_size(const udynlink_io_t *p_io) {
+uint32_t udynlink_get_stream_metadata_size(const udynlink_io_t *p_io) {
     udynlink_module_header_t header;
     int32_t n = p_io->read(p_io->pv_ctx, &header, sizeof(header), 0);
     if (n < 0 || (uint32_t)n != sizeof(header)) return 0;

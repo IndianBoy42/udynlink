@@ -36,7 +36,7 @@ The loop uses `_UDYNLINK_LOAD_MODE_FIRST` to `_UDYNLINK_LOAD_MODE_LAST`, so addi
 
 The test driver (`test_driver.py`) runs each test directory **twice**:
 
-- once with `-O3` (`--no-opt`)
+- once with `-O 3`
 - once with `-Os` (default `mkmodule` optimization)
 
 Because the harness internally exercises all three load modes, **each test runs 6 times by default** (3 load modes x 2 optimization levels). See [Module Guide](writing-modules.md) for how compiler flags affect generated code.

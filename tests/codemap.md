@@ -64,7 +64,7 @@ Integration test suite for udynlink, validating the full pipeline from C/C++ sou
 
 ## Key Configuration
 - **Default timeout**: 5 seconds per QEMU run (`default_qemu_timeout` in `test_driver.py`).
-- **Optimization modes**: Every test runs once with `--no-opt` (`-O0`) and once with default (`-Os`).
+- **Optimization modes**: Every test runs once with `-O 0` and once with default (`-Os`).
 - **Build system**: CMake. The platform is selected via `-DUDYNLINK_PLATFORM=<name>` (default: `stm32f429_discovery`). Platform files live in `cmake/platforms/`.
 - **Build artifacts**: Generated `.o`, `.elf`, `.bin`, `*_module_data.h`, `output_*.txt` logs, and CMake build directory `build/` are cleaned by `test.sh`.
 - **CI**: `.github/workflows/ci.yml` runs `python ./test_driver.py` in the `tests/` directory on every push.

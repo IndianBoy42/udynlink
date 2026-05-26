@@ -536,7 +536,7 @@ Source files are compiled with:
 - `-fPIE -msingle-pic-base -mno-pic-data-is-text-relative`
 - `-ffunction-sections -fdata-sections`
 - `-mlong-calls`
-- `-Os` (or `-O3` with `--no-opt`)
+- `-Os` (default; override with `-O <level>`)
 
 ### Options
 
@@ -546,7 +546,7 @@ Source files are compiled with:
 | `--mcpu <cpu>` | Raw GCC `-mcpu` flag. Overrides the target's default. |
 | `--public-symbols func1,func2` | Comma-separated list of symbols to export and wrap. If omitted, all global symbols are exported. |
 | `--depends mod_a,mod_b` | Comma-separated list of dependency module names. The loader will enforce that these modules are already loaded. |
-| `--no-opt` | Use `-O3` instead of the default `-Os`. |
+| `-O <level>` | Optimization level: `0`, `s` (default, size), `2`, `3`, `z`. |
 | `--bin-name <path>` | Custom output path for the `.bin` file. Default is derived from the first source file. |
 | `--gen-c-header` | Generate a C header file containing the binary as a `static const unsigned char` array. |
 | `--header-path <dir>` | Directory where the generated C header is written. Default: current directory. |

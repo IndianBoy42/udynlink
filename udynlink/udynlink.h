@@ -125,7 +125,7 @@ typedef struct _udynlink_module_t {
  * code region or the data region.
  */
 typedef struct {
-    /** Symbol name (NULL for local symbols). */
+    /** Symbol name, or "(N/A)" for local symbols. */
     const char *name;
     /** Symbol value (offset or absolute address, depending on load phase). */
     uint32_t val;
@@ -511,16 +511,19 @@ uint32_t udynlink_get_ram_requirements(const void *base_addr, udynlink_load_mode
 uint32_t udynlink_get_ram_requirements_stream(const udynlink_io_t *p_io, udynlink_load_mode_t mode);
 
 /**
- * @brief Return the optimal work buffer size for streaming load.
+ * @brief Return the size of module metadata (everything before the code section).
  *
- * Computes @c sizeof(header) + @c num_rels*8 + @c symt_size, which
- * allows all metadata to be read in a single @c read() callback.
+ * This is the byte offset from the start of the module image to the
+ * beginning of the code section. It encompasses the header, relocation
+ * table, symbol table, dependency string table, and any padding.
+ * A work buffer of at least this size allows the streaming loader to
+ * read all metadata in a single @c read() callback, minimizing I/O overhead.
  *
  * @param[in] p_io Streaming I/O callbacks.
  *
- * @return Recommended work buffer size in bytes, or 0 on I/O error.
+ * @return Metadata size in bytes (byte offset to code section), or 0 on I/O error.
  */
-uint32_t udynlink_get_stream_work_buf_size(const udynlink_io_t *p_io);
+uint32_t udynlink_get_stream_metadata_size(const udynlink_io_t *p_io);
 
 #ifdef __cplusplus
 }

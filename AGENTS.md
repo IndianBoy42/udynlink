@@ -49,7 +49,7 @@ python3 mkmodule --gen-c-header --header-path /some/path source1.c [source2.c ..
 Additional flags:
 - `--public-symbols func1,func2` — only export named symbols (reduces image size)
 - `--depends mod_a,mod_b` — declare module dependencies by name; the loader enforces that all named dependencies are already loaded before loading this module
-- `--no-opt` — compile with `-O3` instead of default `-Os`
+- `-O <level>` — optimization level (`0`, `s`, `2`, `3`, `z`; default: `s`)
 - `--bin-name <path>` — custom output binary name
 - `--build_flags=<flags>` — prepend extra compiler flags
 - `--mcpu <cpu>` — target CPU (default: `cortex-m4`)
@@ -104,7 +104,7 @@ python3 mkmodule --gen-c-header --header-path /some/path source1.c [source2.c ..
 Additional flags:
 - `--public-symbols func1,func2` — only export named symbols (reduces image size)
 - `--depends mod_a,mod_b` — declare module dependencies by name; the loader enforces that all named dependencies are already loaded before loading this module
-- `--no-opt` — compile with `-O3` instead of default `-Os`
+- `-O <level>` — optimization level (`0`, `s`, `2`, `3`, `z`; default: `s`)
 - `--bin-name <path>` — custom output binary name
 - `--build_flags=<flags>` — prepend extra compiler flags
 - `--mcpu <cpu>` — target CPU (default: `cortex-m4`)

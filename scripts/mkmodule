@@ -53,7 +53,7 @@ def compile(src_name, args, public_symbols, macros=[]):
     extra = "" if args.pc_rel else "-mno-pic-data-is-text-relative"
     if not args.no_long_calls:
         extra += " -mlong-calls"
-    extra += " -O3" if args.no_opt else " -Os"
+    extra += " -O" + args.opt_level
     if macros:
         extra = extra + " " + " ".join(macros)
     compile_data = {"input": src_name, "extra": extra, "output": main_obj, "mcpu": args.mcpu, "fpu": args.fpu_flag, "float_abi": args.float_abi_flag}
@@ -444,7 +444,7 @@ parser = get_arg_parser('Compilation script')
 parser.add_argument('--disasm', dest="disasm", action="store_true", help="Show disassembly (default: false)")
 parser.add_argument('--pc-rel', dest="pc_rel", action="store_true", help="Allow pc-relative addressing (default: false)")
 parser.add_argument('--no-long-calls', dest="no_long_calls", action="store_true", help="Do not use long calls (default: false)")
-parser.add_argument("--no-opt", dest="no_opt", action="store_true", help="Disable optimizations")
+parser.add_argument("-O", dest="opt_level", default="s", help="Optimization level: 0, s (default), 2, 3, z (like GCC -O flags)")
 parser.add_argument("--stop-after-compile", dest="stop_after_compile", action="store_true", help="Stop after compiling")
 parser.add_argument("--stop-after-link", dest="stop_after_link", action="store_true", help="Stop after linking")
 parser.add_argument("--gen-c-header", dest="gen_c_header", action="store_true", help="Generate the C header after processing (default: false)")

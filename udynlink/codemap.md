@@ -64,7 +64,7 @@ Core C library implementing a micro dynamic linker for ARM Cortex-M MCUs. Handle
 - `udynlink_load_module_stream(p_mod, p_io, load_addr, load_size, load_mode, work_buf, work_buf_size)`: Loads a module from a streaming source. COPY_ALL and COPY_CODE only.
 - `udynlink_get_ram_requirements(base_addr, mode)`: Returns RAM needed for a memory-mapped module.
 - `udynlink_get_ram_requirements_stream(p_io, mode)`: Returns RAM needed for a streaming module (reads header from stream).
-- `udynlink_get_stream_work_buf_size(p_io)`: Returns optimal work buffer size for streaming load (= `sizeof(header) + num_rels*8 + symt_size`).
+- `udynlink_get_stream_metadata_size(p_io)`: Returns size of module metadata before the code section (= `sizeof(header) + num_rels*8 + symt_size`).
 - `UDYNLINK_STREAM_BUF_SIZE`: Compile-time default (512 bytes, matches FatFS sector size). Minimum work buffer is 64 bytes.
 - `UDYNLINK_ERR_LOAD_IO_ERROR`: Error code for I/O read failures from stream callbacks.
 - `UDYNLINK_SYMBOL(sym)`: Convenience macro for host symbol table entries: `{ #sym, (void*)(uintptr_t)(sym) }`.

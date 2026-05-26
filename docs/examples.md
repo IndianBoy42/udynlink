@@ -745,8 +745,8 @@ int load_module_from_sd(const char *path, udynlink_module_t *p_mod) {
         .pv_ctx = &ctx
     };
 
-    /* Query optimal work buffer size */
-    uint32_t work_size = udynlink_get_stream_work_buf_size(&io);
+    /* Query metadata size for work buffer */
+    uint32_t work_size = udynlink_get_stream_metadata_size(&io);
     if (work_size == 0) {
         printf("Invalid module or I/O error\n");
         f_close(&ctx.fil);
@@ -786,7 +786,7 @@ int load_module_from_sd(const char *path, udynlink_module_t *p_mod) {
 ### Work buffer sizing
 
 - **Minimum:** `64` bytes (`UDYNLINK_STREAM_MIN_WORK_BUF_SIZE`).
-- **Optimal:** Use `udynlink_get_stream_work_buf_size()` to get a size that allows the loader to read the entire header + relocation table + symbol table in a single `read()` call. This reduces SD-card access overhead.
+- **Optimal:** Use `udynlink_get_stream_metadata_size()` to get a size that allows the loader to read the entire header + relocation table + symbol table in a single `read()` call. This reduces SD-card access overhead.
 - The work buffer is only a scratch area for partial reads; it does **not** need to persist after loading.
 
 ### Streaming limitations

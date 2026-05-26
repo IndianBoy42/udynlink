@@ -721,7 +721,7 @@ udynlink_error_t udynlink_load_module_stream(
 The caller provides a scratch buffer for chunked I/O. The minimum size is **64 bytes** (`UDYNLINK_STREAM_MIN_WORK_BUF_SIZE`). The optimal size, which allows the loader to read all metadata (header + relocations + symbol table) in a single `read()` call, is:
 
 ```c
-uint32_t optimal = udynlink_get_stream_work_buf_size(p_io);
+uint32_t optimal = udynlink_get_stream_metadata_size(p_io);
 // = byte offset to the code section (header + relocs + symtab + deps strtab + padding)
 ```
 

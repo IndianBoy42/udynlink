@@ -650,13 +650,13 @@ Computes the RAM needed to load a module from a streaming source.
 
 ---
 
-### `udynlink_get_stream_work_buf_size`
+### `udynlink_get_stream_metadata_size`
 
 ```c
-uint32_t udynlink_get_stream_work_buf_size(const udynlink_io_t *p_io);
+uint32_t udynlink_get_stream_metadata_size(const udynlink_io_t *p_io);
 ```
 
-Returns the optimal work buffer size for a streaming load.
+Returns the size of module metadata (everything before the code section) for a streaming load.
 
 **Parameters:**
 
