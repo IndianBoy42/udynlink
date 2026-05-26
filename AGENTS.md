@@ -202,9 +202,6 @@ All tests validate all three modes by default:
 ### Module Uniqueness
 Unlike the original, the eh2k fork allows **multiple instances of the same module** (no deduplication by name).
 
-### Code Quality Note
-Per the README, this code is **pre-alpha / work in progress** and "likely quite buggy."
-
 ## Testing Platform Matrix
 
 | Platform | QEMU Machine | QEMU Binary | CPU | Status | Notes |
