@@ -426,6 +426,8 @@ Loads a module from a stream (e.g., SD card, serial flash).
 - Internally, `COPY_TEXT_DATA` mode is converted to `COPY_ALL` because the header must reside in RAM for relocation processing.
 - On error, allocated memory is freed and `p_mod` is zeroed.
 
+**Thread safety:** The loader does **not** use any locking. Concurrent calls to `udynlink_load_module_from_stream` from multiple interrupt levels will corrupt the internal module table and `dep_refcount` fields. See [Thread Safety](integrating-as-host.md#thread-safety-and-concurrency) for full details.
+
 ---
 
 ### `udynlink_unload_module`
@@ -447,6 +449,8 @@ Unloads a module, freeing its RAM and clearing its handle.
 - `UDYNLINK_OK` on success.
 - `UDYNLINK_ERR_INVALID_MODULE` if `p_mod` is `NULL` or uninitialized.
 - `UDYNLINK_ERR_MODULE_HAS_DEPENDENTS` if another loaded module still depends on this one (`dep_refcount > 0`).
+
+**Thread safety:** The loader does **not** use any locking. Concurrent calls to `udynlink_unload_module` from multiple interrupt levels will corrupt `dep_refcount` fields on module handles. The host must disable interrupts (or use a mutex) around load/unload operations. See [Thread Safety](integrating-as-host.md#thread-safety-and-concurrency) for full details.
 
 **Notes:**
 

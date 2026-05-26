@@ -347,6 +347,9 @@ typedef struct {
  *       udynlink_external_malloc() to obtain RAM.
  * @note Before calling any function from the loaded module, the host
  *       must write @c p_mod->ram_base to ::UDYNLINK_LOT_BASE_ADDR.
+ * @note Not thread-safe. The loader uses no locks or atomics. Concurrent
+ *       calls from multiple interrupt levels will corrupt internal state.
+ *       The host must provide synchronization around load/unload.
  */
 udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base_addr, void *load_addr, uint32_t load_size, udynlink_load_mode_t load_mode);
 
@@ -360,6 +363,9 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
  *
  * @return ::UDYNLINK_OK on success, or ::UDYNLINK_ERR_INVALID_MODULE /
  *         ::UDYNLINK_ERR_MODULE_HAS_DEPENDENTS if the module is still referenced.
+ *
+ * @note Not thread-safe. Concurrent calls from different interrupt levels
+ *       will corrupt dep_refcount. The host must provide synchronization.
  */
 udynlink_error_t udynlink_unload_module(udynlink_module_t *p_mod);
 
@@ -484,6 +490,10 @@ uint8_t *udynlink_get_text_pointer(const udynlink_module_t *p_mod);
  * @param[in]  work_buf_size  Size of @p work_buf (minimum 64 bytes).
  *
  * @return ::UDYNLINK_OK on success, or an error code on failure.
+ *
+ * @note Not thread-safe. Same concurrency constraints as
+ *       udynlink_load_module() apply. The host must provide
+ *       synchronization around load/unload.
  */
 udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
     const udynlink_io_t *p_io, void *load_addr, uint32_t load_size,

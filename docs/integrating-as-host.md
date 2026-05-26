@@ -13,6 +13,7 @@ This guide is for firmware developers who want to integrate the udynlink micro d
 - [Hash-Based Symbol Resolution](#hash-based-symbol-resolution)
 - [Module Lifecycle Management](#module-lifecycle-management)
 - [Streaming I/O Loading](#streaming-io-loading)
+- [Thread Safety and Concurrency](#thread-safety-and-concurrency)
 - [Error Handling and Diagnostics](#error-handling-and-diagnostics)
 
 ---
@@ -812,6 +813,167 @@ if (ram_needed == 0) {
 ```
 
 This is useful for pre-allocating a memory pool slot or checking free space before attempting the load.
+
+---
+
+## Thread Safety and Concurrency
+
+### No Internal Synchronization
+
+udynlink performs **no thread safety checks or synchronization itself**. There are no locks, atomics, or interrupt-disabling wrappers inside the library. This is intentional: every byte of overhead matters on Cortex-M targets, and many simple use cases never need concurrency.
+
+The following shared state is **not protected**:
+
+| State | Where | Risk |
+|-------|-------|------|
+| `dep_refcount` on module handles | `udynlink_load_module` increments it; `udynlink_unload_module` checks and decrements it | A read-modify-write race can corrupt the refcount, allowing a module to be unloaded while dependents still reference it |
+| `p_mod` fields (`p_header`, `p_ram`, `info`, `num_deps`, `deps[]`) | Written during load; read during symbol lookup and unload | A partially-initialized handle visible to another context will cause hard faults |
+| `debug_level` static variable | Written by `udynlink_set_debug_level` from any context | Benign in practice (eventual consistency), but technically a data race |
+| Host module registry (`g_loaded_modules` etc.) | Managed by host code alongside `udynlink_external_get_module_handle` | The host's own registry is equally unprotected; concurrent lookups while a module is being registered may find a partially-inserted entry |
+
+### When You Need Protection
+
+You need to add synchronization if **any** of these are true:
+
+1. **Loading or unloading modules from an interrupt service routine (ISR).** On Cortex-M, a main-thread load can be preempted mid-way by an ISR that also calls `udynlink_load_module`. The ISR will see a half-initialized `p_mod` and a partially-updated `dep_refcount`.
+
+2. **Using an RTOS with multiple threads** that call `udynlink_load_module` or `udynlink_unload_module` concurrently. Even on a single-core MCU, preemptive context switches create the same window as ISR preemption.
+
+3. **Calling `udynlink_set_debug_level` concurrently** with load/unload from a different priority level. In practice this is low-risk but technically a data race.
+
+You do **not** need additional synchronization if:
+- All load/unload operations happen from a single context (e.g., only from the main loop or only from a single RTOS task).
+- Module loading is always complete before an ISR that uses those modules fires.
+- You never load or unload modules inside an ISR.
+
+### How to Add Thread Safety
+
+#### Bare-Metal (Interrupt-Disable Wrapper)
+
+The simplest approach on bare-metal Cortex-M: disable interrupts around the critical section.
+
+```c
+#include "udynlink.h"
+
+// Wrap load/unload calls with interrupt protection
+udynlink_error_t safe_load_module(udynlink_module_t *p_mod,
+                                   const void *base_addr,
+                                   void *load_addr,
+                                   uint32_t load_size,
+                                   udynlink_load_mode_t load_mode) {
+    __disable_irq();
+    udynlink_error_t err = udynlink_load_module(p_mod, base_addr,
+                                                  load_addr, load_size, load_mode);
+    __enable_irq();
+    return err;
+}
+
+udynlink_error_t safe_unload_module(udynlink_module_t *p_mod) {
+    __disable_irq();
+    udynlink_error_t err = udynlink_unload_module(p_mod);
+    __enable_irq();
+    return err;
+}
+```
+
+**Important:** `__disable_irq()` / `__enable_irq()` are CMSIS intrinsics. If you use ARM CC, they are available directly. For GCC, they are provided by `<cmsis_gcc.h>` or you can use inline assembly:
+
+```c
+static inline void __disable_irq(void) {
+    __asm volatile ("cpsid i" ::: "memory");
+}
+static inline void __enable_irq(void) {
+    __asm volatile ("cpsie i" ::: "memory");
+}
+```
+
+**Caveat:** `udynlink_load_module` can take a non-trivial amount of time (it calls `udynlink_external_malloc`, iterates relocations, resolves symbols). Disabling interrupts for the entire duration may violate real-time deadlines. If this is a concern, consider the RTOS approach below or restrict module loading to an idle/task context.
+
+#### RTOS (Mutex or Critical Section)
+
+If you use an RTOS (FreeRTOS, Zephyr, etc.), protect load/unload with a mutex or a task-level critical section:
+
+```c
+// FreeRTOS example
+#include "udynlink.h"
+#include "FreeRTOS.h"
+#include "semphr.h"
+
+static SemaphoreHandle_t udynlink_mutex;
+
+void udynlink_init(void) {
+    udynlink_mutex = xSemaphoreCreateMutex();
+}
+
+udynlink_error_t safe_load_module(udynlink_module_t *p_mod,
+                                   const void *base_addr,
+                                   void *load_addr,
+                                   uint32_t load_size,
+                                   udynlink_load_mode_t load_mode) {
+    xSemaphoreTake(udynlink_mutex, portMAX_DELAY);
+    udynlink_error_t err = udynlink_load_module(p_mod, base_addr,
+                                                  load_addr, load_size, load_mode);
+    xSemaphoreGive(udynlink_mutex);
+    return err;
+}
+```
+
+**Note:** If any of your external callbacks (`udynlink_external_malloc`, `udynlink_external_resolve_symbol`, etc.) are also accessed from ISR context, you must also protect those. A mutex cannot be taken from ISR context; use a counting semaphore or `taskENTER_CRITICAL()` / `taskEXIT_CRITICAL()` instead.
+
+#### Protecting the Host Module Registry
+
+Your own module registry (used by `udynlink_external_get_module_handle`) must be synchronized too. The simplest approach is to use the same lock as the load/unload wrapper:
+
+```c
+// Assume the same mutex or interrupt-disable as above is active
+// when udynlink_external_get_module_handle is called from udynlink_load_module.
+
+udynlink_module_t *udynlink_external_get_module_handle(const char *module_name) {
+    // This is called from within udynlink_load_module, which is already
+    // holding the lock in the safe_* wrapper above.
+    for (int i = 0; i < g_module_count; i++) {
+        if (g_loaded_modules[i] == NULL) continue;
+        const char *name = udynlink_get_module_name(g_loaded_modules[i]);
+        if (name && !strcmp(name, module_name))
+            return g_loaded_modules[i];
+    }
+    return NULL;
+}
+```
+
+### The LOT Base Address and Concurrency
+
+The LOT base address (`*(uint32_t *)UDYNLINK_LOT_BASE_ADDR`) is a **single global word** shared by all modules. Only one module's `ram_base` can be stored there at a time. However, this does **not** mean that ISRs calling a different module will corrupt a preempted module's `r9`:
+
+- **r9 is a callee-saved register.** On Cortex-M, exception entry automatically saves r0–r3, r12, lr, pc, and xPSR. The compiler-generated ISR prologue pushes any additional callee-saved registers it uses (including r9 if needed). When the ISR returns, r9 is restored to its pre-exception value.
+- **Module wrappers save and restore r9.** Every exported function wrapper does `push {r9, lr}` / `pop {r9, pc}`, so r9 is correctly preserved across each module boundary crossing.
+
+This means an ISR can safely call module B even while module A was preempted mid-execution. When the ISR returns, module A resumes with the correct r9 value.
+
+**The real concern is the shared memory word itself.** If the ISR writes B's `ram_base` to `UDYNLINK_LOT_BASE_ADDR`, and module A later calls one of its *own wrappered* functions (e.g., via a function pointer through the symbol table), that wrapper will load r9 from the fixed address and get B's base instead of A's. In practice this is rare — module code rarely calls its own wrappers — but it is the mechanism by which a stale LOT base can cause trouble.
+
+Guidelines:
+
+- **Always set the LOT base before each module call.** This is already required and is sufficient for sequential (non-reentrant) use.
+- **For reentrant use (e.g., a host callback invoked by module A calls into module B):** Set the LOT base to B's `ram_base` before calling B. B's wrapper will correctly load r9 from the fixed address. When B returns, r9 is restored to A's value by B's wrapper epilogue. A continues with the correct r9 even though the memory word at `UDYNLINK_LOT_BASE_ADDR` no longer matches A. This is safe because A does not re-read the fixed address during normal execution.
+- **If module A must call its own wrappered entry point** after an ISR has overwritten the LOT base: Re-set the LOT base to A's `ram_base` before the call. Since module code normally calls internal (unwrappered) functions, this scenario is uncommon.
+
+```c
+// Example: host callback invoked by module A calls into module B
+void host_callback(void) {
+    uint32_t *lot_base = (uint32_t *)UDYNLINK_LOT_BASE_ADDR;
+
+    // Save A's base if you'll need to call A again later
+    uint32_t saved_base = *lot_base;
+
+    // Call into module B
+    *lot_base = p_mod_b->ram_base;
+    module_b_func();
+
+    // Restore A's base if you need to call A again through a wrapper
+    *lot_base = saved_base;
+}
+```
 
 ---
 
