@@ -574,6 +574,28 @@ const char *udynlink_get_module_name_from_image(const void *base_addr) {
     }
 }
 
+uint32_t udynlink_get_module_deps(const void *base_addr, const char **deps, uint32_t max_deps) {
+    const udynlink_module_header_t *p_header = (const udynlink_module_header_t*)base_addr;
+
+    if (p_header->sign != UDYNLINK_MODULE_SIGN)
+        return 0;
+
+    const char *dep_str = get_deps_strtab(p_header);
+    if (dep_str == NULL)
+        return 0;
+
+    uint32_t count = 0;
+    for (uint16_t d = 0; d < p_header->num_deps; d++) {
+        if (*dep_str == '\0')
+            break;
+        if (count < max_deps && deps != NULL)
+            deps[count] = dep_str;
+        count++;
+        dep_str += strlen(dep_str) + 1;
+    }
+    return count;
+}
+
 udynlink_sym_t *udynlink_lookup_symbol(const udynlink_module_t *p_mod, const char *name, udynlink_sym_t *p_sym) {
     uint32_t idx;
 

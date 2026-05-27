@@ -5,6 +5,18 @@
 #include <string.h>
 
 static int test_circular_single(udynlink_load_mode_t mode) {
+    const char *deps[4];
+    uint32_t ndeps = udynlink_get_module_deps(mod_self_dep_module_data, deps, 4);
+    if (ndeps != 1) {
+        printf("expected 1 dep, got %u\n", ndeps);
+        return 0;
+    }
+    if (strcmp(deps[0], "mod_self_dep") != 0) {
+        printf("expected dep 'mod_self_dep', got '%s'\n", deps[0]);
+        return 0;
+    }
+    printf("deps read ok\n");
+
     udynlink_module_t mod;
     memset(&mod, 0, sizeof(mod));
     udynlink_error_t err = udynlink_load_module(&mod, mod_self_dep_module_data, NULL, 0, mode);

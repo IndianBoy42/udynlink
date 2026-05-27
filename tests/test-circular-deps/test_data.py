@@ -3,5 +3,5 @@ test_data = {
     "modules": [
         ["mod_self_dep.c", "--depends", "mod_self_dep"],
     ],
-    "required": [r"^circular dep detected ok$"]
+    "required": [r"^deps read ok$", r"^circular dep detected ok$"]
 }

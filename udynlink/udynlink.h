@@ -424,6 +424,27 @@ const char *udynlink_get_module_name(const udynlink_module_t *p_mod);
 const char *udynlink_get_module_name_from_image(const void *base_addr);
 
 /**
+ * @brief Read dependency names from a module image without loading it.
+ *
+ * Inspects the header of the module image at @p base_addr and extracts
+ * the dependency names from the dependency string table.  Up to
+ * @p max_deps pointers are written into the @p deps array.  The
+ * returned pointers point into the module image and remain valid as
+ * long as @p base_addr remains valid.
+ *
+ * @param[in]  base_addr Address of the module image.
+ * @param[out] deps      Array to receive dependency name pointers.
+ *                       May be NULL if @p max_deps is 0.
+ * @param[in]  max_deps  Maximum number of entries to write into @p deps.
+ *
+ * @return Total number of dependencies declared in the module image.
+ *         This may be larger than @p max_deps if the array was too
+ *         small.  Returns 0 if the image is invalid or has no
+ *         dependencies.
+ */
+uint32_t udynlink_get_module_deps(const void *base_addr, const char **deps, uint32_t max_deps);
+
+/**
  * @brief Look up a symbol in a module.
  *
  * Searches the symbol table of @p p_mod for @p name.  If @p p_mod is
