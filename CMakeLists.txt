@@ -15,7 +15,7 @@ endif()
 project(udynlink VERSION 0.1.0 LANGUAGES C)
 
 # Library target
-add_library(udynlink STATIC udynlink/udynlink.c udynlink/udynlink_hash.c)
+add_library(udynlink STATIC udynlink/udynlink.c)
 
 target_include_directories(udynlink PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/udynlink>

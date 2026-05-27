@@ -88,7 +88,6 @@ target_link_libraries(your_firmware PRIVATE udynlink::udynlink)
 For bare-metal projects without CMake, copy these files into your source tree:
 
 - `udynlink/udynlink.c`
-- `udynlink/udynlink_hash.c`
 - `udynlink/udynlink.h`
 - `udynlink/udynlink_externals.h`
 - `udynlink/udynlink_hash.h`
@@ -166,7 +165,6 @@ target_link_libraries(my_firmware PRIVATE udynlink)
 # Or Method 3: add sources directly
 target_sources(my_firmware PRIVATE
     udynlink/udynlink.c
-    udynlink/udynlink_hash.c
 )
 ```
 

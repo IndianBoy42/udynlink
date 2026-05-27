@@ -30,7 +30,7 @@ This repository is the **eh2k fork** of the original udynlink project. It adds C
 - **Selective Exporting**: `--public-symbols` allows restricting which global functions are wrapped/exported, reducing binary size and attack surface.
 
 ### Hash-Based Symbol Resolution (O(1))
-- New files: `udynlink/udynlink_hash.h` (hash table struct + lookup declaration) and `udynlink/udynlink_hash.c` (~60-line GNU hash + bloom filter lookup implementation)
+- New files: `udynlink/udynlink_hash.h` (hash table struct + lookup declaration + ~60-line GNU hash + bloom filter lookup implementation)
 - New tool: `scripts/mkhostsyms` — Python tool that reads a host firmware ELF, generates a C header with const hash table data for O(1) symbol resolution
 - The hash table struct `udynlink_hash_table_t` contains: bloom filter, buckets, hash values, symbol addresses, and string table
 - Lookup function: `udynlink_resolve_hashed_symbol()` — O(1) amortized, replaces the O(N) strcmp resolution chain
