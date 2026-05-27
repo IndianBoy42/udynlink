@@ -391,7 +391,7 @@ Loads a module from a memory-mapped image.
 ```c
 udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
     const udynlink_io_t *p_io, void *load_addr, size_t load_size,
-    udynlink_load_mode_t load_mode, void *work_buf, size_t work_buf_size);
+    udynlink_load_mode_t load_mode, void *scratch_buf, size_t scratch_buf_size);
 ```
 
 Loads a module from a stream (e.g., SD card, serial flash).
@@ -405,14 +405,14 @@ Loads a module from a stream (e.g., SD card, serial flash).
 | `load_addr` | `void *` | RAM address for loading, or `NULL` for automatic allocation. |
 | `load_size` | `size_t` | Size of pre-allocated RAM if `load_addr` is not `NULL`. |
 | `load_mode` | `udynlink_load_mode_t` | Must be `COPY_ALL` or `COPY_TEXT_DATA`. `XIP` is **not** supported and returns `UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED`. |
-| `work_buf` | `void *` | Caller-provided scratch buffer used for partial reads. |
-| `work_buf_size` | `size_t` | Size of `work_buf`. Must be at least `64` bytes. |
+| `scratch_buf` | `void *` | Caller-provided scratch buffer for temporary state (header, name strings, reloc data). Minimum 132 bytes. |
+| `scratch_buf_size` | `size_t` | Size of `scratch_buf`. Must be at least `UDYNLINK_STREAM_MIN_SCRATCH_BUF_SIZE` (132 bytes). |
 
 **Return value:**
 
 - `UDYNLINK_OK` on success.
 - `UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED` if `load_mode == UDYNLINK_LOAD_MODE_XIP`.
-- `UDYNLINK_ERR_LOAD_INVALID_MODE` if `work_buf` is `NULL` or `work_buf_size < 64`.
+- `UDYNLINK_ERR_LOAD_INVALID_MODE` if `scratch_buf` is `NULL` or `scratch_buf_size < 132`.
 - `UDYNLINK_ERR_LOAD_IO_ERROR` if any `read` or `get_size` callback fails.
 - Other errors from [`udynlink_error_t`](#udynlink_error_t) apply as for `udynlink_load_module`.
 

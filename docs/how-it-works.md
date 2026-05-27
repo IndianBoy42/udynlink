@@ -716,8 +716,8 @@ udynlink_error_t udynlink_load_module_from_stream(
     void *load_addr,        // NULL = auto-allocate
     uint32_t load_size,     // size of load_addr region
     udynlink_load_mode_t load_mode,
-    void *work_buf,         // scratch buffer
-    uint32_t work_buf_size  // must be >= 64 bytes
+    void *scratch_buf,     // scratch buffer (min 132 bytes)
+    uint32_t scratch_buf_size  // must be >= UDYNLINK_STREAM_MIN_SCRATCH_BUF_SIZE
 );
 ```
 

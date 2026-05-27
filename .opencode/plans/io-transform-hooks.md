@@ -78,9 +78,9 @@ typedef struct {
 udynlink_error_t udynlink_load_module_from_stream_ex(
     udynlink_module_t *p_mod,
     const udynlink_io_t *p_io,
-    void *load_addr, uint32_t load_size,
+    void *load_addr, size_t load_size,
     udynlink_load_mode_t load_mode,
-    void *work_buf, uint32_t work_buf_size,
+    void *work_buf, size_t work_buf_size,
     const udynlink_load_hooks_t *p_hooks   // NEW — NULL for no hooks
 );
 ```
@@ -162,11 +162,23 @@ int32_t my_wrapper_read(void *pv_ctx, void *buf, uint32_t num_bytes, uint32_t of
 - Make original function a thin wrapper calling `_impl` with `NULL` hooks
 - Add `udynlink_load_module_from_stream_ex()` as public wrapper
 
-**Key insertion points in the streaming loader (approximate lines from current code):**
-1. `HEADER_PARSED` — after arch tag check passes (currently line ~653)
-2. `DEPS_RESOLVED` — after dep loop completes and RAM allocated (currently line ~704)
-3. `SECTIONS_LOADED` — after BSS zeroing (currently line ~739)
-4. `RELOCS_APPLIED` — after relocation loop completes (currently line ~841)
+**Key insertion points in the streaming loader (from current `udynlink.c` lines ~744–1052):**
+
+1. **`HEADER_PARSED`** — after arch tag check passes (line ~800), before dep resolution
+2. **`DEPS_RESOLVED`** — after dep loop completes (line ~847) and RAM allocated (line ~868), before section copy begins
+3. **`SECTIONS_LOADED`** — after BSS zeroing (line ~900), before LOT/relocation processing
+4. **`RELOCS_APPLIED`** — after relocation loop completes (line ~1037), before `exit` label
+
+**Important streaming loader details for implementers:**
+
+The streaming loader is significantly different from the memory-mapped loader. Key behaviors:
+
+- **Header lives in scratch buffer**: `header` is `(udynlink_module_header_t *)scratch_buf` (line 760). After sections are copied, `p_mod->p_header` is set to point into the copied RAM (lines 881, 895). At `HEADER_PARSED` hook time, `p_mod->p_header` still points to scratch — document this lifetime.
+- **COPY_ALL mode**: copies header+relocs+symtab+code+data in ONE `stream_read_exact` call (line 877). `p_mod->p_header` is set after this copy.
+- **COPY_TEXT_DATA mode**: copies relocs+symtab first (line 885), then code+data (line 889). Then normalizes to COPY_ALL mode (line 897). `p_mod->p_header` is set after both copies.
+- **Relocations are read per-pair from stream**: each reloc pair is fetched via `stream_read_exact` (line 911). Symbol entries are also fetched on-demand from stream. This means the relocation loop does NOT read from RAM — the stream `p_io` must remain valid throughout.
+- **Symbol names read from stream**: weak and extern symbol names are fetched from the stream during relocation processing (lines 976, 1003), NOT from a RAM copy.
+- **Cleanup at `exit`**: checks `UDYNLINK_LOAD_IS_STREAM_HDR` flag to decide whether to free `p_header` or `p_ram` (line 1044). Hook abort must jump to this cleanup path.
 
 **Deliverable**: Refactored loader, all existing tests still pass, hooks are called at correct points.
 

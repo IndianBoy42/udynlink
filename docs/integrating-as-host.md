@@ -885,14 +885,14 @@ udynlink_error_t load_module_from_sd(const char *path, udynlink_module_t *p_mod)
         .pv_ctx = &ctx
     };
 
-    // Allocate a work buffer on the stack or from a pool
-    uint8_t work_buf[512];
+    // Allocate a scratch buffer (minimum 132 bytes)
+    uint8_t scratch_buf[UDYNLINK_STREAM_MIN_SCRATCH_BUF_SIZE];
 
     udynlink_error_t err = udynlink_load_module_from_stream(
         p_mod, &io,
         NULL, 0,                    // Auto-allocate RAM
         UDYNLINK_LOAD_MODE_COPY_ALL,
-        work_buf, sizeof(work_buf)
+        scratch_buf, sizeof(scratch_buf)
     );
 
     f_close(&ctx.fil);

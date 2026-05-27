@@ -61,7 +61,7 @@ Core C library implementing a micro dynamic linker for ARM Cortex-M MCUs. Handle
 
 ## Streaming I/O API
 - `udynlink_io_t`: Struct with `read(pv_ctx, buf, num_bytes, offset)` and `get_size(pv_ctx)` callbacks plus a `pv_ctx` user pointer. Enables loading from SD card, SPI flash, network streams, or any non-memory-mapped source.
-- `udynlink_load_module_from_stream(p_mod, p_io, load_addr, load_size, load_mode, work_buf, work_buf_size)`: Loads a module from a streaming source. COPY_ALL and COPY_TEXT_DATA only.
+- `udynlink_load_module_from_stream(p_mod, p_io, load_addr, load_size, load_mode, scratch_buf, scratch_buf_size)`: Loads a module from a streaming source. COPY_ALL and COPY_TEXT_DATA only.
 - `udynlink_get_ram_requirements(base_addr, mode)`: Returns RAM needed for a memory-mapped module.
 - `udynlink_get_ram_requirements_stream(p_io, mode)`: Returns RAM needed for a streaming module (reads header from stream).
 - `udynlink_get_stream_metadata_size(p_io)`: Returns size of module metadata before the code section (= `sizeof(header) + num_rels*8 + symt_size`).

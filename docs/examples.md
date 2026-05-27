@@ -747,10 +747,10 @@ int load_module_from_sd(const char *path, udynlink_module_t *p_mod) {
         return -1;
     }
 
-    /* Allocate work buffer (can also use a static pool) */
-    void *work_buf = udynlink_external_malloc(work_size);
-    if (!work_buf) {
-        printf("Out of memory for work buffer\n");
+    /* Allocate scratch buffer (minimum 132 bytes) */
+    void *scratch_buf = udynlink_external_malloc(UDYNLINK_STREAM_MIN_SCRATCH_BUF_SIZE);
+    if (!scratch_buf) {
+        printf("Out of memory for scratch buffer\n");
         f_close(&ctx.fil);
         return -1;
     }
@@ -763,10 +763,10 @@ int load_module_from_sd(const char *path, udynlink_module_t *p_mod) {
     udynlink_error_t err = udynlink_load_module_from_stream(
         p_mod, &io, NULL, 0,          /* auto-allocate RAM */
         UDYNLINK_LOAD_MODE_COPY_ALL,
-        work_buf, work_size);
+        scratch_buf, UDYNLINK_STREAM_MIN_SCRATCH_BUF_SIZE);
 
     f_close(&ctx.fil);
-    udynlink_external_free(work_buf);
+    udynlink_external_free(scratch_buf);
 
     if (err != UDYNLINK_OK) {
         printf("Stream load failed: %s\n", udynlink_error_msg(&err));
@@ -1072,7 +1072,7 @@ if (ram_needed == 0) {
 void *load_addr = pool_malloc(ram_needed);
 udynlink_error_t err = udynlink_load_module_from_stream(
     &mod, &io, load_addr, ram_needed,
-    UDYNLINK_LOAD_MODE_COPY_ALL, work_buf, work_size);
+    UDYNLINK_LOAD_MODE_COPY_ALL, scratch_buf, sizeof(scratch_buf));
 ```
 
 ### Benefits of pre-computation

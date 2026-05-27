@@ -349,6 +349,11 @@ static inline int udynlink_module_has_no_prologue(const udynlink_module_header_t
  *
  * Reads up to @p num_bytes bytes starting at @p offset into @p buf.
  *
+ * The callback must write data directly to @p buf.  @p buf may point to
+ * any writable address (module RAM, scratch buffer, or stack).  Block-device
+ * drivers that require sector-aligned buffers must internally buffer and
+ * copy to @p buf.
+ *
  * @param pv_ctx    Opaque context pointer supplied by the caller.
  * @param buf       Destination buffer.
  * @param num_bytes Number of bytes to read.
@@ -382,13 +387,8 @@ typedef struct {
     void                   *pv_ctx;
 } udynlink_io_t;
 
-#ifndef UDYNLINK_STREAM_BUF_SIZE
-/** Default scratch-buffer size for streaming loads (512 bytes, matches FatFS sector size). */
-#define UDYNLINK_STREAM_BUF_SIZE 512
-#endif
-
-/** Minimum work-buffer size for udynlink_load_module_from_stream() (64 bytes). */
-#define UDYNLINK_STREAM_MIN_WORK_BUF_SIZE 64
+/** Minimum scratch-buffer size for udynlink_load_module_from_stream() (132 bytes). */
+#define UDYNLINK_STREAM_MIN_SCRATCH_BUF_SIZE 132
 
 ////////////////////////////////////////////////////////////////////////////////
 // Public interface
@@ -581,8 +581,11 @@ uint8_t *udynlink_get_text_pointer(const udynlink_module_t *p_mod);
  * @param[in]  load_addr      RAM address for the module, or NULL to auto-allocate.
  * @param[in]  load_size      Size of the region at @p load_addr (ignored if NULL).
  * @param[in]  load_mode      COPY_ALL or COPY_CODE only.
- * @param[in]  work_buf       Caller-provided scratch buffer.
- * @param[in]  work_buf_size  Size of @p work_buf (minimum 64 bytes).
+ * @param[in]  scratch_buf     Caller-provided scratch buffer (minimum 132 bytes).
+ *                              Holds temporary state (header, name strings, reloc
+ *                              data) that would otherwise be stack-allocated.
+ * @param[in]  scratch_buf_size Size of @p scratch_buf (minimum
+ *                              ::UDYNLINK_STREAM_MIN_SCRATCH_BUF_SIZE).
  *
  * @return ::UDYNLINK_OK on success, or an error code on failure.
  *
@@ -592,7 +595,7 @@ uint8_t *udynlink_get_text_pointer(const udynlink_module_t *p_mod);
  */
 udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
     const udynlink_io_t *p_io, void *load_addr, size_t load_size,
-    udynlink_load_mode_t load_mode, void *work_buf, size_t work_buf_size);
+    udynlink_load_mode_t load_mode, void *scratch_buf, size_t scratch_buf_size);
 
 /**
  * @brief Return the RAM required to load a module from memory.
