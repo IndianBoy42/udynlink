@@ -66,14 +66,13 @@ int check_weak_symbols(const udynlink_module_t *p_mod, const char *slist[]) {
 int run_test_func(const udynlink_module_t *p_mod) {
     udynlink_sym_t sym;
 
-    UDYNLINK_PREPARE_CALL(p_mod);
-
     // Run test
     if (udynlink_lookup_symbol(p_mod, "test", &sym) == NULL) {
         printf("'test' symbol not found.\n");
         return 0;
     }
     int (*p_func)(void) = (int (*)(void))sym.val;
+    UDYNLINK_PREPARE_CALL(p_mod);
     return p_func();
 }
 

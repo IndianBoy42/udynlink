@@ -14,15 +14,9 @@
     .type {{actname}}, %function
 {{s}}:
     push    {r9, lr}
-    push    {r1}
-    ldr     r1, .L1{{s}}
-    ldr     r9, [r1]
-    pop     {r1}
     bl      {{actname}}
     pop     {r9, pc}
 
-.L1{{s}}:
-    .word   {{lot_base}}
     .size   {{s}}, . - {{s}}
 {% endfor %}
 

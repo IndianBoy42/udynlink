@@ -8,8 +8,7 @@ MEMORY
 {
   FLASH (rx) : ORIGIN = 0x08000000, LENGTH = 1024K
   /* QEMU models STM32F405 as 128K SRAM @ 0x20000000 plus 64K CCM @ 0x10000000.
-   * We reserve the first 4 bytes of SRAM for the LOT base pointer so that
-   * writing to UDYNLINK_LOT_BASE_ADDR (0x20000000) does not corrupt .data. */
+   * RAM starts at 0x20000004 for 4-byte alignment padding. */
   RAM   (rwx) : ORIGIN = 0x20000004, LENGTH = 128K - 4
 }
 

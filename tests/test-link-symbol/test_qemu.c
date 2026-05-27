@@ -35,8 +35,6 @@ static int test_link_symbol_single(udynlink_load_mode_t mode) {
 
     // Call test function (should call real_service)
     {
-        uintptr_t *mod_base = (uintptr_t *)UDYNLINK_LOT_BASE_ADDR;
-        *mod_base = mod.ram_base;
         udynlink_sym_t sym;
         if (udynlink_lookup_symbol(&mod, "test", &sym) == NULL) {
             printf("test not found\n");
@@ -44,6 +42,7 @@ static int test_link_symbol_single(udynlink_load_mode_t mode) {
             goto cleanup;
         }
         int (*p_func)(void) = (int (*)(void))sym.val;
+        UDYNLINK_PREPARE_CALL(&mod);
         int result = p_func();
         if (result != 1) {
             printf("unexpected result=%d\n", result);
@@ -61,8 +60,6 @@ static int test_link_symbol_single(udynlink_load_mode_t mode) {
 
     // Call test function again (should call mock_service)
     {
-        uintptr_t *mod_base = (uintptr_t *)UDYNLINK_LOT_BASE_ADDR;
-        *mod_base = mod.ram_base;
         udynlink_sym_t sym;
         if (udynlink_lookup_symbol(&mod, "test", &sym) == NULL) {
             printf("test not found\n");
@@ -70,6 +67,7 @@ static int test_link_symbol_single(udynlink_load_mode_t mode) {
             goto cleanup;
         }
         int (*p_func)(void) = (int (*)(void))sym.val;
+        UDYNLINK_PREPARE_CALL(&mod);
         int result = p_func();
         if (result != 1) {
             printf("unexpected result=%d\n", result);

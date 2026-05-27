@@ -17,15 +17,13 @@ static int test_load_module_image(udynlink_load_mode_t mode) {
     }
 
     {
-        uintptr_t* mod_base = (uintptr_t*)UDYNLINK_LOT_BASE_ADDR;
-        *mod_base = mod.ram_base;
-
         udynlink_sym_t sym;
         if (udynlink_lookup_symbol(&mod, "test", &sym) == NULL) {
             printf("lookup_symbol 'test' failed (mode=%d)\n", (int)mode);
             goto exit;
         }
         int (*p_func)(void) = (int (*)(void))sym.val;
+        UDYNLINK_PREPARE_CALL(&mod);
         if (!p_func()) {
             printf("Module 'test' function returned 0 (mode=%d)\n", (int)mode);
             goto exit;

@@ -28,8 +28,6 @@ static int test_deferred_single(udynlink_load_mode_t mode) {
 
     // Call test function (should return 1 because late_init is NULL)
     {
-        uintptr_t *mod_base = (uintptr_t *)UDYNLINK_LOT_BASE_ADDR;
-        *mod_base = mod.ram_base;
         udynlink_sym_t sym;
         if (udynlink_lookup_symbol(&mod, "test", &sym) == NULL) {
             printf("test not found\n");
@@ -37,6 +35,7 @@ static int test_deferred_single(udynlink_load_mode_t mode) {
             goto cleanup;
         }
         int (*p_func)(void) = (int (*)(void))sym.val;
+        UDYNLINK_PREPARE_CALL(&mod);
         int result = p_func();
         if (result != 1) {
             printf("unexpected before=%d\n", result);
@@ -55,8 +54,6 @@ static int test_deferred_single(udynlink_load_mode_t mode) {
 
     // Call test function again (should return 2 and print "late_init called")
     {
-        uintptr_t *mod_base = (uintptr_t *)UDYNLINK_LOT_BASE_ADDR;
-        *mod_base = mod.ram_base;
         udynlink_sym_t sym;
         if (udynlink_lookup_symbol(&mod, "test", &sym) == NULL) {
             printf("test not found\n");
@@ -64,6 +61,7 @@ static int test_deferred_single(udynlink_load_mode_t mode) {
             goto cleanup;
         }
         int (*p_func)(void) = (int (*)(void))sym.val;
+        UDYNLINK_PREPARE_CALL(&mod);
         int result = p_func();
         if (result != 2) {
             printf("unexpected after=%d\n", result);

@@ -127,14 +127,19 @@ public:
     /**
      * @brief Invoke the module function.
      *
-     * Automatically sets the LOT base (via UDYNLINK_PREPARE_CALL) and
-     * calls the function with the supplied arguments.
+     * Automatically sets r9 to the module's RAM base (via
+     * UDYNLINK_PREPARE_CALL) and calls the function with the supplied
+     * arguments.
      *
      * @return The value returned by the module function, or R() if the
      *         symbol was not resolved.
      *
-     * @warning Not interrupt-safe. If an ISR calls into a different module
-     *          while this call is active, the LOT base will be wrong.
+     * @warning Not interrupt-safe if the called function itself is not
+     *          re-entrant.  Each invocation uses UDYNLINK_PREPARE_CALL
+     *          which directly overwrites r9; nested calls from the same
+     *          module are fine, but an ISR calling a different module
+     *          during this call would corrupt r9 unless interrupts are
+     *          disabled.
      */
     R operator()(Args... args) const {
         return detail::FuncInvoker<R, Args...>::invoke(addr_, p_mod_, args...);
@@ -152,45 +157,46 @@ public:
 };
 
 // ---------------------------------------------------------------------------
-// Context — RAII LOT base manager for efficient repeated calls
+// Context — RAII r9 manager for efficient repeated calls
 // ---------------------------------------------------------------------------
 
 /**
- * @brief RAII wrapper that binds LOT base to a single module.
+ * @brief RAII wrapper that binds r9 to a single module.
  *
  * When calling multiple functions from the same module in a tight loop,
- * per-call LOT base writes are redundant.  Context sets the LOT base
- * once on construction, and restores the previous value on destruction.
+ * per-call r9 writes are redundant.  Context saves the previous r9 on
+ * construction, writes the module's ram_base, and restores the original
+ * r9 on destruction.
  *
  * @warning NOT interrupt-safe.  If an ISR calls into a different module
- *          while a Context is active, LOT base will be wrong.  Use
- *          Context only in non-preemptive code paths, or disable
- *          interrupts around the block.
+ *          while a Context is active, r9 will be wrong.  Use Context
+ *          only in non-preemptive code paths, or disable interrupts
+ *          around the block.
  */
 class Context {
     const udynlink_module_t *p_mod_;
-    uint32_t prev_lot_base_;
+    uint32_t prev_r9_;
 
 public:
     /**
-     * @brief Bind to a module: save previous LOT base, write new one.
+     * @brief Bind to a module: save previous r9, write new ram_base.
      *
      * @param[in] p_mod Pointer to the loaded module.
      */
     explicit Context(const udynlink_module_t *p_mod)
-        : p_mod_(p_mod), prev_lot_base_(0) {
+        : p_mod_(p_mod), prev_r9_(0) {
         if (p_mod_ != NULL) {
-            prev_lot_base_ = *(uint32_t *)UDYNLINK_LOT_BASE_ADDR;
-            *(uint32_t *)UDYNLINK_LOT_BASE_ADDR = (uint32_t)p_mod_->ram_base;
+            __asm volatile ("mov %0, r9" : "=r"(prev_r9_) : :);
+            __asm volatile ("mov r9, %0" :: "r"((uint32_t)p_mod_->ram_base) : "r9");
         }
     }
 
     /**
-     * @brief Restore the previous LOT base.
+     * @brief Restore the previous r9.
      */
     ~Context() {
         if (p_mod_ != NULL) {
-            *(uint32_t *)UDYNLINK_LOT_BASE_ADDR = prev_lot_base_;
+            __asm volatile ("mov r9, %0" :: "r"(prev_r9_) : "r9");
         }
     }
 
@@ -201,7 +207,7 @@ public:
     /**
      * @brief Re-bind to a different module (mid-loop switch).
      *
-     * Writes the new module's RAM base to the LOT base address.
+     * Writes the new module's RAM base directly to r9.
      * The previous value (saved at construction) is NOT touched;
      * it will be restored when this Context is destroyed.
      *
@@ -210,7 +216,7 @@ public:
     void rebind(const udynlink_module_t *p_mod) {
         p_mod_ = p_mod;
         if (p_mod_ != NULL) {
-            *(uint32_t *)UDYNLINK_LOT_BASE_ADDR = (uint32_t)p_mod_->ram_base;
+            __asm volatile ("mov r9, %0" :: "r"((uint32_t)p_mod_->ram_base) : "r9");
         }
     }
 

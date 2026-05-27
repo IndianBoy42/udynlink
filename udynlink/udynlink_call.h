@@ -71,19 +71,10 @@ static inline udynlink_error_t udynlink_resolve_func(const udynlink_module_t *p_
 }
 
 /**
- * @brief Write the module RAM base to the fixed LOT base address.
- *
- * For prologued modules, the assembly prologue reads r9 from
- * ::UDYNLINK_LOT_BASE_ADDR.  This macro performs just that write.
- */
-#define UDYNLINK_SET_LOT_BASE(p_mod) \
-    (*(uint32_t *)UDYNLINK_LOT_BASE_ADDR = (uint32_t)(p_mod)->ram_base)
-
-/**
  * @brief Directly set the r9 register to the module RAM base.
  *
  * For --no-prologue modules (or when maximum performance is needed),
- * the host can bypass the memory indirection and load r9 directly.
+ * the host can bypass the assembly prologue and load r9 directly.
  *
  * @note This is Cortex-M specific inline assembly.
  */
@@ -93,9 +84,13 @@ static inline udynlink_error_t udynlink_resolve_func(const udynlink_module_t *p_
 /**
  * @brief Call a module function through a reusable handle.
  *
- * Automatically sets the LOT base (via UDYNLINK_PREPARE_CALL) and
- * invokes the function.  The cast uses a variadic function-pointer
- * type `ret_type (*)(...)` which GCC accepts for any argument list.
+ * Automatically saves the caller's r9, sets r9 to the module's RAM base
+ * via UDYNLINK_PREPARE_CALL(), invokes the function, and restores the
+ * original r9.  This works safely for both prologued and --no-prologue
+ * modules because it always manages r9 explicitly.
+ *
+ * The cast uses a variadic function-pointer type
+ * `ret_type (*)(...)` which GCC accepts for any argument list.
  *
  * @param[in] p_func   Pointer to a resolved udynlink_func_t handle.
  * @param[in] ret_type Return type of the function.
@@ -110,21 +105,44 @@ static inline udynlink_error_t udynlink_resolve_func(const udynlink_module_t *p_
  *   int r = UDYNLINK_CALL(&h, int, (1, 2));
  * @endcode
  *
- * @warning Not interrupt-safe. If an ISR calls into a different module
- *          while this call is active, the LOT base will be wrong.
+ * @warning Not interrupt-safe if the called function itself is not
+ *          re-entrant.  The r9 save/restore happens in the caller's
+ *          stack frame, so nested module calls are safe as long as
+ *          each uses UDYNLINK_CALL (or an equivalent save/restore).
  */
 #define UDYNLINK_CALL(p_func, ret_type, args) \
     ({ \
+        uint32_t _udynlink_prev_r9; \
+        __asm volatile ("mov %0, r9" : "=r"(_udynlink_prev_r9) : :); \
         UDYNLINK_PREPARE_CALL((p_func)->p_mod); \
-        ((ret_type (*)(...))(p_func)->addr) args; \
+        ret_type _udynlink_result = ((ret_type (*)(...))(p_func)->addr) args; \
+        __asm volatile ("mov r9, %0" :: "r"(_udynlink_prev_r9) : "r9"); \
+        _udynlink_result; \
     })
 
 /**
- * @brief One-shot macro: lookup, set LOT base, cast, and call.
+ * @brief Call a void-returning module function through a reusable handle.
+ *
+ * Same as UDYNLINK_CALL but for functions that return void.
+ *
+ * @param[in] p_func   Pointer to a resolved udynlink_func_t handle.
+ * @param[in] args     Parenthesized argument list.
+ */
+#define UDYNLINK_CALL_VOID(p_func, args) \
+    ({ \
+        uint32_t _udynlink_prev_r9; \
+        __asm volatile ("mov %0, r9" : "=r"(_udynlink_prev_r9) : :); \
+        UDYNLINK_PREPARE_CALL((p_func)->p_mod); \
+        ((void (*)(...))(p_func)->addr) args; \
+        __asm volatile ("mov r9, %0" :: "r"(_udynlink_prev_r9) : "r9"); \
+    })
+
+/**
+ * @brief One-shot macro: lookup, set r9, cast, and call.
  *
  * This is a GCC extension (statement expression).  It resolves the
- * symbol, calls the function, and returns the error code.  The
- * function result is written to @p p_out_ret.
+ * symbol, calls the function (with r9 save/restore), and returns the
+ * error code.  The function result is written to @p p_out_ret.
  *
  * @param[in]  p_mod      Pointer to the loaded module.
  * @param[in]  name       Symbol name to look up.
@@ -142,8 +160,8 @@ static inline udynlink_error_t udynlink_resolve_func(const udynlink_module_t *p_
  * @endcode
  *
  * @note Requires GCC or Clang (uses `({ ... })` statement expression).
- * @warning Not interrupt-safe. If an ISR calls into a different module
- *          while this call is active, the LOT base will be wrong.
+ * @note Safe for both prologued and --no-prologue modules because r9
+ *       is always saved and restored around the call.
  */
 #define UDYNLINK_CALL_MODULE_FUNC(p_mod, name, ret_type, args, p_out_ret) \
     ({ \

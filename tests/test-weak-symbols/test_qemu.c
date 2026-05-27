@@ -60,9 +60,6 @@ int test_qemu(void) {
             if (!check_extern_symbols(&mod, extern_syms))
                 goto exit;
 
-            uintptr_t* mod_base = (uintptr_t*)UDYNLINK_LOT_BASE_ADDR;
-            *mod_base = mod.ram_base;
-
             udynlink_sym_t sym;
             int expected_func = override ? 99 : 42;
             int expected_var = override ? 88 : 7;
@@ -73,6 +70,7 @@ int test_qemu(void) {
                 goto exit;
             }
             int (*p_func)(void) = (int (*)(void))sym.val;
+            UDYNLINK_PREPARE_CALL(&mod);
             if (p_func() != expected_func) {
                 printf("weak_func returned %d, expected %d (override=%d)\n", p_func(), expected_func, override);
                 goto exit;

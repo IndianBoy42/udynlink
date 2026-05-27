@@ -39,7 +39,6 @@ set(UDYNLINK_PLATFORM_DEFINES
     STM32F429xx
     USE_HAL_DRIVER
     HSE_VALUE=8000000
-    UDYNLINK_LOT_BASE_ADDR=0x20000000
 )
 
 # Include paths (relative to tests/qemu_host/)

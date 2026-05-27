@@ -35,7 +35,6 @@ extern "C" {
  * layout that follows the header is:
  *   - Relocation table (@c num_rels * 8 bytes)
  *   - Symbol table (@c symt_size bytes, rounded up to 4)
- *   - Dependency string table (@c deps_strtab_size bytes, v2.0+ only)
  *   - Code section (rounded up to a multiple of 4 bytes)
  *   - Data section
  */
@@ -52,8 +51,8 @@ typedef struct {
     uint16_t num_lot;
     /** Number of relocation entries. */
     uint16_t num_rels;
-    /** Number of dependency names (0 for ABI v1.0 modules). */
-    uint16_t num_deps;
+    /** Reserved field (must be 0). */
+    uint16_t reserved;
     /** Size of the symbol table in bytes. */
     uint32_t symt_size;
     /** Size of the code (.text) section in bytes. */
@@ -62,11 +61,8 @@ typedef struct {
     uint32_t data_size;
     /** Size of the zero-initialized data (.bss) section in bytes. */
     uint32_t bss_size;
-    /** Size of the dependency string table in bytes (0 for ABI v1.0 modules). */
-    uint32_t deps_strtab_size;
     /* Then relocations (num_rels * 8 bytes) */
     /* Then the symbol table (symt_size bytes, rounded up to 4) */
-    /* Then the dependency string table (deps_strtab_size bytes) [v2.0+] */
     /* Then the code (rounded up to a multiple of 4 bytes) */
     /* Then data */
 } udynlink_module_header_t;
@@ -85,15 +81,6 @@ typedef enum {
     /** Execute code in place (XIP); copy only data into RAM. */
     UDYNLINK_LOAD_MODE_XIP,
 } udynlink_load_mode_t;
-
-/**
- * @brief Sentinel returned by udynlink_external_get_module_handle() to defer a dependency.
- *
- * On ARM Cortex-M (32-bit), address 0x00000001 is never a valid heap-allocated
- * struct pointer, so it cannot collide with real module handles.  Existing hosts
- * that never return this sentinel keep the old strict behavior unchanged.
- */
-#define UDYNLINK_DEP_DEFERRED                 ((udynlink_module_t*)1)
 
 /**
  * @brief Sentinel returned by symbol-resolution callbacks to defer an extern symbol.
@@ -121,14 +108,12 @@ typedef enum {
  * this, use COPY_ALL.
  */
 typedef struct {
-    /** Module header (36 bytes). Only @c p_header is read by functions that take the full descriptor. */
+    /** Module header (32 bytes). Only @c p_header is read by functions that take the full descriptor. */
     const udynlink_module_header_t *p_header;
     /** Relocation table: num_rels * 2 * uint32_t. */
     const uint32_t *p_relocations;
     /** Symbol table base (first word = entry count). The string pool is assumed contiguous with entries. */
     const uint32_t *p_symtab;
-    /** Dependency string table (NULL for v1.0 or no deps). */
-    const char     *p_deps_strtab;
     /** Code section (.text) in the source. */
     const uint8_t  *p_code;
     /** Data section (.data) in the source. */
@@ -153,32 +138,10 @@ typedef struct _udynlink_module_t {
     };
     /** Bitmask storing the load mode and RAM ownership flags. */
     uint8_t info;
-    /** Number of valid entries in @c deps (populated by the loader for
-     *  non-deferred dependencies, or by the host for deferred links). */
-    uint8_t num_deps;
-    /** Number of other loaded modules that list this module as a dependency. */
-    uint8_t dep_refcount;
-    /** Capacity of the @c deps backing array (number of slots the host
-     *  allocated). Must be at least @c p_header->num_deps. */
-    uint8_t max_deps;
-    /** Array of pointers to dependency modules.
-     *
-     *  This is a host-allocated backing array of @c max_deps slots.
-     *  The first @c num_deps entries are valid dependency pointers;
-     *  remaining slots should be left @c NULL.  The loader populates
-     *  entries during udynlink_load_module() for dependencies that are
-     *  already loaded.  For deferred or optional dependencies, the host
-     *  must manually append pointers (bumping @c num_deps and the
-     *  target module's @c dep_refcount) before calling
-     *  udynlink_link_incremental() or udynlink_relink_all().
-     *
-     *  May be @c NULL if the module declares no dependencies. */
-    const struct _udynlink_module_t **deps;
-    /** Opaque user context pointer.  Never read or written by the loader;
-     *  provided for the host to associate arbitrary state with a module
-     *  handle (e.g., a filesystem path, a reference counter, or a
-     *  higher-level language runtime handle). */
-    void *user_ctx;
+    /** Reserved for future use. */
+    uint8_t reserved;
+    /** Reserved for future use. */
+    uint16_t reserved2;
     /**
      * Number of named (searchable) symbol entries in the module's symbol
      * table, starting at index 1.  The symbol table is sorted
@@ -188,6 +151,11 @@ typedef struct _udynlink_module_t {
      * load time.
      */
     uint16_t num_named_syms;
+    /** Opaque user context pointer.  Never read or written by the loader;
+     *  provided for the host to associate arbitrary state with a module
+     *  handle (e.g., a filesystem path, a reference counter, or a
+     *  higher-level language runtime handle). */
+    void *user_ctx;
 } udynlink_module_t;
 
 /**
@@ -220,8 +188,8 @@ typedef struct {
  * Weak symbol (defined in the module).
  *
  * At load time the loader first applies the module's own address (as for
- * INTERNAL/EXPORTED), then attempts host/dependency override via the same
- * three-tier resolution used for EXTERN symbols.  If no override is found the
+ * INTERNAL/EXPORTED), then attempts host override via
+ * udynlink_external_resolve_symbol().  If no override is found the
  * module's own definition remains in place.
  *
  * Limitation: direct PC-relative calls inside the module (e.g. `bl weak_func`)
@@ -257,10 +225,7 @@ _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_DUPLICATE_NAME),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_VERSION_MISMATCH),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_ARCH_MISMATCH),\
-_UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_MISSING_DEP),\
-_UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_CIRCULAR_DEP),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_IO_ERROR),\
-_UDYNLINK_EXPAND(UDYNLINK_ERR_MODULE_HAS_DEPENDENTS),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_INVALID_MODULE),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_HOOK_ABORTED)
 
@@ -310,19 +275,8 @@ typedef enum {
 #define UDYNLINK_HOST_ARCH_TAG UDYNLINK_ARCH_TAG_CORTEX_M4
 #endif
 
-#ifndef UDYNLINK_LOT_BASE_ADDR
-/**
- * @brief Fixed memory address where the loader writes the LOT base.
- *
- * The host must write @c p_mod->ram_base to this address before
- * calling any module function, because the module's assembly prologue
- * loads @c r9 from here.
- */
-#define UDYNLINK_LOT_BASE_ADDR 0x20000000
-#endif
-
-/** ABI version of this loader (2.0). */
-#define UDYNLINK_LOADER_ABI_VERSION           UDYNLINK_MAKE_VERSION(2, 0)
+/** ABI version of this loader (3.0). */
+#define UDYNLINK_LOADER_ABI_VERSION           UDYNLINK_MAKE_VERSION(3, 0)
 
 /**
  * @brief Architecture tag constants.
@@ -388,22 +342,17 @@ static inline int udynlink_module_has_no_prologue(const udynlink_module_header_t
 #define UDYNLINK_GET_MINOR_VERSION(v)         ((v) & 0xFF)
 
 /**
- * @brief Prepare the LOT base and r9 before calling a module function.
+ * @brief Set r9 to the module's RAM base before calling a module function.
  *
- * Writes @c p_mod->ram_base to ::UDYNLINK_LOT_BASE_ADDR so the module's
- * assembly prologue can load r9.  For modules built with --no-prologue,
- * also moves the RAM base directly into r9 via inline assembly.
- *
- * This macro is safe for both prologued and non-prologued modules.
+ * The module's assembly prologue (if present) saves the caller's r9 on
+ * the stack and restores it after the call.  For --no-prologue modules,
+ * the host must ensure r9 is set and restored manually, or use
+ * UDYNLINK_CALL() which handles save/restore automatically.
  *
  * @param[in] p_mod Pointer to the loaded module handle.
  */
 #define UDYNLINK_PREPARE_CALL(p_mod) do { \
-    uint32_t *_mb = (uint32_t *)UDYNLINK_LOT_BASE_ADDR; \
-    *_mb = (p_mod)->ram_base; \
-    if (udynlink_module_has_no_prologue((p_mod)->p_header)) { \
-        __asm volatile ("mov r9, %0" :: "r"((p_mod)->ram_base) : "r9"); \
-    } \
+    __asm volatile ("mov r9, %0" :: "r"((uint32_t)(p_mod)->ram_base) : "r9"); \
 } while(0)
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -505,36 +454,15 @@ size_t udynlink_get_image_metadata_size(const udynlink_module_header_t *header);
  */
 const char *udynlink_image_get_module_name(const uint32_t *p_symtab);
 
-/**
- * @brief Read dependency names from a module image without loading it.
- *
- * Only reads @p p_header (for @c num_deps) and @p deps_strtab.  The
- * caller does not need to provide a full udynlink_module_image_t.
- *
- * @param[in]  p_header     Pointer to the module header.
- * @param[in]  deps_strtab  Pointer to the dependency string table.
- * @param[out] deps         Array to receive dependency name pointers.
- *                           May be NULL if @p max_deps is 0.
- * @param[in]  max_deps     Maximum number of entries to write into @p deps.
- *
- * @return Total number of dependencies declared in the module image.
- *         This may be larger than @p max_deps if the array was too
- *         small.  Returns 0 if the image is invalid or has no
- *         dependencies.
- */
-size_t udynlink_image_get_deps(const udynlink_module_header_t *p_header,
-                               const char *deps_strtab,
-                               const char **deps, size_t max_deps);
-
 ////////////////////////////////////////////////////////////////////////////////
 // Public interface - module loading
 
 /**
  * @brief Load a module from a memory-mapped image.
  *
- * Validates the header, checks ABI version, resolves dependencies, allocates
- * RAM, copies sections according to @p load_mode, applies relocations, and
- * resolves extern symbols via the host callbacks.
+ * Validates the header, checks ABI version, allocates RAM, copies sections
+ * according to @p load_mode, applies relocations, and resolves extern symbols
+ * via the host callback.
  *
  * Architecture tag compatibility is **not** checked by this function.  Call
  * udynlink_check_arch_tag() beforehand if you want to enforce it.
@@ -554,7 +482,7 @@ size_t udynlink_image_get_deps(const udynlink_module_header_t *p_header,
  * @note When @p load_addr is NULL, the loader calls
  *       udynlink_external_malloc() to obtain RAM.
  * @note Before calling any function from the loaded module, the host
- *       must write @c p_mod->ram_base to ::UDYNLINK_LOT_BASE_ADDR.
+ *       must set r9 to @c p_mod->ram_base via UDYNLINK_PREPARE_CALL().
  * @note Not thread-safe. The loader uses no locks or atomics. Concurrent
  *       calls from multiple interrupt levels will corrupt internal state.
  *       The host must provide synchronization around load/unload.
@@ -564,8 +492,8 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
 /**
  * @brief Load a module from a non-contiguous image descriptor.
  *
- * Validates the header, resolves dependencies, allocates RAM, copies
- * sections according to @p load_mode, and applies relocations.
+ * Validates the header, allocates RAM, copies sections according to
+ * @p load_mode, and applies relocations.
  *
  * For COPY_ALL mode, this function copies each section from the image
  * descriptor into a single contiguous RAM buffer.  For COPY_TEXT_DATA
@@ -614,16 +542,15 @@ udynlink_error_t udynlink_load_apply_relocations(udynlink_module_t *p_mod,
 /**
  * @brief Unload a previously loaded module.
  *
- * Releases the module's RAM (unless it was caller-supplied), decrements
- * dependency reference counts, and clears the module handle.
+ * Releases the module's RAM (unless it was caller-supplied) and clears
+ * the module handle.
  *
  * @param[in] p_mod Pointer to the loaded module handle.
  *
- * @return ::UDYNLINK_OK on success, or ::UDYNLINK_ERR_INVALID_MODULE /
- *         ::UDYNLINK_ERR_MODULE_HAS_DEPENDENTS if the module is still referenced.
+ * @return ::UDYNLINK_OK on success, or ::UDYNLINK_ERR_INVALID_MODULE.
  *
  * @note Not thread-safe. Concurrent calls from different interrupt levels
- *       will corrupt dep_refcount. The host must provide synchronization.
+ *       will corrupt internal state. The host must provide synchronization.
  */
 udynlink_error_t udynlink_unload_module(udynlink_module_t *p_mod);
 
@@ -631,8 +558,8 @@ udynlink_error_t udynlink_unload_module(udynlink_module_t *p_mod);
  * @brief Run C++ global constructors for a loaded module.
  *
  * Looks up the @c __init_array symbol and executes the constructor
- * chain.  The host must set ::UDYNLINK_LOT_BASE_ADDR to
- * @c p_mod->ram_base before calling this function.
+ * chain.  The host must set r9 to @c p_mod->ram_base (via
+ * UDYNLINK_PREPARE_CALL()) before calling this function.
  *
  * @param[in] p_mod Pointer to the loaded module handle.
  */
@@ -679,27 +606,6 @@ const char *udynlink_get_module_name(const udynlink_module_t *p_mod);
  * @return Pointer to the null-terminated module name, or NULL on error.
  */
 const char *udynlink_get_module_name_from_image(const void *base_addr);
-
-/**
- * @brief Read dependency names from a module image without loading it.
- *
- * Inspects the header of the module image at @p base_addr and extracts
- * the dependency names from the dependency string table.  Up to
- * @p max_deps pointers are written into the @p deps array.  The
- * returned pointers point into the module image and remain valid as
- * long as @p base_addr remains valid.
- *
- * @param[in]  base_addr Address of the module image.
- * @param[out] deps      Array to receive dependency name pointers.
- *                       May be NULL if @p max_deps is 0.
- * @param[in]  max_deps  Maximum number of entries to write into @p deps.
- *
- * @return Total number of dependencies declared in the module image.
- *         This may be larger than @p max_deps if the array was too
- *         small.  Returns 0 if the image is invalid or has no
- *         dependencies.
- */
-size_t udynlink_get_module_deps(const void *base_addr, const char **deps, size_t max_deps);
 
 /**
  * @brief Look up a symbol in a module.
@@ -768,14 +674,9 @@ size_t udynlink_get_ram_requirements(const void *base_addr, udynlink_load_mode_t
  *
  * Scans the module's relocation table and attempts to resolve only those
  * EXTERN slots that are currently zero. Already-resolved slots are left
- * untouched, so host fallback symbols are not overwritten by later
- * dependency symbols.
+ * untouched.
  *
- * The caller is responsible for ensuring the module's @c deps[] array is
- * populated with all desired dependency modules before calling this function.
- * To populate a deferred dependency, append its pointer to
- * @c p_mod->deps[p_mod->num_deps++], then increment the dependency module's
- * @c dep_refcount, and finally call this function.
+ * Resolution is performed via udynlink_external_resolve_symbol() only.
  *
  * @param[in] p_mod Pointer to the loaded module.
  *
@@ -787,15 +688,7 @@ udynlink_error_t udynlink_link_incremental(udynlink_module_t *p_mod);
  * @brief Re-resolve all EXTERN relocations in a loaded module from scratch.
  *
  * Scans the module's relocation table and re-resolves every EXTERN slot
- * using the current @c deps[] array and the three-tier resolution chain.
- * This is slower than the incremental variant but ensures that dependency
- * module symbols take precedence over host fallback symbols.
- *
- * The caller is responsible for ensuring the module's @c deps[] array is
- * populated with all desired dependency modules before calling this function.
- * To populate a deferred dependency, append its pointer to
- * @c p_mod->deps[p_mod->num_deps++], then increment the dependency module's
- * @c dep_refcount, and finally call this function.
+ * using udynlink_external_resolve_symbol().
  *
  * @param[in] p_mod Pointer to the loaded module.
  *
@@ -808,7 +701,7 @@ udynlink_error_t udynlink_relink_all(udynlink_module_t *p_mod);
  *
  * Scans the module's relocation table for entries referencing @p sym_name and
  * overwrites the slot with @p sym_addr.  This is a low-level patch: it does
- * not update refcounts, deps, or the three-tier resolution chain.
+ * not update any loader-internal state beyond the relocation slot itself.
  *
  * @param[in] p_mod   Pointer to the loaded module.
  * @param[in] sym_name Null-terminated symbol name.
@@ -820,34 +713,11 @@ udynlink_error_t udynlink_relink_all(udynlink_module_t *p_mod);
 udynlink_error_t udynlink_link_symbol(udynlink_module_t *p_mod, const char *sym_name, uintptr_t sym_addr);
 
 /**
- * @brief Check whether all declared dependencies of a module are linked.
- *
- * @param[in] p_mod Pointer to a loaded module.
- *
- * @return 1 if every dependency declared in the module header is present
- *         in p_mod->deps, 0 otherwise.
- */
-int udynlink_is_module_fully_linked(const udynlink_module_t *p_mod);
-
-/**
- * @brief Return the handle of a linked dependency by name.
- *
- * @param[in] p_mod    Pointer to a loaded module.
- * @param[in] dep_name Null-terminated dependency name.
- *
- * @return Pointer to the dependency module if it is linked into @p p_mod,
- *         or NULL if the dependency is not linked (either deferred or
- *         not declared).
- */
-udynlink_module_t *udynlink_get_linked_dependency(const udynlink_module_t *p_mod, const char *dep_name);
-
-/**
  * @brief Check whether an extern symbol has a non-zero resolved value.
  *
  * A symbol that was deferred during load and has not yet been linked
- * will resolve to 0 (or the host fallback value). After
- * udynlink_link_incremental() or udynlink_relink_all() resolves it from
- * a dependency module, this function returns 1.
+ * will resolve to 0. After udynlink_link_incremental() or
+ * udynlink_relink_all() resolves it, this function returns 1.
  *
  * @param[in] p_mod    Pointer to a loaded module.
  * @param[in] sym_name Null-terminated symbol name.

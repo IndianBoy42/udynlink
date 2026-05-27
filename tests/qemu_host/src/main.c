@@ -23,9 +23,6 @@ static int g_module_count = 0;
 static const void *g_loading_addrs[UDYNLINK_MAX_MODULES];
 static int g_loading_count = 0;
 
-static const char *g_loading_names[UDYNLINK_MAX_MODULES];
-static int g_loading_names_count = 0;
-
 static const char *g_deferred_symbols[UDYNLINK_MAX_MODULES];
 static int g_deferred_count = 0;
 
@@ -56,15 +53,6 @@ void udynlink_test_unregister_module(udynlink_module_t *p_mod) {
             return;
         }
     }
-}
-
-void udynlink_test_add_loading_name(const char *name) {
-    if (g_loading_names_count < UDYNLINK_MAX_MODULES)
-        g_loading_names[g_loading_names_count++] = name;
-}
-
-void udynlink_test_clear_loading_names(void) {
-    g_loading_names_count = 0;
 }
 
 void udynlink_test_defer_symbol(const char *name) {
@@ -104,13 +92,6 @@ uintptr_t test_resolve_symbol(const char *name) {
     return 0;
 }
 
-uintptr_t udynlink_external_resolve_critical_symbol(const char *name) __attribute__((weak));
-uintptr_t udynlink_external_resolve_critical_symbol(const char *name) {
-    if (is_deferred_symbol(name))
-        return UDYNLINK_SYM_DEFERRED;
-    return 0;
-}
-
 extern int _write(int file, char *ptr, int len);
 
 uintptr_t udynlink_external_resolve_symbol(const char *name) {
@@ -124,28 +105,6 @@ uintptr_t udynlink_external_resolve_symbol(const char *name) {
         return (uintptr_t)&puts;
     else
         return test_resolve_symbol(name);
-}
-
-udynlink_module_t *udynlink_external_get_module_handle(const char *module_name) {
-    for (int i = 0; i < g_module_count; i++) {
-        if (g_modules[i] == NULL) continue;
-        const char *mod_name = udynlink_get_module_name(g_modules[i]);
-        if (mod_name && !strcmp(mod_name, module_name))
-            return g_modules[i];
-    }
-    for (int i = 0; i < g_loading_names_count; i++) {
-        if (g_loading_names[i] && !strcmp(g_loading_names[i], module_name))
-            return UDYNLINK_DEP_DEFERRED;
-    }
-    return NULL;
-}
-
-int udynlink_external_is_module_loading(const char *module_name) {
-    for (int i = 0; i < g_loading_count; i++) {
-        const char *name = udynlink_get_module_name_from_image(g_loading_addrs[i]);
-        if (name && !strcmp(name, module_name)) return 1;
-    }
-    return 0;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

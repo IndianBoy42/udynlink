@@ -29,12 +29,12 @@ struct _udynlink_module_t;
  *
  * These functions must be implemented by the host firmware (or operating
  * environment) that uses udynlink.  They provide memory management,
- * debug output, symbol resolution, and dependency lookup services to
- * the loader.  All callbacks may be invoked from the same context in
- * which the caller invoked udynlink_load_module() or
- * udynlink_unload_module(); on bare-metal Cortex-M targets this is
- * typically thread/interrupt context of the caller, so implementations
- * must be interrupt-safe if modules are loaded from interrupt handlers.
+ * debug output, and symbol resolution services to the loader.  All
+ * callbacks may be invoked from the same context in which the caller
+ * invoked udynlink_load_module() or udynlink_unload_module(); on
+ * bare-metal Cortex-M targets this is typically thread/interrupt context
+ * of the caller, so implementations must be interrupt-safe if modules are
+ * loaded from interrupt handlers.
  */
 
 /**
@@ -103,16 +103,18 @@ void udynlink_external_free(void *p);
 void udynlink_external_vprintf(const char *s, va_list va);
 
 /**
- * @brief Resolve a foreign symbol (primary / fallback tier).
+ * @brief Resolve a foreign symbol.
  *
  * Called during udynlink_load_module() for each unresolved extern
- * symbol after the critical-symbol callback and after searching
- * dependency modules.  This is the final tier of the three-tier
- * resolution chain.
+ * symbol.  This is the sole resolution hook; the host is responsible
+ * for all symbol lookup logic (e.g. hash table, linear search, or
+ * dynamic resolution).
  *
  * @param name Null-terminated symbol name.
  *
  * @return The absolute address of the symbol if the host provides it,
+ *         ::UDYNLINK_SYM_DEFERRED to defer resolution to a later
+ *         udynlink_link_incremental() / udynlink_link_symbol() call,
  *         or 0 if the symbol is not found.
  *
  * @note A weak default returning 0 (symbol not found) is provided.
@@ -121,62 +123,6 @@ void udynlink_external_vprintf(const char *s, va_list va);
  */
 uintptr_t udynlink_external_resolve_symbol(const char *name);
 
-/**
- * @brief Resolve a foreign symbol (critical / host-only tier).
- *
- * Called during udynlink_load_module() for each unresolved extern
- * symbol BEFORE searching dependency modules and BEFORE
- * udynlink_external_resolve_symbol().  Use this for symbols that must
- * always be supplied by the host firmware (e.g., core system services)
- * and must never be satisfied by another loaded module.
- *
- * @param name Null-terminated symbol name.
- *
- * @return The absolute address of the symbol if the host provides it,
- *         or 0 to let the resolution chain continue.
- *
- * @note A weak default returning 0 is provided.  Hosts that do not
- *       need the critical-symbol tier do not need to override it.
- */
-uintptr_t udynlink_external_resolve_critical_symbol(const char *name);
-
-/**
- * @brief Look up a loaded module by name.
- *
- * Called during udynlink_load_module() when a module declares
- * dependencies (via `mkmodule --depends`).  The loader checks that
- * every named dependency is already loaded before it proceeds.
- *
- * @param module_name Null-terminated module name.
- *
- * @return Pointer to the module handle (::udynlink_module_t) if the
- *         dependency is loaded, or NULL if it is not found.
- *
- * @note If any required dependency is not found,
- *       udynlink_load_module() fails with
- *       ::UDYNLINK_ERR_LOAD_MISSING_DEP.
- *
- * @note A weak default returning NULL is provided.  Hosts that do not
- *       use module dependencies do not need to override it.
- */
-struct _udynlink_module_t *udynlink_external_get_module_handle(const char *module_name);
-
-/**
- * @brief Check if a module is currently being loaded.
- *
- * Called during dependency validation. If a module declares a dependency
- * on a module that is already in the middle of being loaded, a circular
- * dependency exists.
- *
- * @param module_name Null-terminated module name.
- * @return Non-zero if a load for this module name is in progress, 0 otherwise.
- *
- * @note A weak default returning 0 is provided. Hosts that track load
- *       state can override this to enable cycle detection.
- */
-int udynlink_external_is_module_loading(const char *module_name);
-
-/**
 /**
  * @brief Convenience macro for building host symbol tables.
  *
