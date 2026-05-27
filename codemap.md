@@ -45,16 +45,14 @@ This repository is the **eh2k fork** of the original udynlink project. It adds C
 - Safe unload: modules with active dependents (tracked via `dep_refcount`) cannot be unloaded until all dependents are removed
 - v1.0 backward compatibility: `get_header_size()` returns 32 for v1.0, 36 for v2.0+
 
-### Streaming I/O Module Loading
-- New API: `udynlink_load_module_from_stream()` loads modules from a `udynlink_io_t` callback interface (random-access `read` + `get_size`), enabling loading from SD card, SPI flash, network streams, or any non-memory-mapped source without pre-buffering the entire image
-- Caller provides a work buffer (minimum 64 bytes, optimal size from `udynlink_get_stream_metadata_size()`); the loader reads metadata and copies sections through this buffer in chunks
-- On-demand symbol resolution: symbol entries and names are read from the stream during relocation processing, avoiding pre-loading the entire symbol table into RAM
-- Supports COPY_ALL and COPY_TEXT_DATA modes; XIP returns `UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED`
-- For COPY_TEXT_DATA streaming, the loader uses a COPY_ALL-style RAM layout so that `udynlink_lookup_symbol` works after loading
-- Query functions: `udynlink_get_ram_requirements()`, `udynlink_get_ram_requirements_stream()`, `udynlink_get_stream_metadata_size()`
-- New error code: `UDYNLINK_ERR_LOAD_IO_ERROR` for stream read failures
-- New helper macro: `UDYNLINK_SYMBOL(sym)` for building host symbol tables
-- New test: `tests/test-streaming-load/` with mock `udynlink_io_t` wrapping memory-mapped data
+### Non-Contiguous Image Loading
+- New API: `udynlink_load_module_image()` loads modules from a `udynlink_module_image_t` descriptor with per-section pointers, enabling loading from SD card, SPI flash, decompressed buffers, or any non-contiguous source
+- `udynlink_image_from_memory()` and `udynlink_image_from_module()` build the descriptor from a contiguous UDLM buffer or an already-loaded module handle
+- Low-level primitives for custom pipelines: `udynlink_validate_header()`, `udynlink_compute_ram_size()`, `udynlink_get_image_metadata_size()`, `udynlink_image_get_module_name()`, `udynlink_image_get_deps()`, and `udynlink_load_apply_relocations()`
+- The relocation engine is fully decoupled from source layout: `udynlink_load_apply_relocations()` takes raw pointers to the header, relocation table, and symbol table, then patches the module's RAM
+- Both `udynlink_load_module()` (contiguous memory) and `udynlink_load_module_image()` (non-contiguous descriptor) share a single canonical relocation path via the same internal helpers
+- Query functions: `udynlink_get_ram_requirements()` (wrapper around `udynlink_compute_ram_size()`)
+- New test: `tests/test-streaming-load/` renamed to exercise `udynlink_load_module_image()` for all load modes plus planning/validation APIs
 - `uintptr_t` cleanup: all raw `(uint32_t)ptr` casts replaced with `(uint32_t)(uintptr_t)ptr` to suppress 64-bit host warnings
 
 ## Changelog Summary (eh2k fork)

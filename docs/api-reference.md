@@ -27,7 +27,6 @@ These macros control the behavior of the udynlink loader. Some are **required** 
 |-------|----------|---------|-------------|
 | `UDYNLINK_HOST_ARCH_TAG` | No | `UDYNLINK_ARCH_TAG_CORTEX_M4` | Architecture tag of the host MCU. Used at load time to validate that a module was compiled for a compatible core family and float ABI. |
 | `UDYNLINK_LOT_BASE_ADDR` | No | `0x20000000` | Fixed RAM address where the loader writes the current module's `ram_base` before calling any module function. The module's assembly prologue reads this address to set `r9` (the LOT base register). |
-| `UDYNLINK_STREAM_BUF_SIZE` | No | `512` | Default work buffer size for streaming I/O operations. |
 ### Sentinel Macros
 
 | Macro | Value | Description |
@@ -94,7 +93,7 @@ typedef struct {
 
 ### `udynlink_module_t`
 
-A runtime handle representing a loaded module instance. The host allocates this structure and passes it to `udynlink_load_module` or `udynlink_load_module_from_stream`.
+A runtime handle representing a loaded module instance. The host allocates this structure and passes it to `udynlink_load_module` or `udynlink_load_module_image`.
 
 ```c
 typedef struct _udynlink_module_t {
@@ -151,58 +150,33 @@ typedef struct {
 
 ---
 
-### `udynlink_io_t`
+### `udynlink_module_image_t`
 
-Streaming I/O callback structure used by `udynlink_load_module_from_stream`.
+Non-contiguous module image descriptor. Points to each section of a module image independently. The loader reads relocation and symbol information through these pointers; it never assumes the image is contiguous.
 
 ```c
-typedef int32_t (*udynlink_read_cb_t)(void *pv_ctx, void *buf,
-                                      size_t num_bytes, size_t offset);
-
-typedef int32_t (*udynlink_get_size_cb_t)(void *pv_ctx);
-
 typedef struct {
-    udynlink_read_cb_t     read;
-    udynlink_get_size_cb_t  get_size;
-    void                  *pv_ctx;
-} udynlink_io_t;
+    const udynlink_module_header_t *p_header;       // module header
+    const uint32_t                *p_relocations; // relocation table
+    const uint32_t                *p_symtab;        // symbol table base
+    const char                    *p_deps_strtab;   // dependency string table
+    const uint8_t                 *p_code;          // .text section
+    const uint8_t                 *p_data;          // .data section
+} udynlink_module_image_t;
 ```
 
 **Field descriptions:**
 
 | Field | Description |
 |-------|-------------|
-| `read` | Called to read `num_bytes` from `offset` into `buf`. Must return the number of bytes actually read, or `-1` on error. |
-| `get_size` | Called to query the total module image size in bytes. Must return the size, or `-1` on error. |
-| `pv_ctx` | Opaque context pointer passed back to both callbacks. Typically holds a file handle or SD-card state. |
+| `p_header` | Pointer to the module header (36 bytes). |
+| `p_relocations` | Pointer to the relocation table (`num_rels * 2 * uint32_t`). |
+| `p_symtab` | Pointer to the symbol table base (first word = entry count). The string pool is assumed contiguous with entries. |
+| `p_deps_strtab` | Pointer to the dependency string table (NULL for v1.0 or no deps). |
+| `p_code` | Pointer to the code section in the source. |
+| `p_data` | Pointer to the data section in the source. |
 
----
-
-### `udynlink_load_hooks_t`
-
-Descriptor for streaming load lifecycle hooks. Passed to `udynlink_load_module_from_stream_ex()`. A `NULL` pointer means "no hooks" and is fully backward compatible.
-
-```c
-typedef udynlink_error_t (*udynlink_hook_cb_t)(
-    udynlink_hook_stage_t stage,
-    udynlink_module_t *p_mod,
-    void *pv_hook_ctx
-);
-
-typedef struct {
-    udynlink_hook_cb_t  on_event;
-    void               *pv_hook_ctx;
-} udynlink_load_hooks_t;
-```
-
-**Field descriptions:**
-
-| Field | Description |
-|-------|-------------|
-| `on_event` | Single callback invoked for every stage. Returning any value other than `UDYNLINK_OK` aborts the load immediately with `UDYNLINK_ERR_LOAD_HOOK_ABORTED`. |
-| `pv_hook_ctx` | Opaque user context forwarded to the callback. Use this to pass state (e.g., a progress counter, abort reason flag, or policy struct) between the hook and the caller. |
-
-**Size:** The struct is 8 bytes on 32-bit ARM (two pointers). Using a single callback + stage enum instead of one callback per stage saves ~12 bytes per descriptor.
+For memory-mapped images that follow the standard UDLM layout, use `udynlink_image_from_memory()` to populate this structure.
 
 ---
 
@@ -253,7 +227,7 @@ Controls how much of the module image is copied to RAM versus executed in place.
 | Value | Name | Description |
 |-------|------|-------------|
 | `0` | `UDYNLINK_LOAD_MODE_COPY_ALL` | Copy header, relocations, symbol table, code, and data to RAM. Largest RAM footprint; safest if the source flash may be updated later. |
-| `1` | `UDYNLINK_LOAD_MODE_COPY_TEXT_DATA` | Copy text and data sections to RAM. The header stays at `base_addr`. Not supported by streaming load (internally converted to `COPY_ALL`). |
+| `1` | `UDYNLINK_LOAD_MODE_COPY_TEXT_DATA` | Copy text and data sections to RAM. The header stays at `base_addr` (or at `image->p_header` for non-contiguous loads). |
 | `2` | `UDYNLINK_LOAD_MODE_XIP` | Copy **only** data to RAM; execute code directly from flash at `base_addr`. Smallest RAM footprint. Requires `udynlink_external_is_pointer_in_ram` to verify that code addresses are not in RAM. |
 
 ---
@@ -268,8 +242,8 @@ Error codes returned by loader functions.
 | `1` | `UDYNLINK_ERR_LOAD_INVALID_SIGN` | The module signature does not match "UDLM". |
 | `2` | `UDYNLINK_ERR_LOAD_RAM_LEN_LOW` | The caller-provided `load_size` is smaller than the RAM required by the module. |
 | `3` | `UDYNLINK_ERR_LOAD_OUT_OF_MEMORY` | `udynlink_external_malloc` returned `NULL`. |
-| `4` | `UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED` | XIP is not supported for this load configuration (e.g., streaming load, or code resides in RAM). |
-| `5` | `UDYNLINK_ERR_LOAD_INVALID_MODE` | An invalid load mode was specified. Also returned by streaming load if the work buffer is too small. |
+| `4` | `UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED` | XIP is not supported because the code pointer is not in an executable region. |
+| `5` | `UDYNLINK_ERR_LOAD_INVALID_MODE` | An invalid load mode was specified. |
 | `6` | `UDYNLINK_ERR_LOAD_BAD_RELOCATION_TABLE` | A relocation references an out-of-range symbol, or a relocation targets the module name entry. |
 | `7` | `UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL` | An `extern` symbol could not be resolved by the host or any dependency module. |
 | `8` | `UDYNLINK_ERR_LOAD_DUPLICATE_NAME` | A module with the same name is already loaded. (Currently unused; the eh2k fork allows duplicate instances.) |
@@ -277,25 +251,14 @@ Error codes returned by loader functions.
 | `11` | `UDYNLINK_ERR_LOAD_ARCH_MISMATCH` | The module's `arch_tag` is incompatible with the host (different core family or stricter float ABI). |
 | `12` | `UDYNLINK_ERR_LOAD_MISSING_DEP` | A declared dependency was not found, the dependency string table is missing, or `num_deps` exceeds the host-provided `max_deps` capacity. |
 | `13` | `UDYNLINK_ERR_LOAD_CIRCULAR_DEP` | A circular dependency was detected: a module depends on itself, or the host reported a dependency is already being loaded via `udynlink_external_is_module_loading()`. |
-| `14` | `UDYNLINK_ERR_LOAD_IO_ERROR` | A streaming read operation failed (returned `-1` or short count). |
+| `14` | `UDYNLINK_ERR_LOAD_IO_ERROR` | Reserved. Previously used for streaming I/O read failures. |
 | `15` | `UDYNLINK_ERR_MODULE_HAS_DEPENDENTS` | `udynlink_unload_module` was called on a module that other loaded modules still depend on. |
 | `16` | `UDYNLINK_ERR_INVALID_MODULE` | A `NULL` module pointer was passed, or the module handle is uninitialized. |
-| `17` | `UDYNLINK_ERR_LOAD_HOOK_ABORTED` | A streaming load lifecycle hook returned non-OK, aborting the load. |
+| `17` | `UDYNLINK_ERR_LOAD_HOOK_ABORTED` | Reserved. Previously used when a streaming load lifecycle hook returned non-OK. |
 
 ---
 
-### `udynlink_hook_stage_t`
 
-Stages at which a streaming load lifecycle hook is invoked. Only used by `udynlink_load_module_from_stream_ex()`. The memory-mapped loader does not invoke hooks.
-
-| Value | Name | Description |
-|-------|------|-------------|
-| `0` | `UDYNLINK_HOOK_HEADER_PARSED` | Header read and validated (signature, ABI version, architecture tag). RAM not yet allocated. `p_mod->p_header` points to a stack-local copy valid only during the callback. |
-| `1` | `UDYNLINK_HOOK_DEPS_RESOLVED` | Dependencies verified and `dep_refcount` incremented. RAM allocated (or set to `load_addr`). Sections not yet copied. |
-| `2` | `UDYNLINK_HOOK_SECTIONS_LOADED` | Code and data copied to RAM, BSS zeroed. LOT unmapped. Relocations not yet applied. |
-| `3` | `UDYNLINK_HOOK_RELOCS_APPLIED` | All relocations processed. Module is fully loaded and ready to use. |
-
----
 
 ### `udynlink_debug_level_t`
 
@@ -438,91 +401,223 @@ Loads a module from a memory-mapped image.
 
 ---
 
-### `udynlink_load_module_from_stream`
+### `udynlink_load_module_image`
 
 ```c
-udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
-    const udynlink_io_t *p_io, void *load_addr, size_t load_size,
-    udynlink_load_mode_t load_mode, void *scratch_buf, size_t scratch_buf_size);
+udynlink_error_t udynlink_load_module_image(udynlink_module_t *p_mod,
+    const udynlink_module_image_t *image,
+    void *load_addr, size_t load_size,
+    udynlink_load_mode_t load_mode);
 ```
 
-Loads a module from a stream (e.g., SD card, serial flash).
+Loads a module from a non-contiguous image descriptor.
 
 **Parameters:**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `p_mod` | `udynlink_module_t *` | Pointer to caller-allocated module handle. Must not be `NULL`. **Must be zero-initialized before the first call** (e.g. `memset(p_mod, 0, sizeof(*p_mod))`), or the error-path cleanup may attempt to free garbage pointers. |
-| `p_io` | `const udynlink_io_t *` | Streaming callbacks and context. See [`udynlink_io_t`](#udynlink_io_t). |
+| `image` | `const udynlink_module_image_t *` | Module image descriptor with all section pointers valid for the duration of the load. |
 | `load_addr` | `void *` | RAM address for loading, or `NULL` for automatic allocation. |
 | `load_size` | `size_t` | Size of pre-allocated RAM if `load_addr` is not `NULL`. |
-| `load_mode` | `udynlink_load_mode_t` | Must be `COPY_ALL` or `COPY_TEXT_DATA`. `XIP` is **not** supported and returns `UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED`. |
-| `scratch_buf` | `void *` | Caller-provided scratch buffer for temporary state (header, name strings, reloc data). Minimum 132 bytes. |
-| `scratch_buf_size` | `size_t` | Size of `scratch_buf`. Must be at least `UDYNLINK_STREAM_MIN_SCRATCH_BUF_SIZE` (132 bytes). |
+| `load_mode` | `udynlink_load_mode_t` | `COPY_ALL`, `COPY_TEXT_DATA`, or `XIP`. |
 
 **Return value:**
 
 - `UDYNLINK_OK` on success.
-- `UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED` if `load_mode == UDYNLINK_LOAD_MODE_XIP`.
-- `UDYNLINK_ERR_LOAD_INVALID_MODE` if `scratch_buf` is `NULL` or `scratch_buf_size < 132`.
-- `UDYNLINK_ERR_LOAD_IO_ERROR` if any `read` or `get_size` callback fails.
-- Other errors from [`udynlink_error_t`](#udynlink_error_t) apply as for `udynlink_load_module`.
+- `UDYNLINK_ERR_LOAD_INVALID_SIGN` — `image->p_header` does not point to a valid "UDLM" header.
+- `UDYNLINK_ERR_LOAD_VERSION_MISMATCH` — module toolchain version is newer than the loader.
+- `UDYNLINK_ERR_LOAD_ARCH_MISMATCH` — core family or float ABI mismatch.
+- `UDYNLINK_ERR_LOAD_MISSING_DEP` — a dependency is missing or the dependency table is malformed.
+- `UDYNLINK_ERR_LOAD_RAM_LEN_LOW` — caller-provided `load_size` is too small.
+- `UDYNLINK_ERR_LOAD_OUT_OF_MEMORY` — `udynlink_external_malloc` returned `NULL`.
+- `UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL` — an `extern` symbol could not be resolved by any source.
+- `UDYNLINK_ERR_LOAD_BAD_RELOCATION_TABLE` — corrupt relocation data.
 
 **Notes:**
 
-- The streaming loader reads the header first, validates it, then pulls the rest of the image through the `read` callback.
-- Relocations and symbol names are fetched on demand from the stream; the work buffer is reused for each chunk.
-- Internally, `COPY_TEXT_DATA` mode is converted to `COPY_ALL` because the header must reside in RAM for relocation processing.
-- **Zero-initialization is required.** The caller must clear `*p_mod` (e.g. with `memset`) before the first call to `udynlink_load_module_from_stream()`, for the same reason as `udynlink_load_module()`.
-- On error, allocated memory is freed and `p_mod` is zeroed.
+- For `COPY_ALL` mode, this function copies each section from the image descriptor into a single contiguous RAM buffer.
+- For `COPY_TEXT_DATA` and `XIP` modes, the metadata (header, relocations, symbol table) is **not** copied; it must remain accessible via `image->p_header` for post-load symbol lookups. If your source metadata is not contiguous with the header, use `COPY_ALL`.
+- **Zero-initialization is required.** The caller must clear `*p_mod` before the first call.
+- On error, all internally allocated memory is freed and `p_mod` is zeroed.
+- The host must write `p_mod->ram_base` to `*(uint32_t *)UDYNLINK_LOT_BASE_ADDR` before calling any module function.
 
-**Thread safety:** The loader does **not** use any locking. Concurrent calls to `udynlink_load_module_from_stream` from multiple interrupt levels will corrupt the internal module table and `dep_refcount` fields. See [Thread Safety](integrating-as-host.md#thread-safety-and-concurrency) for full details.
+**Thread safety:** The loader does **not** use any locking. Concurrent calls to `udynlink_load_module_image` from multiple interrupt levels will corrupt the internal module table and `dep_refcount` fields. See [Thread Safety](integrating-as-host.md#thread-safety-and-concurrency) for full details.
 
 ---
 
-### `udynlink_load_module_from_stream_ex`
+### `udynlink_load_apply_relocations`
 
 ```c
-udynlink_error_t udynlink_load_module_from_stream_ex(
-    udynlink_module_t *p_mod,
-    const udynlink_io_t *p_io,
-    void *load_addr,
-    size_t load_size,
-    udynlink_load_mode_t load_mode,
-    void *scratch_buf,
-    size_t scratch_buf_size,
-    const udynlink_load_hooks_t *p_hooks);
+udynlink_error_t udynlink_load_apply_relocations(udynlink_module_t *p_mod,
+    const udynlink_module_header_t *p_header,
+    const uint32_t *p_relocations,
+    const uint32_t *p_symtab);
 ```
 
-Identical to `udynlink_load_module_from_stream()` but accepts an optional lifecycle hooks descriptor.
+Applies all relocations to a module whose sections are already in RAM.
+
+This is a low-level primitive for custom loading pipelines. The caller must have already allocated RAM, copied code/data, zeroed BSS, and populated `p_mod->p_ram` and `p_mod->p_header`. This function reads relocation and symbol data from the provided pointers and patches the module's LOT and `.data` slots.
 
 **Parameters:**
 
-All parameters are the same as `udynlink_load_module_from_stream()`, plus:
-
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `p_hooks` | `const udynlink_load_hooks_t *` | Optional lifecycle hooks. If non-NULL, `on_event` is called at each of the four [`udynlink_hook_stage_t`](#udynlink_hook_stage_t) stages. If NULL, behavior is identical to `udynlink_load_module_from_stream()`. |
+| `p_mod` | `udynlink_module_t *` | Module handle with RAM and header already set. |
+| `p_header` | `const udynlink_module_header_t *` | Module header (for `num_rels`, `num_lot`). |
+| `p_relocations` | `const uint32_t *` | Pointer to the relocation table. |
+| `p_symtab` | `const uint32_t *` | Pointer to the symbol table base. |
 
 **Return value:**
 
 - `UDYNLINK_OK` on success.
-- `UDYNLINK_ERR_LOAD_HOOK_ABORTED` if a hook returned non-OK. The specific stage is identifiable from the caller's own hook logic (both sides are controlled by the same developer).
-- All other error codes from `udynlink_load_module_from_stream()` apply.
+- `UDYNLINK_ERR_LOAD_BAD_RELOCATION_TABLE` if a relocation references an out-of-range symbol.
+- `UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL` if an `EXTERN` symbol could not be resolved.
 
-**Hook abort and cleanup:**
+---
 
-When a hook returns an error, the loader sets `res = UDYNLINK_ERR_LOAD_HOOK_ABORTED` and jumps to the normal error cleanup path (`exit` label). This means:
-- Auto-allocated RAM is freed via `udynlink_external_free()`.
-- `dep_refcount` increments from successfully resolved dependencies are **not** rolled back (they were already applied before the hook that aborts). The caller must handle this if aborting at `DEPS_RESOLVED` or later.
-- The module handle is zeroed.
+### `udynlink_validate_header`
 
-**Use cases for hooks:**
+```c
+udynlink_error_t udynlink_validate_header(const udynlink_module_header_t *header);
+```
 
-1. **Pre-load verification** — at `HEADER_PARSED`, inspect the header (module name, size, version) and reject modules that fail an allowlist or signature check.
-2. **Progress reporting** — at each stage, update a UI progress bar or log a timestamp.
-3. **Post-load integrity check** — at `SECTIONS_LOADED`, verify a checksum over the loaded code/data before allowing execution.
-4. **Post-link audit** — at `RELOCS_APPLIED`, log which symbols were resolved and from which tier.
+Validates a module header.
+
+Checks the signature and ABI version. Architecture tag compatibility is **not** checked here; call `udynlink_check_arch_tag()` separately.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `header` | `const udynlink_module_header_t *` | Pointer to the module header. |
+
+**Return value:** `UDYNLINK_OK` if valid, or an error code (`UDYNLINK_ERR_LOAD_INVALID_SIGN` or `UDYNLINK_ERR_LOAD_VERSION_MISMATCH`).
+
+---
+
+### `udynlink_compute_ram_size`
+
+```c
+size_t udynlink_compute_ram_size(const udynlink_module_header_t *header,
+                                 udynlink_load_mode_t mode);
+```
+
+Computes the RAM size required to load a module.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `header` | `const udynlink_module_header_t *` | Pointer to the module header. |
+| `mode` | `udynlink_load_mode_t` | Intended load mode. |
+
+**Return value:** Required RAM size in bytes.
+
+---
+
+### `udynlink_get_image_metadata_size`
+
+```c
+size_t udynlink_get_image_metadata_size(const udynlink_module_header_t *header);
+```
+
+Returns the size of module metadata (everything before the code section).
+
+This is the byte offset from the start of the module image to the beginning of the code section. For non-contiguous images, this is the total size of the metadata buffers that must be provided.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `header` | `const udynlink_module_header_t *` | Pointer to the module header. |
+
+**Return value:** Metadata size in bytes.
+
+---
+
+### `udynlink_image_get_module_name`
+
+```c
+const char *udynlink_image_get_module_name(const uint32_t *p_symtab);
+```
+
+Gets the module name from a symbol table.
+
+Only reads `p_symtab`; the caller does not need to provide a full `udynlink_module_image_t`. The string pool is assumed to be contiguous with the symbol table entries.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `p_symtab` | `const uint32_t *` | Pointer to the symbol table base. |
+
+**Return value:** Pointer to the null-terminated module name, or `NULL` on error.
+
+---
+
+### `udynlink_image_get_deps`
+
+```c
+size_t udynlink_image_get_deps(const udynlink_module_header_t *p_header,
+                               const char *deps_strtab,
+                               const char **deps, size_t max_deps);
+```
+
+Reads dependency names from a module image without loading it.
+
+Only reads `p_header` (for `num_deps`) and `deps_strtab`. The caller does not need to provide a full `udynlink_module_image_t`.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `p_header` | `const udynlink_module_header_t *` | Pointer to the module header. |
+| `deps_strtab` | `const char *` | Pointer to the dependency string table. |
+| `deps` | `const char **` | Array to receive dependency name pointers. May be `NULL` if `max_deps` is 0. |
+| `max_deps` | `size_t` | Maximum number of entries to write into `deps`. |
+
+**Return value:** Total number of dependencies declared in the module image. This may be larger than `max_deps` if the array was too small. Returns 0 if the image is invalid or has no dependencies.
+
+---
+
+### `udynlink_image_from_memory`
+
+```c
+void udynlink_image_from_memory(const void *base_addr,
+                                udynlink_module_image_t *out_image);
+```
+
+Populates an image descriptor from a contiguous memory buffer.
+
+Derives each section pointer from `base_addr` using the standard UDLM layout. The resulting descriptor is suitable for `udynlink_load_module_image()` or for direct use with the low-level relocation API.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `base_addr` | `const void *` | Address of the module image in memory. |
+| `out_image` | `udynlink_module_image_t *` | Image descriptor to populate. |
+
+---
+
+### `udynlink_image_from_module`
+
+```c
+void udynlink_image_from_module(const udynlink_module_t *p_mod,
+                                udynlink_module_image_t *out_image);
+```
+
+Populates an image descriptor from an already-loaded module.
+
+Convenience wrapper around `udynlink_image_from_memory()` using the module's current header pointer. Assumes the loaded module image remains contiguous (true for all load modes).
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `p_mod` | `const udynlink_module_t *` | Pointer to the loaded module handle. |
+| `out_image` | `udynlink_module_image_t *` | Image descriptor to populate. |
 
 ---
 
@@ -859,45 +954,7 @@ Computes the RAM needed to load a module from a memory-mapped image, **before** 
 
 ---
 
-### `udynlink_get_ram_requirements_stream`
 
-```c
-size_t udynlink_get_ram_requirements_stream(const udynlink_io_t *p_io,
-                                            udynlink_load_mode_t mode);
-```
-
-Computes the RAM needed to load a module from a streaming source.
-
-**Parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `p_io` | `const udynlink_io_t *` | Streaming I/O callbacks. |
-| `mode` | `udynlink_load_mode_t` | Intended load mode. |
-
-**Return value:** Required RAM size in bytes, or `0` on I/O error or invalid signature.
-
-**Note:** For `COPY_TEXT_DATA` mode, the streaming implementation internally copies the header to RAM, so the returned size includes the header offset.
-
----
-
-### `udynlink_get_stream_metadata_size`
-
-```c
-size_t udynlink_get_stream_metadata_size(const udynlink_io_t *p_io);
-```
-
-Returns the size of module metadata (everything before the code section) for a streaming load.
-
-**Parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `p_io` | `const udynlink_io_t *` | Streaming I/O callbacks. |
-
-**Return value:** Size in bytes equal to the byte offset from the start of the image to the code section (header + relocation table + symbol table + dependency string table + padding to 4-byte alignment). This allows the loader to read all metadata in a single `read()` callback. Returns `0` on I/O error or invalid signature.
-
----
 
 ## C++ Support
 
@@ -1032,7 +1089,7 @@ void *udynlink_external_malloc(size_t size);
 
 Allocates `size` bytes of RAM for a module.
 
-**Called by:** `udynlink_load_module` and `udynlink_load_module_from_stream` when `load_addr == NULL` (auto-allocation mode).
+**Called by:** `udynlink_load_module` and `udynlink_load_module_image` when `load_addr == NULL` (auto-allocation mode).
 
 **Semantics:** Must return a pointer to at least `size` bytes of writable RAM, aligned suitably for 32-bit access. May return `NULL` on failure.
 
@@ -1074,7 +1131,7 @@ uintptr_t udynlink_external_resolve_symbol(const char *name);
 
 Resolves an external symbol name to an address.
 
-**Called by:** The relocation engine for every `UDYNLINK_SYM_TYPE_EXTERN` symbol that was **not** resolved by `udynlink_external_resolve_critical_symbol` and was **not** found in any dependency module.
+**Called by:** The relocation engine (both load-time and post-link re-resolution) for every `UDYNLINK_SYM_TYPE_EXTERN` symbol that was **not** resolved by `udynlink_external_resolve_critical_symbol` and was **not** found in any dependency module.
 
 **Semantics:** Must return the 32-bit address of the named symbol, `0` if the symbol is unknown, or `UDYNLINK_SYM_DEFERRED` if the symbol is known but should not be resolved yet. This is the *fallback* host symbol resolution path in the three-tier search order.
 
@@ -1108,7 +1165,7 @@ struct _udynlink_module_t *udynlink_external_get_module_handle(const char *modul
 
 Looks up a loaded module by its name string.
 
-**Called by:** `udynlink_load_module` and `udynlink_load_module_from_stream` during dependency validation, to verify that modules declared via `--depends` are already loaded.
+**Called by:** `udynlink_load_module` and `udynlink_load_module_image` during dependency validation, to verify that modules declared via `--depends` are already loaded.
 
 **Semantics:** Must search the host's module registry and return one of three values:
 - A valid `udynlink_module_t *` — dependency is loaded and will be linked immediately.
@@ -1127,7 +1184,7 @@ int udynlink_external_is_module_loading(const char *module_name);
 
 Checks whether a module is currently in the middle of being loaded.
 
-**Called by:** `udynlink_load_module` and `udynlink_load_module_from_stream` during dependency validation, immediately after `udynlink_external_get_module_handle` returns `NULL` for a missing dependency.
+**Called by:** `udynlink_load_module` and `udynlink_load_module_image` during dependency validation, immediately after `udynlink_external_get_module_handle` returns `NULL` for a missing dependency.
 
 **Semantics:** Must return a non-zero value if the host has an in-progress load for the named module, and `0` otherwise. A weak default returning `0` is provided. Hosts that track load state can override this to enable cross-module circular dependency detection.
 

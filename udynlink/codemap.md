@@ -20,12 +20,11 @@ Core C library implementing a micro dynamic linker for ARM Cortex-M MCUs. Handle
      - If `symt_offset` has bit 30 set: `.text` base relocation (`*p += &code`).
      - Otherwise: resolve symbol from symbol table and write into LOT or data section.
    - Resolve external symbols via `udynlink_external_resolve_symbol`.
-2. **Streaming Module Loading** (`udynlink_load_module_from_stream`):
-   - Same validation and relocation logic as the memory-mapped path, but reads module data through a `udynlink_io_t` callback interface instead of directly dereferencing memory.
-   - Requires a caller-provided work buffer (minimum 64 bytes) for chunked I/O reads.
-   - Supports `COPY_ALL` and `COPY_TEXT_DATA` only; XIP returns `UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED`.
-   - For COPY_TEXT_DATA, the streaming loader internally uses a COPY_ALL-style RAM layout (header+metadata+code+data after LOT) so that `udynlink_lookup_symbol` works correctly after loading.
-   - On-demand symbol resolution: reads individual symbol entries and names from the stream during relocation processing, avoiding pre-loading the entire symbol table.
+2. **Non-Contiguous Image Loading** (`udynlink_load_module_image`):
+   - Loads a module from a `udynlink_module_image_t` descriptor where each section (header, relocs, symtab, code, data) can point to a different, non-contiguous buffer.
+   - Uses the **same canonical relocation path** as `udynlink_load_module`: validation, RAM allocation, section copy, BSS zeroing, and relocation are all shared helpers.
+   - Supports all three load modes: `COPY_ALL`, `COPY_TEXT_DATA`, and `XIP`.
+   - Post-load symbol lookup (`udynlink_lookup_symbol`) works because `p_mod->p_header` always points to the contiguous source image regardless of load mode.
 3. **C++ Constructor Init** (`udynlink_cpp_init`):
    - Looks up `__init_array` symbol in the loaded module.
    - Writes `p_mod->ram_base` to fixed address `0x20000000`.
@@ -58,13 +57,15 @@ Core C library implementing a micro dynamic linker for ARM Cortex-M MCUs. Handle
 - `udynlink_get_module_name_from_image(const void*)`: Reads module name directly from a base address without loading.
 - `udynlink_get_image_size(const void*)`: Computes total size of a module blob from its header.
 - `udynlink_get_text_pointer(const udynlink_module_t*)`: Returns pointer to the module's `.text` section in memory.
+- `udynlink_module_image_t`, `udynlink_load_module_image()`, `udynlink_image_from_memory()`, `udynlink_validate_header()`, `udynlink_compute_ram_size()`: Non-contiguous image loading primitives replacing the old streaming I/O API.
 
-## Streaming I/O API
-- `udynlink_io_t`: Struct with `read(pv_ctx, buf, num_bytes, offset)` and `get_size(pv_ctx)` callbacks plus a `pv_ctx` user pointer. Enables loading from SD card, SPI flash, network streams, or any non-memory-mapped source.
-- `udynlink_load_module_from_stream(p_mod, p_io, load_addr, load_size, load_mode, scratch_buf, scratch_buf_size)`: Loads a module from a streaming source. COPY_ALL and COPY_TEXT_DATA only.
-- `udynlink_get_ram_requirements(base_addr, mode)`: Returns RAM needed for a memory-mapped module.
-- `udynlink_get_ram_requirements_stream(p_io, mode)`: Returns RAM needed for a streaming module (reads header from stream).
-- `udynlink_get_stream_metadata_size(p_io)`: Returns size of module metadata before the code section (= `sizeof(header) + num_rels*8 + symt_size`).
-- `UDYNLINK_STREAM_BUF_SIZE`: Compile-time default (512 bytes, matches FatFS sector size). Minimum work buffer is 64 bytes.
-- `UDYNLINK_ERR_LOAD_IO_ERROR`: Error code for I/O read failures from stream callbacks.
+## Non-Contiguous Image API
+- `udynlink_module_image_t`: Descriptor with per-section pointers (`p_header`, `p_relocations`, `p_symtab`, `p_deps_strtab`, `p_code`, `p_data`). Enables loading from SD card, SPI flash, decompressed buffers, or any source where sections are not contiguous.
+- `udynlink_image_from_memory(base_addr, out)`: Populates an `image_t` from a standard contiguous UDLM buffer.
+- `udynlink_image_from_module(p_mod, out)`: Populates an `image_t` from a loaded module's `p_header`.
+- `udynlink_load_module_image(p_mod, image, load_addr, load_size, mode)`: Loads a module from a non-contiguous image descriptor. Supports all three load modes.
+- `udynlink_validate_header(hdr)`: Validates signature and ABI version before allocating RAM.
+- `udynlink_compute_ram_size(hdr, mode)`: Returns RAM needed for a module.
+- `udynlink_get_image_metadata_size(hdr)`: Returns size of metadata before the code section.
+- `udynlink_load_apply_relocations(p_mod, hdr, relocs, symtab)`: Low-level relocation primitive for custom loading pipelines.
 - `UDYNLINK_SYMBOL(sym)`: Convenience macro for host symbol table entries: `{ #sym, (void*)(uintptr_t)(sym) }`.

@@ -9,16 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Streaming load lifecycle hooks** — `udynlink_load_module_from_stream_ex()` with optional `udynlink_load_hooks_t` callback invoked at four stages: `HEADER_PARSED`, `DEPS_RESOLVED`, `SECTIONS_LOADED`, and `RELOCS_APPLIED`. Returning non-OK from a hook aborts the load with `UDYNLINK_ERR_LOAD_HOOK_ABORTED` and triggers normal cleanup. The original `udynlink_load_module_from_stream()` remains a thin backward-compatible wrapper with `NULL` hooks.
-- **Layered I/O wrapper examples** — documented patterns in `udynlink/udynlink_io_examples.h` for building custom `udynlink_io_t` wrappers that perform on-the-fly decompression, ECC correction, or decryption without modifying the loader. Includes page-based decompression and per-page ECC wrapper templates.
-- **Integration test** `test-streaming-hooks` — validates hook ordering, `p_mod` state at each stage, abort-and-cleanup behavior, and backward compatibility.
+- **`udynlink_module_image_t`** — non-contiguous module image descriptor with per-section pointers (`p_header`, `p_relocations`, `p_symtab`, `p_deps_strtab`, `p_code`, `p_data`). Decouples the relocation engine from source layout so users can load from decompressed, encrypted, or scattered buffers without copying everything into one contiguous blob first.
+- **`udynlink_load_module_image()`** — high-level API that loads from a `udynlink_module_image_t`, copying sections into RAM according to the load mode and then applying relocations through the shared canonical path.
+- **`udynlink_image_from_memory()` / `udynlink_image_from_module()`** — builders that populate an image descriptor from a contiguous UDLM buffer or from an already-loaded module handle.
+- **Low-level loading primitives** — `udynlink_validate_header()`, `udynlink_compute_ram_size()`, `udynlink_get_image_metadata_size()`, `udynlink_image_get_module_name()`, `udynlink_image_get_deps()`, and `udynlink_load_apply_relocations()`. These let advanced users implement custom loading pipelines (e.g., read header from SD card, validate, allocate RAM, copy sections chunk by chunk, then apply relocations).
+- **`resolve_symbol_tiered()`** — extracted static helper for three-tier symbol resolution (critical host → dependencies → fallback host). Used uniformly by load-time relocation, post-link re-resolution (`apply_extern_relocations`), and runtime weak override (`udynlink_lookup_symbol`).
 - **`user_ctx` field on `udynlink_module_t`** — an opaque `void *` pointer that the loader never touches, provided for the host to associate arbitrary state (filesystem path, language runtime handle, reference counter, etc.) with a module handle.
 
 ## [0.1.0] - 2026-05-26
 
 ### Added
 
-- **Streaming I/O module loading** — load modules from SD card, SPI flash, or any non-memory-mapped source via the `udynlink_io_t` callback interface without pre-buffering the entire image. Introduces `udynlink_load_module_from_stream()`, `udynlink_get_ram_requirements_stream()`, and `udynlink_get_stream_metadata_size()`.
+- **Non-contiguous image loading** — load modules from SD card, SPI flash, or any non-memory-mapped source by assembling a `udynlink_module_image_t` from scattered buffers. Replaces the old `udynlink_io_t` streaming API with a more flexible descriptor-based approach that shares the same canonical relocation path as memory-backed loads.
 - **Hash-based O(1) symbol resolution** — optional GNU hash table for host firmware symbol lookup. Adds `udynlink_hash.h`/`udynlink_hash.c` and the `scripts/mkhostsyms` tool that generates a const hash table from a host ELF.
 - **Module dependency tracking** — declare dependencies at build time with `mkmodule --depends mod_a,mod_b`. The loader enforces that all declared dependencies are already loaded. Three-tier symbol resolution: critical host symbols → dependency modules → fallback host symbols. Safe unload via `dep_refcount` prevents unloading a module that has active dependents.
 - **ABI versioning and architecture tag validation** — module headers include `mod_version`, `udynlink_version`, and `arch_tag`. The loader validates compatibility at load time and rejects modules compiled for a mismatched core family, FPU, or float ABI.

@@ -2,7 +2,7 @@
 
 # udynlink — Micro Dynamic Linker for ARM Cortex-M
 
-`udynlink` compiles C/C++ code into position-independent binary modules that can be loaded and executed at runtime on ARM Cortex-M MCUs. Modules can run from RAM or flash (execute in place), resolve symbols from the host firmware and from each other, and be loaded from memory or streaming I/O sources.
+`udynlink` compiles C/C++ code into position-independent binary modules that can be loaded and executed at runtime on ARM Cortex-M MCUs. Modules can run from RAM or flash (execute in place), resolve symbols from the host firmware and from each other, and be loaded from contiguous memory or non-contiguous image sources.
 
 **Use cases:** RAM-resident bootloaders, runtime firmware patching, plugin/module systems, scripting language loaders, LGPL-compliant dynamic loading.
 
@@ -72,7 +72,7 @@ hello(42);
 udynlink_unload_module(&mod);
 ```
 
-See the [Host Integration Guide](docs/integrating-as-host.md) for complete details on callbacks, symbol tables, hash-based resolution, streaming I/O, and error handling.
+See the [Host Integration Guide](docs/integrating-as-host.md) for complete details on callbacks, symbol tables, hash-based resolution, non-contiguous image loading, and error handling.
 
 ## Quick Start: Module Development
 
@@ -111,9 +111,9 @@ For the complete guide covering dependencies, C++ modules, data handling, and th
 - C and C++ modules supported (no exceptions, no RTTI)
 - ABI versioning and architecture tag validation at load time
 - Module dependency tracking with safe unload
-- Streaming I/O loading (SD card, SPI flash, network)
-- Streaming load lifecycle hooks for verification, progress, and audit
-- Layered I/O wrappers for on-the-fly decompression and ECC without loader changes
+- Non-contiguous image loading for SD card, SPI flash, and custom pipelines
+- Low-level relocation primitives for building custom loading pipelines
+- Fine-grained planning APIs (`udynlink_validate_header`, `udynlink_compute_ram_size`) for pre-allocation
 - Hash-based O(1) symbol resolution
 - Requires [GCC ARM Embedded](https://developer.arm.com/tools-and-software/open-source-software/developer-tools/gnu-toolchain) (`arm-none-eabi-gcc`)
 

@@ -12,7 +12,7 @@
 8. [Symbol Resolution at Load Time](#symbol-resolution-at-load-time)
 9. [ABI Versioning and Architecture Tags](#abi-versioning-and-architecture-tags)
 10. [Module Dependencies (ABI 2.0+)](#module-dependencies-abi-20)
-11. [Streaming I/O Loading](#streaming-io-loading)
+11. [Non-Contiguous Image Loading](#non-contiguous-image-loading)
 
 ---
 
@@ -772,67 +772,85 @@ This scans the module's relocation table for entries referencing `sym_name` and 
 
 ---
 
-## Streaming I/O Loading
+## Non-Contiguous Image Loading
 
-### The `udynlink_io_t` Interface
+### The `udynlink_module_image_t` Descriptor
 
-For modules stored on non-memory-mapped media (SD card, SPI flash, serial stream), udynlink provides a streaming loader that does not require the entire image to be in RAM first:
+For modules stored on non-memory-mapped media (SD card, SPI flash, decompressed buffers), udynlink provides a descriptor-based loader that does not require the entire image to be contiguous in RAM first:
 
 ```c
-typedef int32_t (*udynlink_read_cb_t)(void *pv_ctx, void *buf,
-                                      uint32_t num_bytes, uint32_t offset);
-typedef int32_t (*udynlink_get_size_cb_t)(void *pv_ctx);
-
 typedef struct {
-    udynlink_read_cb_t      read;
-    udynlink_get_size_cb_t  get_size;
-    void                   *pv_ctx;
-} udynlink_io_t;
+    const udynlink_module_header_t *p_header;      // module header
+    const uint32_t                *p_relocations;  // relocation table
+    const uint32_t                *p_symtab;       // symbol table base
+    const char                    *p_deps_strtab;  // dependency string table
+    const uint8_t                 *p_code;         // .text section
+    const uint8_t                 *p_data;         // .data section
+} udynlink_module_image_t;
 ```
 
-- `read(pv_ctx, buf, num_bytes, offset)` — read `num_bytes` from `offset` into `buf`. Returns bytes read or `-1` on error.
-- `get_size(pv_ctx)` — return total image size or `-1` on error.
-- `pv_ctx` — opaque user pointer (e.g., a file handle or flash device descriptor).
+Each field points to one section of the module image independently. The loader reads relocation and symbol information through these pointers; it never assumes the image is contiguous. For a standard contiguous UDLM buffer, use `udynlink_image_from_memory()` to populate the descriptor:
+
+```c
+udynlink_module_image_t image;
+udynlink_image_from_memory(base_addr, &image);
+```
 
 ### Loading Function
 
 ```c
-udynlink_error_t udynlink_load_module_from_stream(
+udynlink_error_t udynlink_load_module_image(
     udynlink_module_t *p_mod,
-    const udynlink_io_t *p_io,
+    const udynlink_module_image_t *image,
     void *load_addr,        // NULL = auto-allocate
-    uint32_t load_size,     // size of load_addr region
-    udynlink_load_mode_t load_mode,
-    void *scratch_buf,     // scratch buffer (min 132 bytes)
-    uint32_t scratch_buf_size  // must be >= UDYNLINK_STREAM_MIN_SCRATCH_BUF_SIZE
+    size_t load_size,       // size of load_addr region
+    udynlink_load_mode_t load_mode
 );
 ```
 
-### Supported Modes and Restrictions
+### Supported Modes
 
-- **COPY_ALL** and **COPY_TEXT_DATA** are supported.
-- **XIP is not supported** — returns `UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED`. Streaming from a non-memory-mapped source directly into executable flash is not practical in the general case.
+All three load modes are supported:
+- **COPY_ALL** — copies header, metadata, code, and data into a single contiguous RAM buffer.
+- **COPY_TEXT_DATA** — copies code and data into RAM; metadata stays at the source pointers.
+- **XIP** — copies only data to RAM; code stays at `image->p_code` (must be in executable flash).
 
-### Work Buffer
+For `COPY_TEXT_DATA` and `XIP`, the metadata (header, relocation table, symbol table) must remain accessible via `image->p_header` for post-load symbol lookups. If your source layout does not satisfy this (e.g., decompressed metadata and code live in different buffers), use `COPY_ALL`.
 
-The caller provides a scratch buffer for chunked I/O. The minimum size is **64 bytes** (`UDYNLINK_STREAM_MIN_WORK_BUF_SIZE`). The optimal size, which allows the loader to read all metadata (header + relocations + symbol table) in a single `read()` call, is:
+### Custom Loading Pipelines
+
+Advanced users can implement their own loading pipeline using the low-level primitives:
+
+1. **Read and validate the header** — `udynlink_validate_header(&header)`
+2. **Compute RAM size** — `udynlink_compute_ram_size(&header, mode)`
+3. **Allocate RAM** — your own allocator or pool
+4. **Copy sections** — from your I/O source into the RAM buffer at the right offsets
+5. **Zero BSS** — `memset(data + header.data_size, 0, header.bss_size)`
+6. **Apply relocations** — `udynlink_load_apply_relocations(p_mod, &header, relocs, symtab)`
+
+This gives you full control over buffering strategy, I/O chunking, and memory layout.
+
+### Planning APIs
+
+Before loading, you can inspect a module image without allocating RAM:
 
 ```c
-uint32_t optimal = udynlink_get_stream_metadata_size(p_io);
-// = byte offset to the code section (header + relocs + symtab + deps strtab + padding)
+// Validate signature and ABI version
+udynlink_error_t err = udynlink_validate_header(&header);
+
+// Compute RAM needed
+size_t ram = udynlink_compute_ram_size(&header, UDYNLINK_LOAD_MODE_COPY_ALL);
+
+// Get module name directly from the symbol table
+const char *name = udynlink_image_get_module_name(image.p_symtab);
+
+// Read dependency names
+const char *deps[8];
+size_t n = udynlink_image_get_deps(&header, image.p_deps_strtab, deps, 8);
 ```
 
-A typical default is 512 bytes (matching FatFS sector size), defined as `UDYNLINK_STREAM_BUF_SIZE`.
-
-### On-Demand Symbol Resolution
-
-Unlike the memory-mapped path, the streaming loader does not hold the entire symbol table in RAM. During relocation processing, it reads individual symbol entries and their names from the stream as needed. This minimizes RAM usage for large modules with large symbol tables.
-
-### COPY_TEXT_DATA Streaming Internals
-
-When `COPY_TEXT_DATA` is requested via the streaming loader, the implementation internally loads the module as if `COPY_ALL` was requested (copying header + metadata + code + data into RAM). After loading, the module structure is adjusted so that `udynlink_lookup_symbol` and subsequent operations work correctly. The effect on the caller is the same: text and data sections are in RAM, metadata is accessible.
-
 ---
+
 
 ## Cross-Reference
 
