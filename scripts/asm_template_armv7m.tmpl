@@ -8,7 +8,11 @@
     .thumb_func
     .align 1
     .section .text_nogc, "x"
+    {% if s in weak_names %}
+    .weak {{s}}
+    {% else %}
     .globl {{s}}
+    {% endif %}
     .type {{s}}, %function
     .extern {{actname}}
     .type {{actname}}, %function

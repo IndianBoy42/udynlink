@@ -54,10 +54,10 @@ static const char * const error_codes[] = {
 #undef _UDYNLINK_EXPAND
 
 // Symbol table masks and data
-#define UDYNLINK_SYM_OFFSET_MASK              0x0FFFFFFF
-#define UDYNLINK_SYM_INFO_SHIFT               28
-#define UDYNLINK_SYM_INFO_CODE_MASK           0x04
-#define UDYNLINK_SYM_INFO_TYPE_MASK           0x03
+#define UDYNLINK_SYM_OFFSET_MASK              0x07FFFFFF
+#define UDYNLINK_SYM_INFO_SHIFT               27
+#define UDYNLINK_SYM_INFO_CODE_MASK           0x08
+#define UDYNLINK_SYM_INFO_TYPE_MASK           0x07
 #define UDYNLINK_SYM_NAME_OFFSET              0
 
 // Module structure masks
@@ -216,7 +216,7 @@ static udynlink_sym_t *get_sym_at(const udynlink_module_header_t *p_header, uint
 static udynlink_sym_t *offset_sym(const udynlink_module_t *p_mod, udynlink_sym_t *p_sym) {
     uint32_t prev_val = p_sym->val;
 
-    if ((p_sym->type == UDYNLINK_SYM_TYPE_INTERNAL) || (p_sym->type == UDYNLINK_SYM_TYPE_EXPORTED)) {
+    if ((p_sym->type == UDYNLINK_SYM_TYPE_INTERNAL) || (p_sym->type == UDYNLINK_SYM_TYPE_EXPORTED) || (p_sym->type == UDYNLINK_SYM_TYPE_WEAK)) {
         if (p_sym->location == UDYNLINK_SYM_LOCATION_CODE) {
             p_sym->val += (uint32_t)(uintptr_t)get_code_pointer(p_mod);
         } else {
@@ -473,6 +473,29 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
                 *p_rel_location = offset_sym(p_mod, &sym)->val;
                 break;
 
+            case UDYNLINK_SYM_TYPE_WEAK:
+                UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Applying weak relocation for symbol at index %u, name=%s at lot_offset=%u\n", symt_offset, sym.name, lot_offset);
+                *p_rel_location = offset_sym(p_mod, &sym)->val;
+                {
+                    uint32_t sym_addr = udynlink_external_resolve_critical_symbol(sym.name);
+                    if (sym_addr == 0) {
+                        for (uint8_t d = 0; d < p_mod->num_deps; d++) {
+                            udynlink_sym_t dep_sym;
+                            if (udynlink_lookup_symbol(p_mod->deps[d], sym.name, &dep_sym) != NULL) {
+                                sym_addr = dep_sym.val;
+                                break;
+                            }
+                        }
+                    }
+                    if (sym_addr == 0) {
+                        sym_addr = udynlink_external_resolve_symbol(sym.name);
+                    }
+                    if (sym_addr > 0) {
+                        *p_rel_location = sym_addr;
+                    }
+                }
+                break;
+
             case UDYNLINK_SYM_TYPE_EXTERN:
                 UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Applying extern relocation for symbol at index %u, name=%s at lot_offset=%u\n", symt_offset, sym.name, lot_offset);
                 {
@@ -633,7 +656,25 @@ udynlink_sym_t *udynlink_lookup_symbol(const udynlink_module_t *p_mod, const cha
         idx = 0;
         while (get_sym_at(p_mod->p_header, idx ++, p_sym) != NULL) { // iterate through module's symbol table
             if (!strcmp(p_sym->name, name)) { // symbol found
-                return offset_sym(p_mod, p_sym); // offset value properly before returning
+                offset_sym(p_mod, p_sym); // offset value properly before returning
+                if (p_sym->type == UDYNLINK_SYM_TYPE_WEAK) {
+                    uint32_t sym_addr = udynlink_external_resolve_critical_symbol(name);
+                    if (sym_addr == 0) {
+                        for (uint8_t d = 0; d < p_mod->num_deps; d++) {
+                            udynlink_sym_t dep_sym;
+                            if (udynlink_lookup_symbol(p_mod->deps[d], name, &dep_sym) != NULL) {
+                                sym_addr = dep_sym.val;
+                                break;
+                            }
+                        }
+                    }
+                    if (sym_addr == 0)
+                        sym_addr = udynlink_external_resolve_symbol(name);
+                    if (sym_addr > 0) {
+                        p_sym->val = sym_addr;
+                    }
+                }
+                return p_sym;
             }
         }
     }
@@ -895,6 +936,34 @@ udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
                 else
                     sym_val += (uint32_t)(uintptr_t)get_data_pointer(p_mod);
                 *p_rel_location = sym_val;
+            } else if (sym_type == UDYNLINK_SYM_TYPE_WEAK) {
+                if (sym_location == UDYNLINK_SYM_LOCATION_CODE)
+                    sym_val += (uint32_t)(uintptr_t)get_code_pointer(p_mod);
+                else
+                    sym_val += (uint32_t)(uintptr_t)get_data_pointer(p_mod);
+                *p_rel_location = sym_val;
+                char sym_name[64];
+                uint32_t name_stream_offset = symt_base + (name_off & UDYNLINK_SYM_OFFSET_MASK);
+                if (stream_read_string(p_io, sym_name, name_stream_offset,
+                                       sizeof(sym_name), work_buf, work_buf_size) < 0) {
+                    res = UDYNLINK_ERR_LOAD_IO_ERROR;
+                    goto exit;
+                }
+                uint32_t sym_addr = udynlink_external_resolve_critical_symbol(sym_name);
+                if (sym_addr == 0) {
+                    for (uint8_t d = 0; d < p_mod->num_deps; d++) {
+                        udynlink_sym_t dep_sym;
+                        if (udynlink_lookup_symbol(p_mod->deps[d], sym_name, &dep_sym) != NULL) {
+                            sym_addr = dep_sym.val;
+                            break;
+                        }
+                    }
+                }
+                if (sym_addr == 0)
+                    sym_addr = udynlink_external_resolve_symbol(sym_name);
+                if (sym_addr > 0) {
+                    *p_rel_location = sym_addr;
+                }
             } else {
                 char sym_name[64];
                 uint32_t name_stream_offset = symt_base + (name_off & UDYNLINK_SYM_OFFSET_MASK);

@@ -141,6 +141,8 @@ typedef struct {
 #define UDYNLINK_SYM_TYPE_EXTERN              2
 /** Special symbol representing the module name. */
 #define UDYNLINK_SYM_TYPE_MODULE_NAME                3
+/** Weak symbol: resolved by the host if available, otherwise uses the module's own definition. */
+#define UDYNLINK_SYM_TYPE_WEAK                       4
 
 /** Symbol resides in the code (.text) section. */
 #define UDYNLINK_SYM_LOCATION_CODE            0

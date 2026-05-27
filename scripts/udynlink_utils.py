@@ -138,9 +138,11 @@ def get_symbols_in_elf(obj):
                 syms[str(symbol.name)] = sdata
     return syms
 
-# TODO: also consider weak functions here?
 def get_public_functions_in_object(obj):
-    return [s for s, d in get_symbols_in_elf(obj).items() if d["type"] == "STT_FUNC" and d["bind"] == "STB_GLOBAL"]
+    return [s for s, d in get_symbols_in_elf(obj).items() if d["type"] == "STT_FUNC" and d["bind"] in ("STB_GLOBAL", "STB_WEAK")]
+
+def get_weak_functions_in_object(obj):
+    return [s for s, d in get_symbols_in_elf(obj).items() if d["type"] == "STT_FUNC" and d["bind"] == "STB_WEAK"]
 
 def get_local_symbols_in_object(obj):
     return [s for s, d in get_symbols_in_elf(obj).items() if d["bind"] == "STB_LOCAL" and s.startswith(".")]

@@ -85,6 +85,7 @@ def compile(src_name, args, public_symbols, macros=[]):
     for objname in [] + object_files:
         # Generate temporary object file with renamed symbols
         global_funcs = [s for s in get_public_functions_in_object(objname) if len(public_symbols) == 0 or s in public_symbols or s == "__init_array"]
+        weak_funcs = [s for s in get_weak_functions_in_object(objname) if s in global_funcs]
         debug("Generating temporary object files with wrapped symbols '%s'" % ", ".join(global_funcs), args)
         temp_obj = os.path.join(objname + '.temp.o')
         os.rename(objname, temp_obj)
@@ -97,7 +98,7 @@ def compile(src_name, args, public_symbols, macros=[]):
         loader = FileSystemLoader(os.path.dirname(os.path.abspath(__file__)))
         env = Environment(loader = loader)
         tmpl = env.get_template(args.template)
-        data = tmpl.render({"sym_names": sym_renames, "lot_base": "0x%08X" % args.lot_base})
+        data = tmpl.render({"sym_names": sym_renames, "weak_names": weak_funcs, "lot_base": "0x%08X" % args.lot_base})
         p_fname = os.path.join(objname + "_prologue.s")
         with open(p_fname, "wt") as f:
             f.write(str(data))
@@ -174,6 +175,14 @@ def process(output, args):
             else:
                 sym_map[s] = "external"
                 debug("Added symbol '%s' (%s) to list of external symbols" % (s, syms[s]["type"]), args)
+        elif d["bind"] == "STB_WEAK":
+            defined = d["section"] != "SHN_UNDEF"
+            if defined:
+                sym_map[s] = "weak"
+                debug("Added symbol '%s' (%s) to list of weak symbols" % (s, syms[s]["type"]), args)
+            else:
+                sym_map[s] = "external"
+                debug("Added symbol '%s' (%s) to list of external symbols" % (s, syms[s]["type"]), args)
         else:
             if d["type"] == "STT_FILE":
                 continue
@@ -181,7 +190,8 @@ def process(output, args):
             debug("Added symbol '%s' (%s) to list of local symbols" % (s, syms[s]["type"]), args)
     print_list([s for s in sym_map if sym_map[s] == "exported"], "Exported :", args)
     print_list([s for s in sym_map if sym_map[s] == "external"], "External :", args)
-    print_list([s for s in sym_map if sym_map[s] == "local"],"Locals   :", args)
+    print_list([s for s in sym_map if sym_map[s] == "weak"],   "Weak     :", args)
+    print_list([s for s in sym_map if sym_map[s] == "local"],   "Locals   :", args)
 
     # Process relocations
     set_debug_col('yellow')
@@ -200,7 +210,7 @@ def process(output, args):
             debug("Ignoring relocation R_ARM_THM_CALL for symbol '%s' of type '%s'" % (s, syms[s]["type"]), args)
             continue
         elif t == "R_ARM_GOT_BREL":
-            if sym_map[s] == "local" or sym_map[s] == "exported":
+            if sym_map[s] == "local" or sym_map[s] == "exported" or sym_map[s] == "weak":
                 debug("Found local relocation for symbol '%s' (offset is %X, value is %x)" % (s, offset, value), args)
                 local_relocs.append((s, offset, value))
             elif sym_map[s] == "external":
@@ -281,7 +291,7 @@ def process(output, args):
     debug("%s Building image %s" % ('-' * 10, '-' * 10), args)
     img = bytearray("UDLM".encode('ascii'))  # Signature (4b)
     # The first entry in the symbol table is always the module name
-    slist_all = [s for s in sym_map if (s in reloc_name_to_idx) or sym_map[s] == "external" or sym_map[s] == "exported"]
+    slist_all = [s for s in sym_map if (s in reloc_name_to_idx) or sym_map[s] == "external" or sym_map[s] == "exported" or sym_map[s] == "weak"]
     img += struct.pack("<H", args.mod_version_val)    # Module ABI version (2b)
     img += struct.pack("<H", args.udynlink_version_val)  # Loader ABI version (2b)
     img += struct.pack("<H", args.arch_tag_val)        # Architecture tag (2b)
@@ -362,19 +372,21 @@ def process(output, args):
     for i, s in enumerate(slist):
         debug_hint = ""
         if i > 0:  # regular symbol (not the module name).
-            # The "offset" part of the symbol def has only 28 bits usable as offset
-            # The most signifcant 4 bits encode data about the symbol itself:
+            # The "offset" part of the symbol def has only 27 bits usable as offset
+            # The most signifcant 5 bits encode data about the symbol itself:
             #     31: always 0, except for the last entry marker (which is 0xFFFFFFFF)
             #     30: 1 if in code section, 0 if in data section
-            #     29-28: visibility (0 = local, 1 = exported, 2 = external, 3 = module name). Local symbols do NOT have a name (offset is 0).
+            #     29-27: type (0 = local, 1 = exported, 2 = external, 3 = module name, 4 = weak). Local symbols do NOT have a name (offset is 0).
             defined_in_code = sect_idx_mapping[syms[s]["section"]] == sectname_code
             if sym_map[s] == "local":
                 type_data = 0
             elif sym_map[s] == "exported":
                 type_data = 1
+            elif sym_map[s] == "weak":
+                type_data = 4
             else:  # external
                 type_data = 2
-            type_data |= 4 if defined_in_code else 0
+            type_data |= 8 if defined_in_code else 0
             val = syms[s]["value"]
             # Symbols that are not in the code section (and are defined in the module) will have their value offseted with the
             # start of the .data section in the image
@@ -383,9 +395,9 @@ def process(output, args):
             if val_offset:
                 debug_hint += "Offset by -0x%08X bytes from value 0x%08X" % (val_offset, val)
             val = val - val_offset
-            s_off = (off if sym_map[s] != "local" else 0) | (type_data << 28)
+            s_off = (off if sym_map[s] != "local" else 0) | (type_data << 27)
         else:  # module name
-            val, s_off = 0, (3 << 28) | off
+            val, s_off = 0, (3 << 27) | off
         img += struct.pack("<II", s_off, val)
         debug("%02d: Symbol '%s', %s { offset: 0x%08X, value 0x%08X }" % 
               (i, s, debug_hint, s_off, val), args)
