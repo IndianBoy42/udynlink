@@ -155,6 +155,10 @@ cmake --build tests/build
 
 The platform is selected via `-DUDYNLINK_PLATFORM=<name>` (default: `stm32f429_discovery`), which loads the corresponding file from `tests/platforms/<name>/`.
 
+## New Headers
+
+- `udynlink/udynlink_call.h` — C convenience layer for host-call ergonomics (Phase 1). Provides `udynlink_func_t`, `udynlink_resolve_func()`, `UDYNLINK_CALL`, and `UDYNLINK_CALL_MODULE_FUNC`.
+
 ## Architecture & Key Constraints
 
 ### Position-Independent Code Model
