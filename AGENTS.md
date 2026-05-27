@@ -22,7 +22,18 @@ Recent expansion adds: compile-time target configuration (`UDYNLINK_LOT_BASE_ADD
 - **`arm-none-eabi-gcc`** / **`arm-none-eabi-g++`** / **`arm-none-eabi-objcopy`** (GCC ARM Embedded)
 - **CMake** ≥ 3.16
 - **Python 3** with `pyelftools`, `Jinja2` (managed via `uv` / `pyproject.toml`)
-- **QEMU** for tests. Defaults to the legacy xPack `qemu-system-gnuarmeclipse`, but the harness now supports any QEMU binary via `UDYNLINK_QEMU_BIN` env var
+- **QEMU** for tests. We test against two QEMU variants:
+  - **Mainline QEMU** (`qemu-system-arm` 9.2.4+): Used for MPS2-AN3xx/AN5xx and Olimex platforms. Usually available via your distro package manager (`apt install qemu-system-arm`, `brew install qemu`, etc.).
+  - **Legacy xPack QEMU** (`qemu-system-gnuarmeclipse`): Used for STM32F4xx discovery boards (fastest). This is the legacy GNU MCU Eclipse fork.
+
+  **Quick setup:**
+  - Run `just setup-qemu` to download the latest xPack release (mainline `qemu-system-arm`) into `tests/`.
+  - Run `just setup-qemu-legacy` to download the last xPack release that includes `qemu-system-gnuarmeclipse` (7.2.5-1) into `tests/`.
+  - The Justfile will automatically prefer these local copies over system-wide installations.
+
+  **Manual setup:** Download the appropriate xPack tarball from https://github.com/xpack-dev-tools/qemu-arm-xpack/releases and extract it to `tests/`. The latest recommended version is 9.2.4-1 for mainline QEMU, and 7.2.5-1 for the legacy fork.
+
+  The test harness supports any QEMU binary via `UDYNLINK_QEMU_BIN` and `UDYNLINK_QEMU_LEGACY_BIN` environment variables.
 
 **Optional tools:**
 - **`scripts/mkhostsyms`** — reads a host firmware ELF and generates a C header with a const GNU hash table for O(1) symbol resolution (see Hash-Based Symbol Resolution below)

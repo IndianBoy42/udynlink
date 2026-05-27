@@ -8,7 +8,6 @@
 *.map
 *_module_data.h
 *.d
-tests/qemu_host/src/test_qemu.c
 *.pyc
 temp/*
 *.txt

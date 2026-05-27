@@ -93,17 +93,37 @@ The following variables are read by `test_driver.py` and the `Justfile`:
 
 ## QEMU Setup
 
+### Quick Setup: xPack QEMU (recommended)
+
+The simplest way to get both QEMU variants is to run:
+
+```bash
+just setup-qemu
+```
+
+This downloads the xPack QEMU release (currently 9.2.4-1) and extracts it to `tests/xpack-qemu-arm-*/`. The tarball contains both `qemu-system-arm` (mainline) and `qemu-system-gnuarmeclipse` (legacy). The Justfile automatically prefers these local binaries over anything on your system PATH.
+
+To verify what binaries the Justfile will use:
+
+```bash
+just qemu-status
+```
+
 ### Mainline QEMU
 
 `qemu-system-arm` 9.2.4+ is the preferred emulator for all new platforms. It supports MPS2, MPS3, Olimex, and micro:bit machines natively. Mainline QEMU does **not** exhibit the Flash-to-RAM call quirk seen in the legacy fork.
 
 All mainline test recipes pass `-semihosting` in `UDYNLINK_QEMU_EXTRA_FLAGS`. Without semihosting, the `_sys_write0` calls in `semihosting.c` will silently fail and no output will reach the console.
 
+**Quick setup:** Run `just setup-qemu` to download and extract the xPack release into `tests/`. The Justfile will prefer this local copy.
+
 ### Legacy xPack QEMU
 
 `qemu-system-gnuarmeclipse` was historically used for STM32F429 testing. It is significantly faster for that specific board because of STM32-specific optimizations in the fork. However, xPack discontinued the fork in release 9.2.4; newer xPack installs only ship `qemu-system-arm`.
 
-If you need the legacy binary, use an older xPack release or the `xpack-dev-tools/qemu-arm` project.
+**Quick setup:** Run `just setup-qemu-legacy` to download and extract the last xPack release (7.2.5-1) that includes `qemu-system-gnuarmeclipse` into `tests/`. The Justfile will prefer this local copy.
+
+If you need the legacy binary manually, use an older xPack release (7.2.5-1) from the `xpack-dev-tools/qemu-arm-xpack` project.
 
 ### Known Quirks
 

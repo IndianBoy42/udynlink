@@ -175,7 +175,16 @@ Each test validates all three load modes (COPY_ALL, COPY_TEXT_DATA, XIP) at both
 - **arm-none-eabi-gcc** / **arm-none-eabi-g++** / **arm-none-eabi-objcopy**
 - **CMake** 3.16+
 - **Python 3** with `pyelftools`, `Jinja2` (managed via `uv` / `pyproject.toml`)
-- **QEMU** for tests: `qemu-system-arm` 9.2.4+ or legacy `qemu-system-gnuarmeclipse`
+- **QEMU** for tests:
+  - **Mainline QEMU** (`qemu-system-arm` 9.2.4+): Used for MPS2 and Olimex platforms.
+  - **Legacy xPack QEMU** (`qemu-system-gnuarmeclipse`): Fastest for STM32F429. The xPack project provides both binaries in a single release.
+
+  **Quick setup:**
+  - Run `just setup-qemu` to download the latest xPack release (mainline `qemu-system-arm`) into `tests/`.
+  - Run `just setup-qemu-legacy` to download the last xPack release with `qemu-system-gnuarmeclipse` (7.2.5-1) into `tests/`.
+  - The Justfile will automatically prefer these local copies.
+
+  **Manual setup:** Download from [xpack-dev-tools/qemu-arm-xpack/releases](https://github.com/xpack-dev-tools/qemu-arm-xpack/releases) (latest: 9.2.4-1 for mainline, 7.2.5-1 for legacy) and extract to `tests/`.
 - **[just](https://github.com/casey/just)** for running tests and build commands
 
 ## License

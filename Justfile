@@ -22,9 +22,23 @@ tests_build_dir := "tests/build"
 scripts_dir := "scripts"
 tests_dir := "tests"
 
-# QEMU binaries
-qemu_bin := env_var_or_default("UDYNLINK_QEMU_BIN", "qemu-system-arm")
-qemu_legacy := env_var_or_default("UDYNLINK_QEMU_BIN", "qemu-system-gnuarmeclipse")
+# Repository root for absolute paths
+repo_root := justfile_directory()
+
+# xPack QEMU versions
+qemu_xpack_version := "9.2.4-1"
+qemu_legacy_version := "7.2.5-1"
+
+# Paths to locally installed xPack QEMU directories
+qemu_xpack_dir := "tests/xpack-qemu-arm-" + qemu_xpack_version
+qemu_legacy_dir := "tests/xpack-qemu-arm-" + qemu_legacy_version
+
+# QEMU binaries - prefer local xpack install, then env var, then system PATH
+# Mainline qemu-system-arm: prefer 9.2.4-1, fallback to any other xpack dir, then system
+qemu_bin := if path_exists(qemu_xpack_dir / "bin/qemu-system-arm") == "true" { repo_root / qemu_xpack_dir / "bin/qemu-system-arm" } else if path_exists("tests/xpack-qemu-arm-" + qemu_legacy_version / "bin/qemu-system-arm") == "true" { repo_root / qemu_legacy_dir / "bin/qemu-system-arm" } else if path_exists(`find tests -maxdepth 1 -name 'xpack-qemu-arm-*' -type d | head -1 || true` / "bin/qemu-system-arm") == "true" { repo_root / `find tests -maxdepth 1 -name 'xpack-qemu-arm-*' -type d | head -1 || true` / "bin/qemu-system-arm" } else { env_var_or_default("UDYNLINK_QEMU_BIN", "qemu-system-arm") }
+
+# Legacy qemu-system-gnuarmeclipse: prefer 7.2.5-1 (last release with this binary), fallback to any other xpack dir, then system
+qemu_legacy := if path_exists(qemu_legacy_dir / "bin/qemu-system-gnuarmeclipse") == "true" { repo_root / qemu_legacy_dir / "bin/qemu-system-gnuarmeclipse" } else if path_exists(`find tests -maxdepth 1 -name 'xpack-qemu-arm-*' -type d | head -1 || true` / "bin/qemu-system-gnuarmeclipse") == "true" { repo_root / `find tests -maxdepth 1 -name 'xpack-qemu-arm-*' -type d | head -1 || true` / "bin/qemu-system-gnuarmeclipse" } else { env_var_or_default("UDYNLINK_QEMU_LEGACY_BIN", "qemu-system-gnuarmeclipse") }
 
 # Default platform
 platform := env_var_or_default("UDYNLINK_PLATFORM", "stm32f429_discovery")
@@ -107,7 +121,7 @@ test-mps2:
     #!/usr/bin/env bash
     cd {{tests_dir}}
     UDYNLINK_PLATFORM=mps2_an386 \
-    UDYNLINK_QEMU_BIN=qemu-system-arm \
+    UDYNLINK_QEMU_BIN={{qemu_bin}} \
     UDYNLINK_QEMU_MACHINE=mps2-an386 \
     UDYNLINK_QEMU_CPU=cortex-m4 \
     UDYNLINK_QEMU_EXTRA_FLAGS="-semihosting" \
@@ -119,7 +133,7 @@ test-mps2-single test_name:
     #!/usr/bin/env bash
     cd {{tests_dir}}
     UDYNLINK_PLATFORM=mps2_an386 \
-    UDYNLINK_QEMU_BIN=qemu-system-arm \
+    UDYNLINK_QEMU_BIN={{qemu_bin}} \
     UDYNLINK_QEMU_MACHINE=mps2-an386 \
     UDYNLINK_QEMU_CPU=cortex-m4 \
     UDYNLINK_QEMU_EXTRA_FLAGS="-semihosting" \
@@ -132,7 +146,7 @@ test-an385:
     cd {{tests_dir}}
     UDYNLINK_MODULE_TARGET=cortex-m3 \
     UDYNLINK_PLATFORM=mps2_an385 \
-    UDYNLINK_QEMU_BIN=qemu-system-arm \
+    UDYNLINK_QEMU_BIN={{qemu_bin}} \
     UDYNLINK_QEMU_MACHINE=mps2-an385 \
     UDYNLINK_QEMU_CPU=cortex-m3 \
     UDYNLINK_QEMU_EXTRA_FLAGS="-semihosting" \
@@ -145,7 +159,7 @@ test-an500:
     cd {{tests_dir}}
     UDYNLINK_MODULE_TARGET=cortex-m7 \
     UDYNLINK_PLATFORM=mps2_an500 \
-    UDYNLINK_QEMU_BIN=qemu-system-arm \
+    UDYNLINK_QEMU_BIN={{qemu_bin}} \
     UDYNLINK_QEMU_MACHINE=mps2-an500 \
     UDYNLINK_QEMU_CPU=cortex-m7 \
     UDYNLINK_QEMU_EXTRA_FLAGS="-semihosting" \
@@ -158,7 +172,7 @@ test-an505:
     cd {{tests_dir}}
     UDYNLINK_MODULE_TARGET=cortex-m33 \
     UDYNLINK_PLATFORM=mps2_an505 \
-    UDYNLINK_QEMU_BIN=qemu-system-arm \
+    UDYNLINK_QEMU_BIN={{qemu_bin}} \
     UDYNLINK_QEMU_MACHINE=mps2-an505 \
     UDYNLINK_QEMU_CPU=cortex-m33 \
     UDYNLINK_QEMU_EXTRA_FLAGS="-semihosting" \
@@ -171,7 +185,7 @@ test-h405:
     cd {{tests_dir}}
     UDYNLINK_MODULE_TARGET=cortex-m4f \
     UDYNLINK_PLATFORM=olimex_stm32_h405 \
-    UDYNLINK_QEMU_BIN=qemu-system-arm \
+    UDYNLINK_QEMU_BIN={{qemu_bin}} \
     UDYNLINK_QEMU_MACHINE=olimex-stm32-h405 \
     UDYNLINK_QEMU_CPU=cortex-m4 \
     UDYNLINK_QEMU_EXTRA_FLAGS="-semihosting" \
@@ -186,7 +200,7 @@ test-microbit:
     cd {{tests_dir}}
     UDYNLINK_MODULE_TARGET=cortex-m0 \
     UDYNLINK_PLATFORM=microbit \
-    UDYNLINK_QEMU_BIN=qemu-system-arm \
+    UDYNLINK_QEMU_BIN={{qemu_bin}} \
     UDYNLINK_QEMU_MACHINE=microbit \
     UDYNLINK_QEMU_CPU=cortex-m0 \
     UDYNLINK_QEMU_EXTRA_FLAGS="-semihosting" \
@@ -235,6 +249,123 @@ qemu-mps2:
 qemu-f429:
     {{qemu_legacy}} -board STM32F429I-Discovery \
         -image {{tests_build_dir}}/test1.elf -nographic
+
+# =============================================================================
+# QEMU Setup & Status
+# =============================================================================
+
+# Download and extract the latest xPack QEMU into tests/ (mainline qemu-system-arm)
+setup-qemu:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    XPACK_VER="{{qemu_xpack_version}}"
+    XPACK_DIR="tests/xpack-qemu-arm-${XPACK_VER}"
+
+    if [ -d "${XPACK_DIR}" ]; then
+        echo "xPack QEMU ${XPACK_VER} already present at ${XPACK_DIR}"
+        echo "Binaries:"
+        ls -la "${XPACK_DIR}/bin/" | grep qemu || true
+        exit 0
+    fi
+
+    ARCH=$(uname -m)
+    case "$ARCH" in
+        x86_64)  ARCH_TAG="linux-x64" ;;
+        aarch64) ARCH_TAG="linux-arm64" ;;
+        arm64)   ARCH_TAG="linux-arm64" ;;
+        *) echo "Unsupported architecture: $ARCH"; echo "Please download manually from https://github.com/xpack-dev-tools/qemu-arm-xpack/releases"; exit 1 ;;
+    esac
+
+    URL="https://github.com/xpack-dev-tools/qemu-arm-xpack/releases/download/v${XPACK_VER}/xpack-qemu-arm-${XPACK_VER}-${ARCH_TAG}.tar.gz"
+    TARBALL="/tmp/xpack-qemu-arm-${XPACK_VER}-${ARCH_TAG}.tar.gz"
+
+    echo "Downloading xPack QEMU ${XPACK_VER} for ${ARCH_TAG}..."
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL -o "${TARBALL}" "${URL}"
+    else
+        wget -q -O "${TARBALL}" "${URL}"
+    fi
+
+    echo "Extracting to tests/..."
+    mkdir -p tests
+    tar -xzf "${TARBALL}" -C tests/
+    rm -f "${TARBALL}"
+
+    echo ""
+    echo "xPack QEMU ${XPACK_VER} installed at ${XPACK_DIR}"
+    echo "Binaries:"
+    ls -la "${XPACK_DIR}/bin/" | grep qemu || true
+    echo ""
+    echo "The Justfile will automatically prefer these local binaries."
+    echo "Override with UDYNLINK_QEMU_BIN or UDYNLINK_QEMU_LEGACY_BIN if needed."
+
+# Download legacy xPack QEMU (qemu-system-gnuarmeclipse) into tests/
+setup-qemu-legacy:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    XPACK_VER="{{qemu_legacy_version}}"
+    XPACK_DIR="tests/xpack-qemu-arm-${XPACK_VER}"
+
+    if [ -d "${XPACK_DIR}" ]; then
+        echo "Legacy xPack QEMU ${XPACK_VER} already present at ${XPACK_DIR}"
+        echo "Binaries:"
+        ls -la "${XPACK_DIR}/bin/" | grep qemu || true
+        exit 0
+    fi
+
+    ARCH=$(uname -m)
+    case "$ARCH" in
+        x86_64)  ARCH_TAG="linux-x64" ;;
+        aarch64) ARCH_TAG="linux-arm64" ;;
+        arm64)   ARCH_TAG="linux-arm64" ;;
+        *) echo "Unsupported architecture: $ARCH"; echo "Please download manually from https://github.com/xpack-dev-tools/qemu-arm-xpack/releases"; exit 1 ;;
+    esac
+
+    URL="https://github.com/xpack-dev-tools/qemu-arm-xpack/releases/download/v${XPACK_VER}/xpack-qemu-arm-${XPACK_VER}-${ARCH_TAG}.tar.gz"
+    TARBALL="/tmp/xpack-qemu-arm-${XPACK_VER}-${ARCH_TAG}.tar.gz"
+
+    echo "Downloading legacy xPack QEMU ${XPACK_VER} for ${ARCH_TAG}..."
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL -o "${TARBALL}" "${URL}"
+    else
+        wget -q -O "${TARBALL}" "${URL}"
+    fi
+
+    echo "Extracting to tests/..."
+    mkdir -p tests
+    tar -xzf "${TARBALL}" -C tests/
+    rm -f "${TARBALL}"
+
+    echo ""
+    echo "Legacy xPack QEMU ${XPACK_VER} installed at ${XPACK_DIR}"
+    echo "Binaries:"
+    ls -la "${XPACK_DIR}/bin/" | grep qemu || true
+    echo ""
+    echo "The Justfile will automatically prefer this local binary for legacy tests."
+    echo "Override with UDYNLINK_QEMU_LEGACY_BIN if needed."
+
+# Show which QEMU binaries will be used
+qemu-status:
+    #!/usr/bin/env bash
+    echo "=== QEMU Status ==="
+    echo ""
+    echo "Mainline QEMU (qemu-system-arm):"
+    if [ -x "{{qemu_bin}}" ]; then
+        echo "  Path: {{qemu_bin}}"
+        "{{qemu_bin}}" --version 2>/dev/null | head -1 || echo "  (version check failed)"
+    else
+        echo "  NOT FOUND: {{qemu_bin}}"
+        echo "  Run 'just setup-qemu' to download, or install via your package manager"
+    fi
+    echo ""
+    echo "Legacy QEMU (qemu-system-gnuarmeclipse):"
+    if [ -x "{{qemu_legacy}}" ]; then
+        echo "  Path: {{qemu_legacy}}"
+        "{{qemu_legacy}}" --version 2>/dev/null | head -1 || echo "  (version check failed)"
+    else
+        echo "  NOT FOUND: {{qemu_legacy}}"
+        echo "  Run 'just setup-qemu-legacy' to download"
+    fi
 
 # =============================================================================
 # Module Compilation
@@ -381,6 +512,11 @@ help:
     @echo "  just qemu-mps2-gdb [PORT]   - Run with GDB server"
     @echo "  just qemu-f429              - Run test1.elf on STM32F429"
     @echo ""
+    @echo "QEMU SETUP:"
+    @echo "  just setup-qemu             - Download latest xPack QEMU (mainline) into tests/"
+    @echo "  just setup-qemu-legacy      - Download legacy xPack QEMU (gnuarmeclipse) into tests/"
+    @echo "  just qemu-status            - Show which QEMU binaries will be used"
+    @echo ""
     @echo "MODULE COMPILATION:"
     @echo "  just module FILE [ARGS]       - Compile module for default target"
     @echo "  just module-for TARGET FILE   - Compile for specific target"
@@ -400,7 +536,8 @@ help:
     @echo "  just ci-quick                - Compile-only checks"
     @echo ""
     @echo "ENVIRONMENT VARIABLES:"
-    @echo "  UDYNLINK_QEMU_BIN           - QEMU binary path"
+    @echo "  UDYNLINK_QEMU_BIN           - Mainline QEMU binary path"
+    @echo "  UDYNLINK_QEMU_LEGACY_BIN    - Legacy QEMU binary path (gnuarmeclipse)"
     @echo "  UDYNLINK_PLATFORM           - Target platform (default: stm32f429_discovery)"
     @echo "  UDYNLINK_MODULE_TARGET      - Module CPU target (default: cortex-m4)"
     @echo "  UDYNLINK_CMAKE_FLAGS        - Extra CMake flags"
