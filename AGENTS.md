@@ -216,12 +216,12 @@ Unlike the original, the eh2k fork allows **multiple instances of the same modul
 
 | Platform | QEMU Machine | QEMU Binary | CPU | Status | Notes |
 |----------|--------------|-------------|-----|--------|-------|
-| `stm32f429_discovery` | STM32F429I-Discovery | `qemu-system-gnuarmeclipse` | cortex-m4 | ✅ **All 24 tests pass** | Fast, legacy xPack fork |
-| `mps2_an386` | mps2-an386 | `qemu-system-arm` (9.2.4+) | cortex-m4 | ✅ **All 24 tests pass** | Mainline QEMU, ~0.5s/test |
-| `olimex_stm32_h405` | olimex-stm32-h405 | `qemu-system-arm` | cortex-m4f | ✅ **All 24 tests pass** | Hard-float M4F on mainline QEMU |
-| `mps2_an385` | mps2-an385 | `qemu-system-arm` | cortex-m3 | ✅ **All 24 tests pass** | Mainline QEMU |
-| `mps2_an500` | mps2-an500 | `qemu-system-arm` | cortex-m7 | ✅ **All 24 tests pass** | Mainline QEMU |
-| `mps2_an505` | mps2-an505 | `qemu-system-arm` | cortex-m33 | ✅ **All 24 tests pass** | Mainline QEMU, secure boot (see notes) |
+| `stm32f429_discovery` | STM32F429I-Discovery | `qemu-system-gnuarmeclipse` | cortex-m4 | ✅ **All 38 tests pass** | Fast, legacy xPack fork |
+| `mps2_an386` | mps2-an386 | `qemu-system-arm` (9.2.4+) | cortex-m4 | ✅ **All 38 tests pass** | Mainline QEMU, ~0.5s/test |
+| `olimex_stm32_h405` | olimex-stm32-h405 | `qemu-system-arm` | cortex-m4f | ✅ **All 38 tests pass** | Hard-float M4F on mainline QEMU |
+| `mps2_an385` | mps2-an385 | `qemu-system-arm` | cortex-m3 | ✅ **All 38 tests pass** | Mainline QEMU |
+| `mps2_an500` | mps2-an500 | `qemu-system-arm` | cortex-m7 | ✅ **All 38 tests pass** | Mainline QEMU |
+| `mps2_an505` | mps2-an505 | `qemu-system-arm` | cortex-m33 | ✅ **All 38 tests pass** | Mainline QEMU, secure boot (see notes) |
 | `microbit` | microbit | `qemu-system-arm` | cortex-m0 | ⚠️ **Builds, `-kernel` broken** | QEMU microbit machine does not support ELF `-kernel` at 0x00000000 |
 | `stm32f103_bluepill` | NUCLEO-F103RB | `qemu-system-gnuarmeclipse` | cortex-m3 | ⚠️ **Boots, internal calls OK** | Flash→RAM host calls hang (QEMU quirk) |
 | `stm32f051_discovery` | STM32F0-Discovery | `qemu-system-gnuarmeclipse` | cortex-m0 | ⚠️ **Boots, internal calls OK** | Same Flash→RAM quirk as M3 |
@@ -272,3 +272,4 @@ The `.gitignore` and test harness generate these artifacts; do not commit them:
 | 10 | ~~Add Cortex-M0+/M3/M7/M33/M55/M85 support~~ | ~~Low~~ | Done. Toolchain supports all 9 targets. QEMU hosts created for M0, M3, M4/M4F, M7, M33. M55/M85 hosts need upstream QEMU board support. |
 | 11 | Add unit tests for Python toolchain | Low | Only integration tests via QEMU currently exist |
 | 12 | Add Justfile for convenient command running | Low | Done. See `just --list` for available commands. |
+| 13 | ~~Add circular dependency support (sentinel + link_dependency)~~ | ~~Medium~~ | Done. `UDYNLINK_DEP_DEFERRED` and `UDYNLINK_SYM_DEFERRED` sentinels, `udynlink_link_dependency()`, `udynlink_link_symbol()`, query helpers, and 4 new integration tests. |
