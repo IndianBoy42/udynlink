@@ -75,14 +75,13 @@ fn main() {
         .file("../../udynlink/udynlink.c")
         .file("../../udynlink/udynlink_hash.c")
         .include("../../udynlink")
-        .define("UDYNLINK_MAX_HANDLES", "8")
         .define("UDYNLINK_LOT_BASE_ADDR", "0x20000000")
         // User can override via env var
         .compile("udynlink");
 }
 ```
 
-**Note:** `UDYNLINK_MAX_HANDLES` and `UDYNLINK_LOT_BASE_ADDR` must be configurable by the user at build time (via environment variables or Cargo features).
+**Note:** `UDYNLINK_LOT_BASE_ADDR` must be configurable by the user at build time (via environment variables or Cargo features).
 
 ### 3.3 Bindings
 
@@ -408,7 +407,6 @@ lot-base = "0x20000000"
 
 Or environment variables:
 ```bash
-UDYNLINK_MAX_HANDLES=16 cargo build
 UDYNLINK_LOT_BASE_ADDR=0x20010000 cargo build
 ```
 

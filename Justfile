@@ -297,7 +297,6 @@ codemap:
 # Run a quick compile check on the core library
 compile-check:
     arm-none-eabi-gcc -c -mcpu=cortex-m4 -mthumb -I. \
-        -DUDYNLINK_MAX_HANDLES=8 \
         udynlink/udynlink.c -o /tmp/udynlink_check.o
     @echo "Core library compiles successfully"
 

@@ -177,14 +177,6 @@ struct _udynlink_module_t *udynlink_external_get_module_handle(const char *modul
 int udynlink_external_is_module_loading(const char *module_name);
 
 /**
- * @brief Maximum number of concurrently loaded modules.
- *
- * Must be defined by the host project before including this header
- * (or udynlink.h).  The value must be greater than 0.
- */
-/* UDYNLINK_MAX_HANDLES is intentionally not defined here; the host
- * must provide it. */
-
 /**
  * @brief Convenience macro for building host symbol tables.
  *

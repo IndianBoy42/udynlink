@@ -30,7 +30,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Make LOT base address configurable** via the `UDYNLINK_LOT_BASE_ADDR` compile-time macro (previously hardcoded to `0x20000000`).
-- **Make `UDYNLINK_MAX_HANDLES` a required compile-time constant** — emits `#error` if unset instead of silently defaulting to 1.
 - **Remove `#include <stdio.h>` dependency** from `udynlink.c` to reduce host firmware integration friction.
 - **Port build toolchain from Eclipse-generated makefiles to CMake** for standalone library builds and test host firmware.
 - **Port Python 2 scripts to Python 3** and add `uv` / `pyproject.toml` dependency management for `pyelftools` and `Jinja2`.

@@ -37,7 +37,7 @@ The host-module contract is simple: the host exposes a set of symbols (functions
 Follow this checklist to integrate udynlink into your firmware:
 
 1. **Add libudynlink to your build** — as a CMake subdirectory, an installed package, or vendored source files.
-2. **Define compile-time constants** — `UDYNLINK_MAX_HANDLES`, `UDYNLINK_HOST_ARCH_TAG`, and `UDYNLINK_LOT_BASE_ADDR`.
+2. **Define compile-time constants** — `UDYNLINK_HOST_ARCH_TAG` and `UDYNLINK_LOT_BASE_ADDR`.
 3. **Implement all external callbacks** — the 8 functions declared in `udynlink_externals.h`.
 4. **Set up the LOT base address** before calling any module function (`udynlink_cpp_init()` sets it internally, so you only need to re-set it before other module calls).
 5. **Build a host symbol table** — decide how your firmware will resolve symbols requested by modules.
@@ -100,19 +100,8 @@ You **must** define these before including `udynlink.h` or compiling `udynlink.c
 
 | Definition | Purpose | Valid Values | Default |
 |------------|---------|--------------|---------|
-| `UDYNLINK_MAX_HANDLES` | Maximum number of simultaneously loaded modules | Any integer `> 0` | **None** — compilation fails if undefined |
 | `UDYNLINK_HOST_ARCH_TAG` | Architecture tag of the host MCU | One of the `UDYNLINK_ARCH_TAG_*` constants | `UDYNLINK_ARCH_TAG_CORTEX_M4` |
 | `UDYNLINK_LOT_BASE_ADDR` | Fixed RAM address where the LOT base is written | Any valid RAM address | `0x20000000` |
-
-**`UDYNLINK_MAX_HANDLES`**
-
-This controls the size of the internal module table. Every loaded module needs a handle. Set this to the maximum number of modules you expect to load simultaneously. There is no dynamic allocation of handles; the table is a fixed-size array.
-
-```c
-#define UDYNLINK_MAX_HANDLES 8
-```
-
-**Pitfall:** If you set this to 1, you can only load one module at a time. If you try to load a second module while the first is still loaded, you will get `UDYNLINK_ERR_LOAD_MAX_HANDLES_EXCEEDED`.
 
 **`UDYNLINK_HOST_ARCH_TAG`**
 
@@ -167,9 +156,7 @@ target_include_directories(my_firmware PRIVATE
 
 # Compile definitions for udynlink
 target_compile_definitions(my_firmware PRIVATE
-    UDYNLINK_MAX_HANDLES=8
     UDYNLINK_HOST_ARCH_TAG=UDYNLINK_ARCH_TAG_CORTEX_M4F
-    UDYNLINK_LOT_BASE_ADDR=0x20000000
 )
 
 # Method 1: add_subdirectory
@@ -1043,7 +1030,6 @@ void host_callback(void) {
 | `UDYNLINK_ERR_LOAD_RAM_LEN_LOW` | Provided `load_size` is smaller than required RAM | Increase the allocated RAM region or use auto-allocation (`load_addr = NULL`) |
 | `UDYNLINK_ERR_LOAD_OUT_OF_MEMORY` | `udynlink_external_malloc` returned `NULL` | Free other modules or increase heap size |
 | `UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED` | XIP is not supported for this load configuration | Use `COPY_ALL` or `COPY_TEXT_DATA` instead |
-| `UDYNLINK_ERR_LOAD_MAX_HANDLES_EXCEEDED` | Maximum handle count reached | Unload unused modules or increase `UDYNLINK_MAX_HANDLES` |
 | `UDYNLINK_ERR_LOAD_INVALID_MODE` | Unknown load mode value | Check that you are passing a valid `udynlink_load_mode_t` |
 | `UDYNLINK_ERR_LOAD_BAD_RELOCATION_TABLE` | Relocation data is malformed or points to an invalid symbol | The module is corrupted or was built with a buggy toolchain |
 | `UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL` | An extern symbol could not be resolved by any tier | Ensure the symbol is exported by the host or by a loaded dependency module |

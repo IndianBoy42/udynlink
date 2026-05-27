@@ -15,7 +15,7 @@ For deep work on a specific folder, also read that folder's `codemap.md`.
 
 This repo is based on the **eh2k fork** which adds: C++ support (`__init_array`), `--gc-sections` dead code elimination, `--public-symbols` selective exporting, `R_ARM_ABS32`/`R_ARM_TARGET1` data relocations, fixed LOT base at `0x20000000`, multiple module instances, and GitHub Actions CI.
 
-Recent expansion adds: compile-time target configuration (`UDYNLINK_LOT_BASE_ADDR`, `UDYNLINK_MAX_HANDLES`), ABI versioning with `mod_version`/`udynlink_version`/`arch_tag`, architecture tag validation at load time, a Python target database (`scripts/targets.py`) supporting Cortex-M0/M0+/M3/M4/M4F/M7/M33/M55/M85, and per-target assembly prologue templates.
+Recent expansion adds: compile-time target configuration (`UDYNLINK_LOT_BASE_ADDR`), ABI versioning with `mod_version`/`udynlink_version`/`arch_tag`, architecture tag validation at load time, a Python target database (`scripts/targets.py`) supporting Cortex-M0/M0+/M3/M4/M4F/M7/M33/M55/M85, and per-target assembly prologue templates.
 
 ## Toolchain Requirements
 
@@ -261,5 +261,4 @@ The `.gitignore` and test harness generate these artifacts; do not commit them:
 | 9 | ~~Replace Eclipse-generated makefiles with CMake or Makefile~~ | ~~Low~~ | Done |
 | 10 | ~~Add Cortex-M0+/M3/M7/M33/M55/M85 support~~ | ~~Low~~ | Done. Toolchain supports all 9 targets. QEMU hosts created for M0, M3, M4/M4F, M7, M33. M55/M85 hosts need upstream QEMU board support. |
 | 11 | Add unit tests for Python toolchain | Low | Only integration tests via QEMU currently exist |
-| 12 | ~~Add `UDYNLINK_MAX_HANDLES` as a required compile-time constant~~ | ~~Low~~ | Done |
-| 13 | Add Justfile for convenient command running | Low | Done. See `just --list` for available commands. |
+| 12 | Add Justfile for convenient command running | Low | Done. See `just --list` for available commands. |

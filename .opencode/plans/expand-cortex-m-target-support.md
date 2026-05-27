@@ -53,9 +53,6 @@ All platform-specific constants are supplied via **C macros** that the user defi
 #define UDYNLINK_LOT_BASE_ADDR 0x20000000
 #endif
 
-#ifndef UDYNLINK_MAX_HANDLES
-#error "UDYNLINK_MAX_HANDLES must be defined before including udynlink.h"
-#endif
 ```
 
 The assembly template receives `{{lot_base}}` as a hex literal.
@@ -246,7 +243,7 @@ The linker script should place `.text` and `.data` in RAM because QEMU loads the
 | AN500/AN547/AN552 memory maps differ from docs | Medium | Medium | Verify with ARM MPS2/MPS3 documentation and NuttX/Zephyr linker scripts. |
 | Module header size increase breaks existing consumers | Low | High | Keep header 32-bit aligned. Document as breaking ABI change. |
 | Hard-float module on soft-float host crashes | Medium | High | Runtime arch tag checks float ABI; rejected at load time. |
-| `UDYNLINK_MAX_HANDLES` change breaks downstream projects | Medium | Medium | Document in README. |
+
 
 ---
 

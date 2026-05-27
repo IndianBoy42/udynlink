@@ -25,7 +25,6 @@ These macros control the behavior of the udynlink loader. Some are **required** 
 
 | Macro | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `UDYNLINK_MAX_HANDLES` | **Yes** | — | Maximum number of simultaneously loaded modules. The host must define this to allocate the internal module table. |
 | `UDYNLINK_HOST_ARCH_TAG` | No | `UDYNLINK_ARCH_TAG_CORTEX_M4` | Architecture tag of the host MCU. Used at load time to validate that a module was compiled for a compatible core family and float ABI. |
 | `UDYNLINK_LOT_BASE_ADDR` | No | `0x20000000` | Fixed RAM address where the loader writes the current module's `ram_base` before calling any module function. The module's assembly prologue reads this address to set `r9` (the LOT base register). |
 | `UDYNLINK_STREAM_BUF_SIZE` | No | `512` | Default work buffer size for streaming I/O operations. |
@@ -34,10 +33,7 @@ These macros control the behavior of the udynlink loader. Some are **required** 
 **Example:**
 
 ```c
-#define UDYNLINK_MAX_HANDLES 8
 #define UDYNLINK_HOST_ARCH_TAG UDYNLINK_ARCH_TAG_CORTEX_M7
-#define UDYNLINK_LOT_BASE_ADDR 0x20000000
-#include "udynlink.h"
 ```
 
 ---
@@ -236,11 +232,10 @@ Error codes returned by loader functions.
 | `2` | `UDYNLINK_ERR_LOAD_RAM_LEN_LOW` | The caller-provided `load_size` is smaller than the RAM required by the module. |
 | `3` | `UDYNLINK_ERR_LOAD_OUT_OF_MEMORY` | `udynlink_external_malloc` returned `NULL`. |
 | `4` | `UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED` | XIP is not supported for this load configuration (e.g., streaming load, or code resides in RAM). |
-| `5` | `UDYNLINK_ERR_LOAD_MAX_HANDLES_EXCEEDED` | Maximum handle count reached. |
-| `6` | `UDYNLINK_ERR_LOAD_INVALID_MODE` | An invalid load mode was specified. Also returned by streaming load if the work buffer is too small. |
-| `7` | `UDYNLINK_ERR_LOAD_BAD_RELOCATION_TABLE` | A relocation references an out-of-range symbol, or a relocation targets the module name entry. |
-| `8` | `UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL` | An `extern` symbol could not be resolved by the host or any dependency module. |
-| `9` | `UDYNLINK_ERR_LOAD_DUPLICATE_NAME` | A module with the same name is already loaded. (Currently unused; the eh2k fork allows duplicate instances.) |
+| `5` | `UDYNLINK_ERR_LOAD_INVALID_MODE` | An invalid load mode was specified. Also returned by streaming load if the work buffer is too small. |
+| `6` | `UDYNLINK_ERR_LOAD_BAD_RELOCATION_TABLE` | A relocation references an out-of-range symbol, or a relocation targets the module name entry. |
+| `7` | `UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL` | An `extern` symbol could not be resolved by the host or any dependency module. |
+| `8` | `UDYNLINK_ERR_LOAD_DUPLICATE_NAME` | A module with the same name is already loaded. (Currently unused; the eh2k fork allows duplicate instances.) |
 | `10` | `UDYNLINK_ERR_LOAD_VERSION_MISMATCH` | The module's `udynlink_version` is greater than the loader's `UDYNLINK_LOADER_ABI_VERSION`. |
 | `11` | `UDYNLINK_ERR_LOAD_ARCH_MISMATCH` | The module's `arch_tag` is incompatible with the host (different core family or stricter float ABI). |
 | `12` | `UDYNLINK_ERR_LOAD_MISSING_DEP` | A declared dependency was not found, the dependency string table is missing, or `num_deps > UDYNLINK_MAX_DEPS`. |

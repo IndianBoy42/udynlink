@@ -32,9 +32,7 @@ cmake --build build          # produces build/libudynlink.a
 add_subdirectory(path/to/udynlink)
 target_link_libraries(your_firmware PRIVATE udynlink)
 target_compile_definitions(your_firmware PRIVATE
-    UDYNLINK_MAX_HANDLES=4
     UDYNLINK_HOST_ARCH_TAG=UDYNLINK_ARCH_TAG_CORTEX_M4
-    UDYNLINK_LOT_BASE_ADDR=0x20000000
 )
 ```
 

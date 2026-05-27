@@ -159,7 +159,6 @@ _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_INVALID_SIGN),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_RAM_LEN_LOW),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_OUT_OF_MEMORY),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED),\
-_UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_MAX_HANDLES_EXCEEDED),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_INVALID_MODE),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_BAD_RELOCATION_TABLE),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL),\
@@ -201,11 +200,6 @@ typedef enum {
 } udynlink_debug_level_t;
 
 /* Compile-time configuration */
-
-#ifndef UDYNLINK_MAX_HANDLES
-/** Must be defined by the host before including this header. */
-#error "UDYNLINK_MAX_HANDLES must be defined before including udynlink.h"
-#endif
 
 #ifndef UDYNLINK_HOST_ARCH_TAG
 /** Architecture tag of the host MCU (defaults to Cortex-M4). */
