@@ -162,6 +162,7 @@ The platform is selected via `-DUDYNLINK_PLATFORM=<name>` (default: `stm32f429_d
 - Data access uses `r9` as a base register pointing to the **LOT** (Linker Offset Table)
 - Exported functions get an assembly prologue (generated from `scripts/asm_template_*.tmpl`) that loads `r9` from a **fixed memory address** (default `0x20000000`, configurable via `UDYNLINK_LOT_BASE_ADDR`)
 - **Host must write `p_mod->ram_base` to `*(uint32_t*)UDYNLINK_LOT_BASE_ADDR` before calling any module function** (this is the LOT base)
+- The `--no-prologue` flag skips the assembly wrapper and sets `UDYNLINK_ARCH_FLAG_NO_PROLOGUE` in the module header. The host must use `UDYNLINK_PREPARE_CALL()` to set `r9` directly for such modules.
 
 ### Host Firmware Integration
 The host MCU firmware must implement the functions in `udynlink/udynlink_externals.h`:

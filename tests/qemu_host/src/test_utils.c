@@ -66,8 +66,7 @@ int check_weak_symbols(const udynlink_module_t *p_mod, const char *slist[]) {
 int run_test_func(const udynlink_module_t *p_mod) {
     udynlink_sym_t sym;
 
-    uintptr_t* mod_base = (uintptr_t*)UDYNLINK_LOT_BASE_ADDR;
-    *mod_base = p_mod->ram_base;
+    UDYNLINK_PREPARE_CALL(p_mod);
 
     // Run test
     if (udynlink_lookup_symbol(p_mod, "test", &sym) == NULL) {

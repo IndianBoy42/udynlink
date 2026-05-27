@@ -491,6 +491,53 @@ int result = p_func();
 
 **Pitfall:** If you forget to set the LOT base, module functions will use a stale `r9` value, causing them to read/write the wrong memory region. This typically results in a hard fault or silent data corruption.
 
+### Calling Modules Built With `--no-prologue`
+
+By default, every exported function gets a small assembly prologue that loads `r9` from `UDYNLINK_LOT_BASE_ADDR`. When building micro-modules with a single export, this prologue is pure overhead. The `mkmodule` tool supports `--no-prologue` to skip it, and the module header advertises this via the `UDYNLINK_ARCH_FLAG_NO_PROLOGUE` bit in `arch_tag`.
+
+For modules built with `--no-prologue`, the host must set `r9` directly in addition to writing the LOT base. The helper macro `UDYNLINK_PREPARE_CALL()` handles both cases automatically:
+
+```c
+#include "udynlink.h"
+
+void call_module_func(udynlink_module_t *p_mod) {
+    // Works for both prologued and non-prologued modules
+    UDYNLINK_PREPARE_CALL(p_mod);
+
+    int (*p_func)(void) = (int (*)(void))udynlink_get_symbol_value(p_mod, "run");
+    int result = p_func();
+}
+```
+
+**What `UDYNLINK_PREPARE_CALL()` does:**
+
+1. Writes `p_mod->ram_base` to `UDYNLINK_LOT_BASE_ADDR` (always required).
+2. Checks `udynlink_module_has_no_prologue(p_mod->p_header)`.
+3. If the no-prologue flag is set, moves `ram_base` into `r9` via inline assembly.
+
+**Before/after for manual LOT base setup:**
+
+```c
+// Old pattern (still works for prologued modules)
+uint32_t *mod_base = (uint32_t *)UDYNLINK_LOT_BASE_ADDR;
+*mod_base = p_mod->ram_base;
+p_func();
+
+// New universal pattern (works for both)
+UDYNLINK_PREPARE_CALL(p_mod);
+p_func();
+```
+
+**When to use `--no-prologue`:**
+
+- Single-export micro-modules where the ~28-byte prologue is a significant fraction of total size.
+- When the host is willing to manage `r9` directly via `UDYNLINK_PREPARE_CALL()`.
+
+**When NOT to use `--no-prologue`:**
+
+- Modules with many exported functions (the per-function overhead is amortized).
+- When the host code base is large and cannot easily adopt `UDYNLINK_PREPARE_CALL()` everywhere.
+
 ---
 
 ## Building and Using the Host Symbol Table

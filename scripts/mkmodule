@@ -16,7 +16,7 @@ linker_script = os.path.join(os.path.dirname(__file__), "code_before_data.ld")
 ################################################################################
 compile_cmd = "-fPIE -msingle-pic-base -mcpu={mcpu} -mthumb{fpu}{float_abi} -fomit-frame-pointer {extra} {input} -c -o {output}"
 asm_cmd = "-x assembler-with-cpp -mcpu={mcpu} -mthumb{fpu}{float_abi} {input} -c -o {output}"
-link_cmd = "-mcpu={mcpu} -mthumb{fpu}{float_abi} -T {ld} -nostartfiles -nodefaultlibs -nostdlib -Wl,--unresolved-symbols=ignore-in-object-files -Wl,--emit-relocs {input} -Wl,-e,0 -o {output}"
+link_cmd = "-mcpu={mcpu} -mthumb{fpu}{float_abi} -T {ld} -nostartfiles -nodefaultlibs -nostdlib -Wl,--unresolved-symbols=ignore-in-object-files -Wl,--emit-relocs {extra_link_flags} {input} -Wl,-e,0 -o {output}"
 
 compile_cmd = "-ffunction-sections -fdata-sections " + compile_cmd
 link_cmd = "-Wl,--gc-sections " + link_cmd
@@ -81,31 +81,39 @@ def compile(src_name, args, public_symbols, macros=[]):
         execute(get_tool("gcc") + " " + compile_cmd.format(**compile_data), args)
         object_files += [libc_obj]
     
-    # Relocate symbols if needed
-    for objname in [] + object_files:
-        # Generate temporary object file with renamed symbols
-        global_funcs = [s for s in get_public_functions_in_object(objname) if len(public_symbols) == 0 or s in public_symbols or s == "__init_array"]
-        weak_funcs = [s for s in get_weak_functions_in_object(objname) if s in global_funcs]
-        debug("Generating temporary object files with wrapped symbols '%s'" % ", ".join(global_funcs), args)
-        temp_obj = os.path.join(objname + '.temp.o')
-        os.rename(objname, temp_obj)
-        sym_renames.clear()
-        sym_renames.update({n: get_wrapped_name(n) for n in global_funcs })
-        print("sym_renames", to_json(sym_renames))
-        rename_symbols(temp_obj, objname, sym_renames, args)
-        # Generate ASM for prologue
-        debug("Generating ASM file for public function prologues", args)
-        loader = FileSystemLoader(os.path.dirname(os.path.abspath(__file__)))
-        env = Environment(loader = loader)
-        tmpl = env.get_template(args.template)
-        data = tmpl.render({"sym_names": sym_renames, "weak_names": weak_funcs, "lot_base": "0x%08X" % args.lot_base})
-        p_fname = os.path.join(objname + "_prologue.s")
-        with open(p_fname, "wt") as f:
-            f.write(str(data))
-        # Assemble prologue data
-        second_obj = assemble(p_fname, args)
-        os.remove(p_fname)
-        object_files += [second_obj]
+    # Collect exported symbols and (optionally) generate prologue wrappers
+    if not args.no_prologue:
+        for objname in [] + object_files:
+            # Generate temporary object file with renamed symbols
+            global_funcs = [s for s in get_public_functions_in_object(objname) if len(public_symbols) == 0 or s in public_symbols or s == "__init_array"]
+            weak_funcs = [s for s in get_weak_functions_in_object(objname) if s in global_funcs]
+            debug("Generating temporary object files with wrapped symbols '%s'" % ", ".join(global_funcs), args)
+            temp_obj = os.path.join(objname + '.temp.o')
+            os.rename(objname, temp_obj)
+            sym_renames.clear()
+            sym_renames.update({n: get_wrapped_name(n) for n in global_funcs })
+            print("sym_renames", to_json(sym_renames))
+            rename_symbols(temp_obj, objname, sym_renames, args)
+            # Generate ASM for prologue
+            debug("Generating ASM file for public function prologues", args)
+            loader = FileSystemLoader(os.path.dirname(os.path.abspath(__file__)))
+            env = Environment(loader = loader)
+            tmpl = env.get_template(args.template)
+            data = tmpl.render({"sym_names": sym_renames, "weak_names": weak_funcs, "lot_base": "0x%08X" % args.lot_base})
+            p_fname = os.path.join(objname + "_prologue.s")
+            with open(p_fname, "wt") as f:
+                f.write(str(data))
+            # Assemble prologue data
+            second_obj = assemble(p_fname, args)
+            os.remove(p_fname)
+            object_files += [second_obj]
+    else:
+        # No prologue: collect exported symbols so the linker can keep them alive
+        for objname in [] + object_files:
+            global_funcs = [s for s in get_public_functions_in_object(objname) if len(public_symbols) == 0 or s in public_symbols or s == "__init_array"]
+            if not hasattr(args, 'exported_syms'):
+                args.exported_syms = set()
+            args.exported_syms.update(global_funcs)
 
     if len(public_symbols) != 0:
         public_symbols.add("__init_array")
@@ -117,7 +125,11 @@ def link(objects, output, args):
         path, fname, ext = split_fname(args.source[0])
         output = os.path.join(path, fname + ".elf")
     # Prepare link
-    link_data = {"input": " ".join(objects), "output": output, "ld": linker_script, "mcpu": args.mcpu, "fpu": args.fpu_flag, "float_abi": args.float_abi_flag}
+    extra_link_flags = ""
+    if args.no_prologue and hasattr(args, 'exported_syms') and args.exported_syms:
+        for sym in sorted(args.exported_syms):
+            extra_link_flags += " -Wl,--undefined=%s" % sym
+    link_data = {"input": " ".join(objects), "output": output, "ld": linker_script, "mcpu": args.mcpu, "fpu": args.fpu_flag, "float_abi": args.float_abi_flag, "extra_link_flags": extra_link_flags}
     debug("Linking (%s -> %s)" % (" + ".join(objects), output), args)
     execute(get_tool("gcc") + " " + link_cmd.format(**link_data), args)
     # Change visibility of wrapped symbols to "local"
@@ -509,6 +521,7 @@ parser.add_argument("--mod-version", dest="mod_version", default="1.0", help="Mo
 parser.add_argument("--udynlink-version", dest="udynlink_version", default="2.0", help="Loader ABI version (default: 2.0)")
 parser.add_argument("--lot-base", dest="lot_base", default="0x20000000", help="LOT base address (default: 0x20000000)")
 parser.add_argument("--depends", dest="depends", default=None, help="Comma-separated list of dependency module names")
+parser.add_argument("--no-prologue", dest="no_prologue", action="store_true", help="Skip assembly prologue generation for exported functions (default: false)")
 
 args, rest = parser.parse_known_args()
 
@@ -528,6 +541,8 @@ args.mod_version_val = (int(mv_parts[0]) << 8) | int(mv_parts[1] if len(mv_parts
 uv_parts = args.udynlink_version.split(".")
 args.udynlink_version_val = (int(uv_parts[0]) << 8) | int(uv_parts[1] if len(uv_parts) > 1 else "0")
 args.arch_tag_val = target_meta["arch_tag"]
+if args.no_prologue:
+    args.arch_tag_val |= 0x80
 args.lot_base = int(args.lot_base, 0)
 args.template = target_meta["template"]
 args.fpu_flag = " -mfpu=" + target_meta["fpu"] if target_meta.get("fpu") else ""

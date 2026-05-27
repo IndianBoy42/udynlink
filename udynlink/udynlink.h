@@ -274,6 +274,8 @@ typedef enum {
 #define UDYNLINK_ARCH_FLOAT_ABI_SOFTFP      1
 #define UDYNLINK_ARCH_FLOAT_ABI_HARD        2
 
+#define UDYNLINK_ARCH_FLAG_NO_PROLOGUE    0x80
+
 #define UDYNLINK_ARCH_TAG_CORTEX_M0         0x01
 #define UDYNLINK_ARCH_TAG_CORTEX_M0PLUS     0x02
 #define UDYNLINK_ARCH_TAG_CORTEX_M3         0x03
@@ -283,6 +285,20 @@ typedef enum {
 #define UDYNLINK_ARCH_TAG_CORTEX_M33        0x08
 #define UDYNLINK_ARCH_TAG_CORTEX_M55        0x59
 #define UDYNLINK_ARCH_TAG_CORTEX_M85        0x5A
+
+/**
+ * @brief Check whether a module was built with the --no-prologue flag.
+ *
+ * No-prologue modules omit the assembly wrapper for exported functions.
+ * The host must set r9 directly via UDYNLINK_PREPARE_CALL() before
+ * calling any module function.
+ *
+ * @param[in] p_header Pointer to the module image header.
+ * @return Non-zero if the no-prologue flag is set, 0 otherwise.
+ */
+static inline int udynlink_module_has_no_prologue(const udynlink_module_header_t *p_header) {
+    return (p_header->arch_tag & UDYNLINK_ARCH_FLAG_NO_PROLOGUE) != 0;
+}
 
 /**
  * @brief Pack a major/minor version into a 16-bit value.
@@ -305,6 +321,25 @@ typedef enum {
 
 /** Internal macro used to emit debug messages with file context. */
 #define UDYNLINK_DEBUG(...)                   udynlink_debug(__func__, __LINE__, __VA_ARGS__)
+
+/**
+ * @brief Prepare the LOT base and r9 before calling a module function.
+ *
+ * Writes @c p_mod->ram_base to ::UDYNLINK_LOT_BASE_ADDR so the module's
+ * assembly prologue can load r9.  For modules built with --no-prologue,
+ * also moves the RAM base directly into r9 via inline assembly.
+ *
+ * This macro is safe for both prologued and non-prologued modules.
+ *
+ * @param[in] p_mod Pointer to the loaded module handle.
+ */
+#define UDYNLINK_PREPARE_CALL(p_mod) do { \
+    uint32_t *_mb = (uint32_t *)UDYNLINK_LOT_BASE_ADDR; \
+    *_mb = (p_mod)->ram_base; \
+    if (udynlink_module_has_no_prologue((p_mod)->p_header)) { \
+        __asm volatile ("mov r9, %0" :: "r"((p_mod)->ram_base) : "r9"); \
+    } \
+} while(0)
 
 ////////////////////////////////////////////////////////////////////////////////
 // Streaming I/O interface
