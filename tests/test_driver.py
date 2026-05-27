@@ -214,9 +214,14 @@ def test_one(full_path, opt):
     with open(full_path + "/output_test_%s.txt" % aopt, 'w') as fout:
         fout.write(out)
     # Check result (accept non-zero QEMU exit if output shows success)
-    if out.find("*** TEST OK ***") != -1:
+    #
+    # Legacy qemu-system-gnuarmeclipse (QEMU 2.8.0) sometimes prefixes
+    # semihosting output lines with the monitor prompt "(qemu) ".  Strip
+    # that prefix before regex matching so "^...$" required patterns work.
+    clean_out = re.sub(r'^\(qemu\) ', '', out, flags=re.MULTILINE)
+    if "*** TEST OK ***" in out:
         for t in test_data.get("required", []):
-            finds = re.findall(t, out, re.MULTILINE)
+            finds = re.findall(t, clean_out, re.MULTILINE)
             if len(finds) < test_data.get("total_loads", 3): # consider each load mode in turn
                 return False, "**** Can't find '%s' in output ****" % t + out
         return True, out

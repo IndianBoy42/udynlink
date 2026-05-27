@@ -33,12 +33,21 @@ qemu_legacy_version := "7.2.5-1"
 qemu_xpack_dir := "tests/xpack-qemu-arm-" + qemu_xpack_version
 qemu_legacy_dir := "tests/xpack-qemu-arm-" + qemu_legacy_version
 
-# QEMU binaries - prefer local xpack install, then env var, then system PATH
-# Mainline qemu-system-arm: prefer 9.2.4-1, fallback to any other xpack dir, then system
-qemu_bin := if path_exists(qemu_xpack_dir / "bin/qemu-system-arm") == "true" { repo_root / qemu_xpack_dir / "bin/qemu-system-arm" } else if path_exists("tests/xpack-qemu-arm-" + qemu_legacy_version / "bin/qemu-system-arm") == "true" { repo_root / qemu_legacy_dir / "bin/qemu-system-arm" } else if path_exists(`find tests -maxdepth 1 -name 'xpack-qemu-arm-*' -type d | head -1 || true` / "bin/qemu-system-arm") == "true" { repo_root / `find tests -maxdepth 1 -name 'xpack-qemu-arm-*' -type d | head -1 || true` / "bin/qemu-system-arm" } else { env_var_or_default("UDYNLINK_QEMU_BIN", "qemu-system-arm") }
+# QEMU binaries — xPack releases ONLY.  System QEMU is not supported because
+# ABI differences (semihosting, machine models, CPU flags) cause subtle test
+# failures.  Download the required xPack release with `just setup-qemu` or
+# `just setup-qemu-legacy`.
+#
+# Mainline qemu-system-arm: 9.2.4-1 (required by MPS2-ANxxx / Olimex tests).
+# Legacy qemu-system-gnuarmeclipse: 7.2.5-1 (last release with this binary).
 
-# Legacy qemu-system-gnuarmeclipse: prefer 7.2.5-1 (last release with this binary), fallback to any other xpack dir, then system
-qemu_legacy := if path_exists(qemu_legacy_dir / "bin/qemu-system-gnuarmeclipse") == "true" { repo_root / qemu_legacy_dir / "bin/qemu-system-gnuarmeclipse" } else if path_exists(`find tests -maxdepth 1 -name 'xpack-qemu-arm-*' -type d | head -1 || true` / "bin/qemu-system-gnuarmeclipse") == "true" { repo_root / `find tests -maxdepth 1 -name 'xpack-qemu-arm-*' -type d | head -1 || true` / "bin/qemu-system-gnuarmeclipse" } else { env_var_or_default("UDYNLINK_QEMU_LEGACY_BIN", "qemu-system-gnuarmeclipse") }
+qemu_bin := repo_root / qemu_xpack_dir / "bin/qemu-system-arm"
+
+qemu_legacy := if path_exists(qemu_legacy_dir / "bin/qemu-system-gnuarmeclipse") == "true" {
+    repo_root / qemu_legacy_dir / "bin/qemu-system-gnuarmeclipse"
+} else {
+    env_var_or_default("UDYNLINK_QEMU_LEGACY_BIN", "qemu-system-gnuarmeclipse")
+}
 
 # Default platform
 platform := env_var_or_default("UDYNLINK_PLATFORM", "stm32f429_discovery")
@@ -350,20 +359,22 @@ qemu-status:
     echo "=== QEMU Status ==="
     echo ""
     echo "Mainline QEMU (qemu-system-arm):"
-    if [ -x "{{qemu_bin}}" ]; then
-        echo "  Path: {{qemu_bin}}"
-        "{{qemu_bin}}" --version 2>/dev/null | head -1 || echo "  (version check failed)"
+    QEMU_BIN="{{qemu_bin}}"
+    if command -v "$QEMU_BIN" >/dev/null 2>&1; then
+        echo "  Path: $(command -v "$QEMU_BIN")"
+        "$QEMU_BIN" --version 2>/dev/null | head -1 || echo "  (version check failed)"
     else
-        echo "  NOT FOUND: {{qemu_bin}}"
+        echo "  NOT FOUND: $QEMU_BIN"
         echo "  Run 'just setup-qemu' to download, or install via your package manager"
     fi
     echo ""
     echo "Legacy QEMU (qemu-system-gnuarmeclipse):"
-    if [ -x "{{qemu_legacy}}" ]; then
-        echo "  Path: {{qemu_legacy}}"
-        "{{qemu_legacy}}" --version 2>/dev/null | head -1 || echo "  (version check failed)"
+    QEMU_LEGACY="{{qemu_legacy}}"
+    if command -v "$QEMU_LEGACY" >/dev/null 2>&1; then
+        echo "  Path: $(command -v "$QEMU_LEGACY")"
+        "$QEMU_LEGACY" --version 2>/dev/null | head -1 || echo "  (version check failed)"
     else
-        echo "  NOT FOUND: {{qemu_legacy}}"
+        echo "  NOT FOUND: $QEMU_LEGACY"
         echo "  Run 'just setup-qemu-legacy' to download"
     fi
 
