@@ -671,17 +671,104 @@ When a module is unloaded, the loader decrements the `dep_refcount` of all its d
 
 ### Circular Dependencies
 
-Circular dependencies are **not supported** and should be avoided. If `mod_a` depends on `mod_b` and `mod_b` depends on `mod_a`, neither can load because each requires the other to already be loaded.
+By default, circular dependencies are **rejected** at load time. If `mod_a` depends on `mod_b` and `mod_b` depends on `mod_a`, neither can load in the normal order because each requires the other to already be loaded.
 
-**What happens:**
+**Default behavior:**
 - `mod_a` tries to load → loader looks for `mod_b` → not loaded yet → `UDYNLINK_ERR_LOAD_MISSING_DEP`
 - `mod_b` tries to load → loader looks for `mod_a` → not loaded yet → `UDYNLINK_ERR_LOAD_MISSING_DEP`
 
-Both modules fail with the same generic error. In addition, even if modules were somehow loaded (e.g., via a host-mediated mechanism), the reference-counting unload protection means modules in a cycle can **never be individually unloaded** because each module's `dep_refcount` would remain ≥ 1.
+Self-dependencies (a module listing itself in `--depends`) are always detected and rejected with `UDYNLINK_ERR_LOAD_CIRCULAR_DEP`.
 
-**Recommendation:** Use a host-mediated pubsub channel, event queue, or callback registration system instead of direct mutual module references. This keeps module dependencies acyclic and the loader simple.
+#### Opt-In Deferred Loading for Circular Graphs
 
-**Detection:** If the host tracks which modules are currently loading, the loader can detect cycles via `udynlink_external_is_module_loading()`. A module depending on itself (self-dependency) is always detected and rejected with `UDYNLINK_ERR_LOAD_CIRCULAR_DEP` regardless of host support.
+Hosts that need to load circular dependency graphs can use **deferred dependency loading**. The host signals the loader to skip a dependency (rather than fail) by returning `UDYNLINK_DEP_DEFERRED` from `udynlink_external_get_module_handle()`:
+
+```c
+#define UDYNLINK_DEP_DEFERRED ((udynlink_module_t*)1)
+```
+
+When the loader sees this sentinel, it skips the dependency: no entry is added to `deps[]`, no `dep_refcount` is incremented, and loading continues. The deferred symbol's LOT slot is left at `0`.
+
+After both modules are loaded, the host calls `udynlink_link_dependency(a, b)` to link them symmetrically:
+
+1. Checks if `a` declares `b` as a dependency and `b` is not yet in `a->deps[]`. If so, adds `b` and increments `b->dep_refcount`, then re-runs the three-tier EXTERN resolution chain for `a`.
+2. Repeats the check in the reverse direction (`b` → `a`).
+3. Returns `UDYNLINK_OK` even if nothing changed (idempotent).
+
+**Why re-resolve:** During initial load, an `EXTERN` symbol might have resolved from the host fallback (tier 3) because the dependency wasn't in `deps[]` yet. After linking, tier 2 (dependency module) should take precedence. A full re-scan is correct and the overhead is negligible for typical embedded modules.
+
+**Example:**
+
+```c
+// Host pre-registers both as "loading"
+host_mark_loading("mod_a");
+host_mark_loading("mod_b");
+
+// Load A (B is deferred)
+udynlink_load_module(&mod_a, mod_a_image, NULL, 0, UDYNLINK_LOAD_MODE_COPY_ALL);
+host_register_module(&mod_a);
+
+// Load B (A is already loaded)
+udynlink_load_module(&mod_b, mod_b_image, NULL, 0, UDYNLINK_LOAD_MODE_COPY_ALL);
+host_register_module(&mod_b);
+
+// Link the deferred direction
+udynlink_link_dependency(&mod_a, &mod_b);
+```
+
+#### Circular Dependencies and Unload
+
+Circular deps still create **un-unloadable modules** because each module's `dep_refcount` remains ≥ 1. This is intentional: the loader does not support `udynlink_unlink_dependency()`, and a cycle means no module can be unloaded individually. The host must either:
+- Accept that circular modules live for the lifetime of the firmware, or
+- Unload all modules in the cycle simultaneously via a host-managed bulk teardown.
+
+#### Optional Dependencies
+
+Deferred loading also enables **optional dependencies**. If a host returns `UDYNLINK_DEP_DEFERRED` for an optional dependency, the module loads successfully but the deferred symbol resolves to `0`. The module can detect this at runtime:
+
+```c
+extern void log_printf(const char *fmt, ...);
+
+void my_init(void) {
+    if (log_printf != NULL) {
+        log_printf("module initialized\n");
+    }
+}
+```
+
+Later, if the optional module is loaded, the host calls `udynlink_link_dependency(consumer, optional)` and the symbol is re-resolved from the newly loaded dependency.
+
+**Caveat:** If the host provides a fallback stub for the optional symbol, the LOT slot is non-zero and the module's `NULL` check will falsely succeed. Hosts should not provide stubs for optional symbols if they want modules to detect absence.
+
+#### Deferred Symbol Resolution
+
+Individual symbols (not just whole dependencies) can be deferred via `UDYNLINK_SYM_DEFERRED`:
+
+```c
+#define UDYNLINK_SYM_DEFERRED ((uint32_t)1)
+```
+
+When `udynlink_external_resolve_critical_symbol()` or `udynlink_external_resolve_symbol()` returns this sentinel, the loader writes `0` to the relocation slot and **continues loading** instead of failing. This is useful when:
+- A module references a host function that will be registered later (e.g., after hardware initialization).
+- A symbol from another module is known but not yet available.
+- The module is designed to handle a NULL function pointer gracefully.
+
+**Important:** The critical-symbol callback returning `UDYNLINK_SYM_DEFERRED` weakens the "critical" semantics. Hosts should only do this for truly deferrable critical symbols.
+
+#### Direct Symbol Patching
+
+For host-mediated symbol injection without re-running the three-tier chain, use `udynlink_link_symbol()`:
+
+```c
+udynlink_error_t udynlink_link_symbol(udynlink_module_t *mod,
+                                      const char *sym_name,
+                                      uint32_t sym_addr);
+```
+
+This scans the module's relocation table for entries referencing `sym_name` and overwrites the slot directly with `sym_addr`. It does not update `deps[]`, `dep_refcount`, or the symbol table. Use cases:
+1. **Deferred host symbols** — the host knows the address now and wants to patch it directly.
+2. **Hot-patching** — replace a module's extern reference with a different implementation at runtime (e.g., a mock for testing).
+3. **Dynamic symbol tables** — the host maintains its own symbol table and pushes updates into loaded modules.
 
 ---
 

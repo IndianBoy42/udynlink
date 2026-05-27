@@ -286,6 +286,26 @@ udynlink_unload_module(&provider);   // OK — no more dependents
 
 If you try to unload `provider` while `consumer` is still loaded, the call returns `UDYNLINK_ERR_MODULE_HAS_DEPENDENTS`.
 
+### Optional Dependencies
+
+A module can declare an optional dependency and detect at runtime whether it is linked. If the host returns `UDYNLINK_DEP_DEFERRED` during load (or the dependency is never loaded), the extern symbol's LOT slot contains `0`. The module can check for this:
+
+```c
+extern void log_printf(const char *fmt, ...);
+
+void module_init(void) {
+    if (log_printf != NULL) {
+        log_printf("module initialized\n");
+    } else {
+        // Degraded mode: no logging
+    }
+}
+```
+
+Build with `--depends logging` even though `logging` may not be loaded. The host controls whether the dependency is required or optional by returning `NULL` (fail) or `UDYNLINK_DEP_DEFERRED` (skip) from `udynlink_external_get_module_handle()`.
+
+**Caveat:** If the host provides a fallback stub for `log_printf`, the LOT slot is non-zero and the module cannot detect absence using this pattern alone.
+
 ### Example: Provider and Consumer
 
 **`provider.c`** — exports math utilities:
@@ -545,7 +565,7 @@ Source files are compiled with:
 | `--target <name>` | Target from the database. Default: `cortex-m4`. |
 | `--mcpu <cpu>` | Raw GCC `-mcpu` flag. Overrides the target's default. |
 | `--public-symbols func1,func2` | Comma-separated list of symbols to export and wrap. If omitted, all global symbols are exported. |
-| `--depends mod_a,mod_b` | Comma-separated list of dependency module names. The loader will enforce that these modules are already loaded. **Avoid circular dependencies** — they cannot load and will deadlock the reference counts. |
+| `--depends mod_a,mod_b` | Comma-separated list of dependency module names. The loader will enforce that these modules are already loaded. Circular dependencies are rejected by default but can be loaded via deferred dependency support (see [Host Guide](integrating-as-host.md#deferred-dependencies-and-symbols)). |
 | `-O <level>` | Optimization level: `0`, `s` (default, size), `2`, `3`, `z`. |
 | `--bin-name <path>` | Custom output path for the `.bin` file. Default is derived from the first source file. |
 | `--gen-c-header` | Generate a C header file containing the binary as a `static const unsigned char` array. |

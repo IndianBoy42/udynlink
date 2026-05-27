@@ -571,6 +571,292 @@ int main(void) {
 
 ---
 
+## Circular Dependencies via Deferred Loading
+
+When two modules mutually depend on each other, normal loading fails because each requires the other to already be loaded. Use deferred loading to break the cycle.
+
+### Module A (`mod_a.c`)
+
+```c
+extern int mod_b_get_value(void);
+
+int mod_a_get_value(void) {
+    return 1;
+}
+
+int test(void) {
+    return 42 + mod_b_get_value();
+}
+```
+
+Build with `--depends mod_b`.
+
+### Module B (`mod_b.c`)
+
+```c
+extern int mod_a_get_value(void);
+
+int mod_b_get_value(void) {
+    return 2;
+}
+
+int test(void) {
+    return 10 + mod_a_get_value();
+}
+```
+
+Build with `--depends mod_a`.
+
+### Host code
+
+```c
+#include <stdint.h>
+#include <string.h>
+#include <stdio.h>
+#include <stdarg.h>
+
+#include "udynlink.h"
+#include "mod_a_module_data.h"
+#include "mod_b_module_data.h"
+
+#define MAX_MODULES 8
+static udynlink_module_t *g_modules[MAX_MODULES];
+static int g_module_count = 0;
+
+static const char *g_loading_names[MAX_MODULES];
+static int g_loading_count = 0;
+
+void *udynlink_external_malloc(size_t size) { return malloc(size); }
+void udynlink_external_free(void *p) { free(p); }
+void udynlink_external_vprintf(const char *s, va_list va) { vprintf(s, va); }
+int udynlink_external_is_pointer_in_ram(const void *p) {
+    return ((uintptr_t)p >= 0x20000000 && (uintptr_t)p < 0x20010000);
+}
+
+uint32_t udynlink_external_resolve_symbol(const char *name) {
+    (void)name; return 0;
+}
+
+uint32_t udynlink_external_resolve_critical_symbol(const char *name) {
+    (void)name; return 0;
+}
+
+udynlink_module_t *udynlink_external_get_module_handle(const char *name) {
+    for (int i = 0; i < g_module_count; i++) {
+        if (g_modules[i] == NULL) continue;
+        const char *mod_name = udynlink_get_module_name(g_modules[i]);
+        if (mod_name && !strcmp(mod_name, name))
+            return g_modules[i];
+    }
+    for (int i = 0; i < g_loading_count; i++) {
+        if (g_loading_names[i] && !strcmp(g_loading_names[i], name))
+            return UDYNLINK_DEP_DEFERRED;
+    }
+    return NULL;
+}
+
+static void register_module(udynlink_module_t *p_mod) {
+    if (g_module_count < MAX_MODULES)
+        g_modules[g_module_count++] = p_mod;
+}
+
+int main(void) {
+    udynlink_module_t mod_a, mod_b;
+    udynlink_error_t err;
+
+    // Pre-register both as "loading"
+    g_loading_names[0] = "mod_a";
+    g_loading_names[1] = "mod_b";
+    g_loading_count = 2;
+
+    // Load A (B is deferred)
+    memset(&mod_a, 0, sizeof(mod_a));
+    err = udynlink_load_module(&mod_a, mod_a_module_data, NULL, 0,
+                               UDYNLINK_LOAD_MODE_COPY_ALL);
+    if (err != UDYNLINK_OK) {
+        printf("A load failed: %s\n", udynlink_error_msg(&err));
+        return 1;
+    }
+    register_module(&mod_a);
+
+    // Load B (A is already loaded)
+    memset(&mod_b, 0, sizeof(mod_b));
+    err = udynlink_load_module(&mod_b, mod_b_module_data, NULL, 0,
+                               UDYNLINK_LOAD_MODE_COPY_ALL);
+    if (err != UDYNLINK_OK) {
+        printf("B load failed: %s\n", udynlink_error_msg(&err));
+        return 1;
+    }
+    register_module(&mod_b);
+
+    // Link the deferred direction
+    udynlink_link_dependency(&mod_a, &mod_b);
+
+    // Verify both are fully linked
+    printf("A fully linked: %d\n", udynlink_is_module_fully_linked(&mod_a));
+    printf("B fully linked: %d\n", udynlink_is_module_fully_linked(&mod_b));
+
+    // Call test functions
+    uint32_t *lot_base = (uint32_t *)UDYNLINK_LOT_BASE_ADDR;
+    udynlink_sym_t sym;
+
+    *lot_base = mod_a.ram_base;
+    udynlink_lookup_symbol(&mod_a, "test", &sym);
+    printf("A test: %d\n", ((int (*)(void))sym.val)());  // 44
+
+    *lot_base = mod_b.ram_base;
+    udynlink_lookup_symbol(&mod_b, "test", &sym);
+    printf("B test: %d\n", ((int (*)(void))sym.val)());  // 11
+
+    return 0;
+}
+```
+
+### Key points
+
+- `UDYNLINK_DEP_DEFERRED` breaks the cycle by allowing the loader to skip a dependency.
+- `udynlink_link_dependency()` is symmetric: one call links both directions.
+- Circular modules remain un-unloadable (`dep_refcount >= 1` for all members).
+
+---
+
+## Optional Dependencies
+
+A module can declare an optional dependency. If the dependency is not available, the module degrades gracefully.
+
+### Optional provider (`mod_logging.c`)
+
+```c
+int log_get_value(void) {
+    return 123;
+}
+```
+
+### Consumer (`mod_consumer.c`)
+
+```c
+extern int log_get_value(void);
+
+int test(void) {
+    if (log_get_value != NULL) {
+        return log_get_value();
+    }
+    return 0;
+}
+```
+
+Build with `--depends mod_logging`.
+
+### Host code
+
+```c
+udynlink_module_t consumer, logging;
+
+// Mark logging as "loading" so it returns DEFERRED
+udynlink_test_add_loading_name("mod_logging");
+
+// Load consumer (logging is deferred)
+udynlink_load_module(&consumer, mod_consumer_module_data, NULL, 0,
+                     UDYNLINK_LOAD_MODE_COPY_ALL);
+host_register_module(&consumer);
+
+// Consumer works in degraded mode
+udynlink_sym_t sym;
+udynlink_lookup_symbol(&consumer, "test", &sym);
+printf("Degraded: %d\n", ((int (*)(void))sym.val)());  // 0
+
+// Later, load logging for real
+udynlink_load_module(&logging, mod_logging_module_data, NULL, 0,
+                     UDYNLINK_LOAD_MODE_COPY_ALL);
+host_register_module(&logging);
+
+// Link the optional dependency
+udynlink_link_dependency(&consumer, &logging);
+
+// Now consumer resolves logging's symbol
+printf("Linked: %d\n", ((int (*)(void))sym.val)());  // 123
+```
+
+---
+
+## Hot-Patching Symbols with `udynlink_link_symbol`
+
+Replace a module's extern reference at runtime without unloading and reloading.
+
+### Module (`mod_link_sym.c`)
+
+```c
+extern void my_service(void);
+
+int test(void) {
+    my_service();
+    return 1;
+}
+```
+
+### Host code
+
+```c
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "udynlink.h"
+#include "mod_link_sym_module_data.h"
+
+static void real_service(void) {
+    printf("real_service called\n");
+}
+
+static void mock_service(void) {
+    printf("mock_service called\n");
+}
+
+uint32_t udynlink_external_resolve_symbol(const char *name) {
+    if (!strcmp(name, "my_service"))
+        return (uint32_t)(uintptr_t)&real_service;
+    return 0;
+}
+
+int main(void) {
+    udynlink_module_t mod;
+    udynlink_error_t err;
+
+    memset(&mod, 0, sizeof(mod));
+    err = udynlink_load_module(&mod, mod_link_sym_module_data, NULL, 0,
+                               UDYNLINK_LOAD_MODE_COPY_ALL);
+    if (err != UDYNLINK_OK) {
+        printf("Load failed: %s\n", udynlink_error_msg(&err));
+        return 1;
+    }
+
+    // Call test (uses real_service)
+    uint32_t *lot_base = (uint32_t *)UDYNLINK_LOT_BASE_ADDR;
+    *lot_base = mod.ram_base;
+
+    udynlink_sym_t sym;
+    udynlink_lookup_symbol(&mod, "test", &sym);
+    ((int (*)(void))sym.val)();  // prints "real_service called"
+
+    // Hot-patch to mock_service
+    udynlink_link_symbol(&mod, "my_service",
+                         (uint32_t)(uintptr_t)&mock_service);
+
+    // Call test again (uses mock_service)
+    ((int (*)(void))sym.val)();  // prints "mock_service called"
+
+    return 0;
+}
+```
+
+### Key points
+
+- `udynlink_link_symbol()` patches relocation slots directly.
+- It does not update `deps[]`, `dep_refcount`, or the symbol table.
+- Useful for testing, A/B switching, and dynamic plugin updates.
+
+---
+
 ## C++ Module with Constructors
 
 udynlink supports C++ modules compiled with `-fno-exceptions -fno-rtti -fno-use-cxa-atexit`. Global constructors are collected in `__init_array` and must be executed by the host after loading.

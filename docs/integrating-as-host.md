@@ -8,6 +8,7 @@ This guide is for firmware developers who want to integrate the udynlink micro d
 - [Integration Checklist](#integration-checklist)
 - [Adding udynlink to Your Build](#adding-udynlink-to-your-build)
 - [Implementing the External Callbacks](#implementing-the-external-callbacks)
+- [Deferred Dependencies and Symbols](#deferred-dependencies-and-symbols)
 - [The LOT Base Address Convention](#the-lot-base-address-convention)
 - [Building and Using the Host Symbol Table](#building-and-using-the-host-symbol-table)
 - [Hash-Based Symbol Resolution](#hash-based-symbol-resolution)
@@ -296,7 +297,7 @@ uint32_t udynlink_external_resolve_symbol(const char *name);
 
 **When it is called:** During relocation in `udynlink_load_module()` and `udynlink_load_module_from_stream()`, for each `UDYNLINK_SYM_TYPE_EXTERN` symbol that was not resolved by `udynlink_external_resolve_critical_symbol` and was not found in any dependency module.
 
-**What it must do:** Look up `name` in the host firmware's exported API and return the 32-bit address of the symbol. Return `0` if the symbol is not found.
+**What it must do:** Look up `name` in the host firmware's exported API and return the 32-bit address of the symbol. Return `0` if the symbol is not found. Return `UDYNLINK_SYM_DEFERRED` if the symbol is known but should not be resolved yet (see [Deferred Symbols](#deferred-dependencies-and-symbols)).
 
 **Minimal implementation (strcmp chain):**
 
@@ -321,7 +322,7 @@ uint32_t udynlink_external_resolve_symbol(const char *name) {
 ```
 
 **Common pitfalls:**
-- Return exactly `0` for unresolved symbols. The loader treats any non-zero value as success.
+- Return exactly `0` for unresolved symbols. The loader treats any non-zero value as success, **except** `UDYNLINK_SYM_DEFERRED`.
 - The returned address is written directly into the module's LOT or data section. Ensure it is the correct runtime address.
 - This is the **fallback** resolver (tier 3). See [Three-Tier Resolution](how-it-works.md#three-tier-resolution-abi-20).
 
@@ -333,7 +334,7 @@ uint32_t udynlink_external_resolve_critical_symbol(const char *name);
 
 **When it is called:** During relocation, for every `UDYNLINK_SYM_TYPE_EXTERN` symbol, **before** searching dependency modules and **before** calling `udynlink_external_resolve_symbol`.
 
-**What it must do:** Resolve critical host symbols that modules absolutely need. This is the first tier of the three-tier resolution system. Return `0` if the symbol is not a critical one, allowing the loader to fall through to dependency search and then to `udynlink_external_resolve_symbol`.
+**What it must do:** Resolve critical host symbols that modules absolutely need. This is the first tier of the three-tier resolution system. Return `0` if the symbol is not a critical one, allowing the loader to fall through to dependency search and then to `udynlink_external_resolve_symbol`. Return `UDYNLINK_SYM_DEFERRED` if the symbol is known but should not be resolved yet (see [Deferred Symbols](#deferred-dependencies-and-symbols)).
 
 **Minimal implementation:**
 
@@ -351,6 +352,7 @@ uint32_t udynlink_external_resolve_critical_symbol(const char *name) {
 
 **Common pitfalls:**
 - If this function returns `0`, the loader continues to the next tier. If it returns a non-zero value, that address is used immediately and no further search occurs for that symbol.
+- If it returns `UDYNLINK_SYM_DEFERRED`, the loader writes `0` to the relocation slot and continues. This weakens the "critical" semantics — only use it for truly deferrable critical symbols.
 - Do not resolve every symbol here unless you have a specific reason. The purpose of the three-tier system is to let dependency modules provide symbols without the host needing to re-export them.
 
 ### g. `udynlink_external_get_module_handle`
@@ -361,7 +363,7 @@ udynlink_module_t *udynlink_external_get_module_handle(const char *module_name);
 
 **When it is called:** During `udynlink_load_module()` and `udynlink_load_module_from_stream()` when validating dependencies. The loader iterates over the module's dependency list and calls this for each dependency name.
 
-**What it must do:** Search your firmware's module table and return a pointer to the handle of the already-loaded module with the given name. Return `NULL` if no such module is loaded.
+**What it must do:** Search your firmware's module table and return a pointer to the handle of the already-loaded module with the given name. Return `NULL` if no such module is loaded. Return `UDYNLINK_DEP_DEFERRED` if the dependency exists but should not be linked yet (see [Deferred Dependencies](#deferred-dependencies-and-symbols)).
 
 **Minimal implementation:**
 
@@ -391,6 +393,7 @@ udynlink_module_t *udynlink_external_get_module_handle(const char *module_name) 
 **Common pitfalls:**
 - You must maintain your own list of loaded modules. udynlink does not provide a global registry.
 - Return `NULL` if the dependency is missing; the loader will abort with `UDYNLINK_ERR_LOAD_MISSING_DEP`.
+- Return `UDYNLINK_DEP_DEFERRED` only if you intend to use deferred/circular dependency support. Returning it by accident will leave the module with unresolved symbols.
 - The dependency name is the exact string provided to `mkmodule --depends <name>` when the module was built.
 
 ### h. `udynlink_external_is_module_loading`
@@ -447,6 +450,127 @@ int udynlink_external_is_module_loading(const char *module_name) {
 - The host must track which modules are *currently* loading, not which modules are already loaded. Use a separate list from the one used for `udynlink_external_get_module_handle`.
 - Remember to unmark a module when loading finishes (successfully or with an error), or stale entries will falsely trigger circular-dependency errors later.
 - This callback is only called after `get_module_handle` returns `NULL`. If the dependency is already loaded, this function is never invoked for that dependency.
+
+---
+
+## Deferred Dependencies and Symbols
+
+uDynlink supports **opt-in deferred dependency loading** and **deferred symbol resolution**. These features are strictly opt-in: existing hosts that never return the deferred sentinels keep the old strict behavior unchanged.
+
+### When to Use Deferred Loading
+
+- **Circular dependency graphs** — two or more modules that mutually depend on each other.
+- **Optional dependencies** — a module can function with reduced capability if a dependency is missing.
+- **Late-bound host symbols** — a module references a host function that will be registered after hardware initialization.
+
+### `UDYNLINK_DEP_DEFERRED`
+
+```c
+#define UDYNLINK_DEP_DEFERRED ((udynlink_module_t*)1)
+```
+
+This sentinel is returned by `udynlink_external_get_module_handle()` instead of a real module pointer. On ARM Cortex-M, address `0x00000001` is never a valid heap-allocated struct pointer, so it cannot collide with real handles.
+
+When the loader receives this sentinel for a dependency:
+- The dependency is **skipped**: no entry in `deps[]`, no `num_deps` increment, no `dep_refcount` increment.
+- The module loads successfully.
+- Any `EXTERN` symbols from the deferred dependency fall through to tier 3 (host fallback) or resolve to `0`.
+
+**Example host callback:**
+
+```c
+static const char *g_loading_names[8];
+static int g_loading_count = 0;
+
+udynlink_module_t *udynlink_external_get_module_handle(const char *name) {
+    // Check already-loaded modules
+    for (int i = 0; i < g_module_count; i++) {
+        if (g_modules[i] && strcmp(udynlink_get_module_name(g_modules[i]), name) == 0)
+            return g_modules[i];
+    }
+    // Check "in progress" loads
+    for (int i = 0; i < g_loading_count; i++) {
+        if (strcmp(g_loading_names[i], name) == 0)
+            return UDYNLINK_DEP_DEFERRED;
+    }
+    return NULL;
+}
+```
+
+### `UDYNLINK_SYM_DEFERRED`
+
+```c
+#define UDYNLINK_SYM_DEFERRED ((uint32_t)1)
+```
+
+This sentinel is returned by `udynlink_external_resolve_critical_symbol()` or `udynlink_external_resolve_symbol()`. Address `0x00000001` is not a valid code or data address on Cortex-M.
+
+When a resolve callback returns this value:
+- The loader writes `0` to the relocation slot.
+- Loading **continues** (does not fail).
+- The module can check `if (func_ptr != NULL)` at runtime.
+
+### Linking Deferred Dependencies: `udynlink_link_dependency()`
+
+After deferred modules are loaded, call this to link them:
+
+```c
+udynlink_error_t udynlink_link_dependency(udynlink_module_t *a, udynlink_module_t *b);
+```
+
+This function is **symmetric**: it checks both directions and links whichever is missing. After adding a dependency to `deps[]`, it re-runs the three-tier EXTERN resolution chain so that dependency symbols (tier 2) take precedence over host fallbacks (tier 3).
+
+**Example:**
+
+```c
+// Both A and B are loaded; A declared dependency on B, but B was deferred
+udynlink_link_dependency(&mod_a, &mod_b);
+
+// Verify linking succeeded
+if (udynlink_is_module_fully_linked(&mod_a)) {
+    printf("mod_a is fully linked\n");
+}
+```
+
+### Direct Symbol Patching: `udynlink_link_symbol()`
+
+For low-level symbol injection without re-running the resolution chain:
+
+```c
+udynlink_error_t udynlink_link_symbol(udynlink_module_t *mod,
+                                      const char *sym_name,
+                                      uint32_t sym_addr);
+```
+
+This patches relocation slots directly. It does not touch `deps[]`, `dep_refcount`, or the symbol table. Use it for hot-patching or dynamic symbol tables.
+
+### Query Helpers
+
+Three small read-only APIs let hosts inspect module state:
+
+| Function | Purpose |
+|----------|---------|
+| `udynlink_is_module_fully_linked(p_mod)` | Returns `1` if all declared dependencies are present in `deps[]`. |
+| `udynlink_get_linked_dependency(p_mod, name)` | Returns the handle of a linked dependency by name, or `NULL`. |
+| `udynlink_is_symbol_resolved(p_mod, name)` | Returns `1` if the symbol exists and has a non-zero value. |
+
+### Optional Dependency Pattern
+
+A module that optionally depends on `logging`:
+
+```c
+extern void log_printf(const char *fmt, ...);
+
+void module_init(void) {
+    if (log_printf != NULL) {
+        log_printf("module initialized\n");
+    } else {
+        // Degraded mode: no logging
+    }
+}
+```
+
+**Important:** This only works if the host does **not** provide a fallback stub for `log_printf`. If the host returns a stub address, the LOT slot is non-zero and the module cannot distinguish "stub" from "real dependency linked."
 
 ---
 
@@ -816,6 +940,8 @@ host_unregister_module(&provider);
 udynlink_unload_module(&provider);
 ```
 
+For circular or optional dependencies, see [Deferred Dependencies and Symbols](#deferred-dependencies-and-symbols).
+
 ### Load Modes
 
 | Mode | Behavior | RAM Needed | Use Case |
@@ -1160,7 +1286,7 @@ At `UDYNLINK_DEBUG_INFO`, the loader prints the module name, RAM allocation deta
 
 **Problem:** Unloading a module returns `UDYNLINK_ERR_MODULE_HAS_DEPENDENTS`.
 
-**Solution:** Another loaded module declared this one as a dependency via `--depends`. Unload the dependent module first.
+**Solution:** Another loaded module declared this one as a dependency via `--depends`. Unload the dependent module first. For circular dependency graphs, all modules in the cycle have `dep_refcount >= 1` and cannot be individually unloaded.
 
 **Problem:** Streaming load from SD card returns `UDYNLINK_ERR_LOAD_IO_ERROR`.
 
@@ -1169,6 +1295,10 @@ At `UDYNLINK_DEBUG_INFO`, the loader prints the module name, RAM allocation deta
 **Problem:** Module loads but global variables in the module have unexpected values.
 
 **Solution:** Ensure you are using the correct `load_mode`. In `XIP` mode, only `.data` is copied; if the module blob itself is not in a memory-mapped flash region, the code section will be garbage.
+
+**Problem:** Optional dependency is not detected by the module (`if (func != NULL)` is always true).
+
+**Solution:** The host is providing a fallback stub for the optional symbol via `udynlink_external_resolve_symbol`. Remove the stub, or return `UDYNLINK_DEP_DEFERRED` for the dependency and `UDYNLINK_SYM_DEFERRED` for the symbol.
 
 ---
 

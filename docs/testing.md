@@ -39,7 +39,7 @@ The test driver (`test_driver.py`) runs each test directory **twice**:
 - once with `-O 3`
 - once with `-Os` (default `mkmodule` optimization)
 
-Because the harness internally exercises all three load modes, **each test runs 6 times by default** (3 load modes x 2 optimization levels). See [Module Guide](writing-modules.md) for how compiler flags affect generated code.
+Because the harness internally exercises all three load modes, **each test runs 6 times by default** (3 load modes x 2 optimization levels). See [Module Guide](writing-modules.md) for how compiler flags affect generated code. As of the latest release, the full test suite contains 38 test cases.
 
 ## How to Run Tests
 
@@ -113,12 +113,12 @@ If you need the legacy binary, use an older xPack release or the `xpack-dev-tool
 
 | Platform | QEMU Machine | QEMU Binary | CPU | Status | Notes |
 |----------|--------------|-------------|-----|--------|-------|
-| `stm32f429_discovery` | STM32F429I-Discovery | `qemu-system-gnuarmeclipse` | cortex-m4 | Passing | Fast baseline, legacy xPack fork |
-| `mps2_an386` | mps2-an386 | `qemu-system-arm` (9.2.4+) | cortex-m4 | Passing | Mainline QEMU, ~0.5 s per test |
-| `olimex_stm32_h405` | olimex-stm32-h405 | `qemu-system-arm` | cortex-m4f | Passing | Hard-float M4F on mainline QEMU |
-| `mps2_an385` | mps2-an385 | `qemu-system-arm` | cortex-m3 | Passing | Mainline QEMU |
-| `mps2_an500` | mps2-an500 | `qemu-system-arm` | cortex-m7 | Passing | Mainline QEMU |
-| `mps2_an505` | mps2-an505 | `qemu-system-arm` | cortex-m33 | Passing | Mainline QEMU, secure boot (see below) |
+| `stm32f429_discovery` | STM32F429I-Discovery | `qemu-system-gnuarmeclipse` | cortex-m4 | Passing | Fast baseline, legacy xPack fork (38 tests) |
+| `mps2_an386` | mps2-an386 | `qemu-system-arm` (9.2.4+) | cortex-m4 | Passing | Mainline QEMU, ~0.5 s per test (38 tests) |
+| `olimex_stm32_h405` | olimex-stm32-h405 | `qemu-system-arm` | cortex-m4f | Passing | Hard-float M4F on mainline QEMU (38 tests) |
+| `mps2_an385` | mps2-an385 | `qemu-system-arm` | cortex-m3 | Passing | Mainline QEMU (38 tests) |
+| `mps2_an500` | mps2-an500 | `qemu-system-arm` | cortex-m7 | Passing | Mainline QEMU (38 tests) |
+| `mps2_an505` | mps2-an505 | `qemu-system-arm` | cortex-m33 | Passing | Mainline QEMU, secure boot (see below) (38 tests) |
 | `microbit` | microbit | `qemu-system-arm` | cortex-m0 | Broken | QEMU microbit machine does not support ELF `-kernel` at 0x00000000 |
 | `stm32f103_bluepill` | NUCLEO-F103RB | `qemu-system-gnuarmeclipse` | cortex-m3 | Partial | Boots, internal calls OK; Flash-to-RAM host calls hang (QEMU quirk) |
 | `stm32f051_discovery` | STM32F0-Discovery | `qemu-system-gnuarmeclipse` | cortex-m0 | Partial | Boots, internal calls OK; same Flash-to-RAM quirk as M3 |
