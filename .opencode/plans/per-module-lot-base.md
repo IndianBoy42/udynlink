@@ -422,3 +422,341 @@ All major decisions are locked:
 5. ✅ **Prologue remains default** — Wrapper still saves/restores `r9` for safety. `--no-prologue` stays as opt-in.
 
 **Ready to execute. Shall I begin delegating Tasks 1 and 2 in parallel?**
+
+---
+
+# Part 2: Standalone Dependency System (`udynlink_deps`)
+
+> **Status:** Architecture draft. Pending review.
+> **Goal:** Rebuild cross-module linking as an **optional standalone layer** on top of the v3.0 core, using only the existing API hooks. No changes to `udynlink.h` / `udynlink.c`.
+
+---
+
+## 2.1 Design Principles
+
+1. **Zero core changes** — The dependency system is a separate header+source pair. Hosts that don't use it pay zero code/RAM cost.
+2. **Dependency declarations via dummy symbols** — Modules import `.udynlink.mod.requires.{name}` as extern symbols. The host's existing `udynlink_external_resolve_symbol()` callback serves as the "please load this dependency" hook.
+3. **Cross-module function calls via runtime-generated thunks** — Each cross-module function pointer gets a small RAM thunk that saves the caller's `r9`, sets it to the callee's `ram_base`, calls the real function, and restores `r9`.
+4. **Single-tier symbol resolution** — The host callback handles everything: regular symbols, dependency declarations, and cross-module symbol lookups. The standalone header provides helpers the host calls from its callback.
+
+---
+
+## 2.2 Dummy Symbol Encoding
+
+### Module Writer API
+
+```c
+#include "udynlink/udynlink_deps.h"
+
+// In module source:
+UDYNLINK_REQUIRES(math_lib);
+UDYNLINK_REQUIRES(io_lib);
+```
+
+### Macro Expansion
+
+```c
+#define UDYNLINK_REQUIRES(mod_name) \
+    extern udynlink_module_t *__udynlink_dep_##mod_name \
+    __asm__(".udynlink.mod.requires." #mod_name)
+```
+
+This creates an **EXTERN** symbol named `.udynlink.mod.requires.math_lib` in the module's symbol table. At load time, the core loader treats it like any other unresolved symbol and calls `udynlink_external_resolve_symbol()`.
+
+### Why EXTERN (not WEAK)
+
+Using a strong extern reference means:
+- The loader **fails the module load** if the host doesn't resolve the dependency.
+- The host callback **must** handle `.udynlink.mod.requires.*` names, or the module can't load.
+- This is correct behavior: a module that declares dependencies needs a dependency-aware host.
+
+Using WEAK would be problematic because the v3.0 loader applies `offset_sym()` to WEAK symbols, adding the module's data/code base to the symbol value. For an undefined weak, the value is 0, so the slot would get the base address — which is wrong for a dependency handle.
+
+---
+
+## 2.3 Host Integration
+
+### The Host's `udynlink_external_resolve_symbol()`
+
+The host implements one callback that delegates to the standalone header:
+
+```c
+#include "udynlink/udynlink_deps.h"
+
+static udynlink_thunk_pool_t g_thunk_pool;
+static udynlink_dep_mgr_t g_dep_mgr;
+
+uintptr_t udynlink_external_resolve_symbol(const char *name) {
+    // 1. Check if it's a dependency declaration
+    if (udynlink_dep_is_dependency(name)) {
+        return udynlink_dep_resolve_dependency(&g_dep_mgr, name);
+    }
+
+    // 2. Check if it's a cross-module function call
+    //    (the header looks up 'name' in loaded dependency modules)
+    uintptr_t thunk = udynlink_dep_resolve_func(&g_dep_mgr, &g_thunk_pool, name);
+    if (thunk != 0) return thunk;
+
+    // 3. Check if it's a cross-module data symbol
+    uintptr_t data = udynlink_dep_resolve_data(&g_dep_mgr, name);
+    if (data != 0) return data;
+
+    // 4. Regular host symbol table lookup
+    return my_host_symbol_lookup(name);
+}
+```
+
+### Dependency Resolution Flow
+
+1. Module A is loaded via `udynlink_dep_load()`.
+2. Core loader encounters `.udynlink.mod.requires.B`.
+3. Host callback calls `udynlink_dep_resolve_dependency(&g_dep_mgr, ".udynlink.mod.requires.B")`.
+4. The dependency manager:
+   - Checks if B is already loaded.
+   - Checks if B is currently loading (circular dependency detection).
+   - If not loaded, calls `udynlink_load_module()` (or `udynlink_dep_load()`) recursively for B.
+   - Returns B's module handle address `(uintptr_t)dep_mod`.
+5. The LOT slot for `.udynlink.mod.requires.B` gets the handle address.
+6. The dependency manager records that A depends on B.
+
+### Cross-Module Function Resolution
+
+When module A calls `math_add(a, b)` which is defined in module B:
+1. Core loader encounters `math_add` as an EXTERN symbol in A.
+2. Host callback calls `udynlink_dep_resolve_func(&g_dep_mgr, &g_thunk_pool, "math_add")`.
+3. The dependency manager searches all loaded modules for `math_add`.
+4. If found in module B:
+   - Allocate a thunk from the thunk pool.
+   - The thunk saves caller's `r9`, sets `r9 = B->ram_base`, calls `math_add`, restores `r9`.
+   - Return the thunk address.
+5. The LOT slot for `math_add` gets the thunk address.
+6. When A calls `math_add`, the thunk switches `r9` to B's base, so B's PIC code works correctly.
+
+---
+
+## 2.4 Thunk Design
+
+### Two-Level Dispatch: Shared Module Gateway + Per-Function Stubs
+
+Instead of each thunk storing the callee's `ram_base` redundantly, we use a **two-level dispatch**:
+
+1. **Per-module gateway** (shared): saves caller's `r9`, loads the callee's `ram_base`, calls the function via `r0`, restores `r9`.
+2. **Per-function stub** (one per cross-module function reference): loads the target function address into `r0`, then branches to the module's gateway.
+
+**Why this works:** `b gateway` does **not** modify `lr`. The original return address (from the caller in module A) remains intact in `lr`. The gateway pushes `lr`, calls the target function via `blx`, then pops `lr` back into `pc`.
+
+### Per-Function Stub (v7m / v8m / v6m)
+
+```asm
+stub_math_add:                     ; one per cross-module function reference
+    ldr     r0, [pc, #4]           ; load func_addr into r0
+    b       gateway_B              ; branch to module B's shared gateway
+    .word   math_add               ; patched: actual function address
+```
+
+Size: **12 bytes** (2 instructions + 1 word).
+
+### Per-Module Gateway (v7m / v8m)
+
+```asm
+gateway_B:                          ; one per dependency module
+    push    {r9, lr}               ; save caller's r9 and return address
+    ldr     r9, [pc, #8]           ; load B->ram_base from literal pool
+    blx     r0                     ; call func_addr (passed in r0 from stub)
+    pop     {r9, pc}               ; restore r9 and return
+    .word   B->ram_base            ; patched once when module B is loaded
+```
+
+Size: **16 bytes**.
+
+### Per-Module Gateway (v6m / M0)
+
+M0 lacks `push {r9, lr}` (arbitrary register sets) and `blx` with high registers.
+
+```asm
+gateway_B:
+    mov     r2, r9                 ; r2 = caller's r9 (save in low reg)
+    push    {r2, lr}               ; push caller's r9 and lr
+    ldr     r2, [pc, #8]           ; load B->ram_base
+    mov     r9, r2                 ; r9 = callee's ram_base
+    mov     r12, r0                ; r12 = func_addr (r12 is IP, scratch)
+    bl      .L_m0_veneer           ; PC-relative call
+    pop     {r2, r3}               ; r2 = saved r9, r3 = saved lr
+    mov     r9, r2                 ; restore caller's r9
+    bx      r3                     ; return
+.L_m0_veneer:
+    bx      r12                    ; indirect call to func_addr
+    .word   B->ram_base
+```
+
+Size: **24 bytes**.
+
+### Memory Comparison
+
+For module A referencing **N** functions from module B:
+
+| Design | v7m/v8m Size | v6m Size |
+|--------|-------------|----------|
+| Original (inline ram_base per thunk) | 16N | 16N |
+| Two-level (gateway + stubs) | 12N + 16 | 12N + 24 |
+| **Savings for N=20** | **64 bytes** | **56 bytes** |
+
+The two-level approach eliminates the duplicate `ram_base` word from every thunk.
+
+### Shared Trampoline in C (not assembly)
+
+The gateway is implemented as a **`__attribute__((naked))` C function** with inline assembly, rather than a separate `.S` file:
+
+```c
+__attribute__((naked, section("udynlink_gateways"), used))
+static void udynlink_gateway_v7m(void) {
+    __asm volatile(
+        "push   {r9, lr}        \n"
+        "ldr    r9, [pc, #8]    \n"  // load callee ram_base from literal pool
+        "blx    r0              \n"  // call func_addr (r0 passed from stub)
+        "pop    {r9, pc}        \n"
+        ".word  0                 \n"  // patched by udynlink_dep_link_gateway()
+    );
+}
+```
+
+The `naked` attribute prevents the compiler from generating a prologue/epilogue. The `section` attribute places all gateways in a contiguous region so the `b` instruction in stubs can reach them (±2 KB on M0, ±16 MB on v7m+).
+
+### Thunk Pool
+
+```c
+typedef struct {
+    uint8_t *base;
+    size_t size;
+    size_t used;
+} udynlink_thunk_pool_t;
+```
+
+The host provides a RAM buffer for the thunk pool. Typical size: 1-2 KB, enough for ~50-100 cross-module function references.
+
+---
+
+## 2.5 Data Symbol Handling (No Thunks Needed)
+
+Cross-module **data symbols** (variables, constants) do **not** require thunks. The LOT already stores the absolute address of the variable. Access works as follows:
+
+1. Module A's code loads the variable's address from its LOT via `r9`-relative addressing:
+   ```asm
+   ldr     r3, [pc, #lot_index]   // load LOT index
+   ldr     r3, [r9, r3]           // load variable address from A's LOT
+   ldr     r3, [r3, #0]           // dereference the variable
+   ```
+2. The LOT slot contains the **absolute address** of the variable in module B's data section.
+3. Module A's `r9` points to A's LOT (correct). The variable address in the LOT is absolute, so no `r9` switching is needed.
+
+**Resolution path for data symbols:**
+1. Core loader encounters `extern int math_result;` in module A.
+2. Host callback calls `udynlink_dep_resolve_data(&g_mgr, "math_result")`.
+3. Dependency manager searches all loaded modules for `math_result`.
+4. If found in module B, returns `sym.val` (the already-relocated absolute address of the variable).
+5. The LOT/data slot for `math_result` gets this address directly.
+
+**Function pointers stored in data:** If a data variable in module A holds a function pointer to module B, the value assigned at load time (via relocation) gets a **thunk address** (not the raw function address). The host's resolution logic naturally handles this because it calls `udynlink_dep_resolve_func()` for any EXTERN symbol, whether accessed via LOT (direct call) or data (function pointer).
+
+**Weak data symbols across modules:** If module B defines `weak int global_counter` and module A imports it, the v3.0 loader first applies B's address as default, then calls the host callback. The host callback (via `udynlink_dep_resolve_data`) can override with another module's definition. The slot gets the correct absolute address.
+
+## 2.6 Dependency Manager State
+
+```c
+typedef struct {
+    // Registry of loaded modules
+    udynlink_module_t **modules;
+    size_t count;
+    size_t capacity;
+
+    // Circular dependency detection stack
+    const char *loading_stack[8];
+    size_t loading_depth;
+
+    // Optional: dependency graph for refcount-based unload
+    // (can be kept simple: just track direct deps per module)
+} udynlink_dep_mgr_t;
+```
+
+The manager is host-allocated and host-managed. The standalone header provides insert/remove/lookup helpers.
+
+---
+
+## 2.7 Public API
+
+### For Module Writers
+
+| Macro | Purpose |
+|-------|---------|
+| `UDYNLINK_REQUIRES(name)` | Declare a dependency on module `name` |
+
+### For Host Firmware
+
+| Function | Purpose |
+|----------|---------|
+| `udynlink_dep_is_dependency(name)` | Check if a symbol name is a dep declaration |
+| `udynlink_dep_get_name(name)` | Extract module name from dep symbol |
+| `udynlink_thunk_pool_init(pool, buf, size)` | Initialize a thunk pool |
+| `udynlink_thunk_alloc_stub(pool, func)` | Allocate a per-function stub (12 bytes) |
+| `udynlink_thunk_link_gateway(pool, mod)` | Allocate/return a per-module gateway for `mod` |
+| `udynlink_dep_mgr_init(mgr, buf, cap)` | Initialize dependency manager |
+| `udynlink_dep_load(mgr, mod, base, addr, size, mode, pool)` | Load module with auto-deps and thunks |
+| `udynlink_dep_unload(mgr, mod)` | Unload module, tracking refcounts |
+| `udynlink_dep_resolve_dependency(mgr, name)` | Resolve a `.udynlink.mod.requires.*` symbol |
+| `udynlink_dep_resolve_func(mgr, pool, name)` | Resolve a function from a loaded dependency |
+| `udynlink_dep_resolve_data(mgr, name)` | Resolve a data symbol from a loaded dependency |
+| `udynlink_dep_find(mgr, name)` | Find a loaded module by name |
+
+---
+
+## 2.8 mkmodule Changes (Minimal)
+
+The standalone system doesn't require mkmodule changes for the dependency declarations themselves — the `UDYNLINK_REQUIRES` macro uses GCC's `__asm__("name")` attribute, which the compiler and linker handle natively.
+
+However, we may want to add an optional `--gen-deps-header` flag to mkmodule that scans the module's symbol table and generates a C header with `#define UDYNLINK_REQUIRES(...)` lines, making it easier for module writers. This is a nice-to-have, not required for correctness.
+
+---
+
+## 2.8 Task Breakdown
+
+| Task | Work | Agent | Parallel? |
+|------|------|-------|-----------|
+| **A** | Design review & header skeleton (`udynlink_deps.h`) | `deep` | — |
+| **B** | Core implementation (`udynlink_deps.c`): thunk templates, dep manager, resolution helpers | `agent` | After A |
+| **C** | Test suite: new tests for dependency loading, cross-module calls with data access, circular dep detection, deferred dep loading | `agent` | After B |
+| **D** | mkmodule optional `--gen-deps-header` flag | `quick` | After A |
+| **E** | Documentation: new `docs/dependencies.md` guide, update `docs/integrating-as-host.md` with dependency callback examples | `agent` | After B |
+| **F** | Validation: `just ci` across all platforms | `shell` | After C |
+
+---
+
+## 2.9 Key Design Decisions
+
+1. **Dummy symbols vs. header fields** — Dummy symbols leverage the existing symbol table and relocation machinery. No header format changes, no mkmodule changes for basic usage.
+2. **Thunks vs. direct calls** — Thunks are the only way to make cross-module calls safe on all load modes (COPY_ALL, COPY_TEXT_DATA, XIP). Direct `bl` to another module's function leaves `r9` pointing to the caller's LOT.
+3. **Two-level dispatch (gateway + stub)** — Per-module gateway stores `ram_base` once (16 bytes v7m, 24 bytes v6m). Per-function stubs are 12 bytes each. Saves ~4 bytes per cross-module function reference compared to inline thunks.
+4. **Trampoline in C, not assembly** — The gateway is a `__attribute__((naked))` C function with inline assembly. Easier to maintain than a separate `.S` file, but requires careful section placement to keep `b` range valid.
+4. **Single callback vs. multiple callbacks** — The host still implements only `udynlink_external_resolve_symbol()`. The standalone header provides helpers the host calls from inside that one callback.
+5. **No automatic module unloading** — `udynlink_dep_unload()` decrements refcounts but doesn't cascade. The host decides when to actually call `udynlink_unload_module()`. This avoids surprise unload side effects.
+
+---
+
+## 2.10 Open Questions
+
+1. **M0 stub `b` range to gateway** — The `b` instruction in Thumb-1 has ±2 KB range. All gateways are placed in a contiguous `udynlink_gateways` section. The stub pool is allocated nearby. On typical Cortex-M systems with small RAM, this is easily satisfied. Document the constraint.
+2. **Thunks and XIP** — Thunks live in RAM. For XIP modules, the module's code is in flash, but cross-module calls go through RAM thunks. This is fine.
+3. **Thunk pool exhaustion** — `udynlink_thunk_alloc()` returns 0, causing the load to fail with `UDYNLINK_ERR_LOAD_OUT_OF_MEMORY`. Host sizes the pool appropriately.
+4. **C++ module constructors calling deps** — If module A's `__init_array` calls a function from module B, B must be loaded before A's `__init_array` runs. `udynlink_dep_load()` resolves all dependencies before returning, so this is naturally handled.
+5. **Data vs. function symbol distinction** — Data symbols get direct addresses (no thunk). Function symbols get stubs + gateway. The resolution helper (`udynlink_dep_resolve_func` vs `udynlink_dep_resolve_data`) handles the distinction.
+
+---
+
+## 2.11 Decision Checkpoint
+
+Please confirm or refine:
+
+1. ✅ **Dummy symbol approach confirmed** — `.udynlink.mod.requires.{name}` as EXTERN symbols.
+2. ✅ **Two-level dispatch confirmed** — Per-module gateway (16 bytes v7m, 24 bytes v6m) + per-function stub (12 bytes). Saves ~4 bytes per cross-module function reference vs. inline thunks.
+3. ✅ **Trampoline in C confirmed** — `__attribute__((naked))` with inline assembly. Easier to maintain than separate `.S` files.
+4. ✅ **No core changes confirmed** — Standalone header uses only existing v3.0 APIs.
+5. ✅ **Data symbols confirmed** — Direct address resolution, no thunks. Functions need stubs + gateway.
