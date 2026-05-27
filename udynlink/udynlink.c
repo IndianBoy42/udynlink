@@ -188,6 +188,38 @@ static const uint32_t *get_relocs_pointer(const udynlink_module_t *p_mod) {
     return (const uint32_t*)p_header + get_header_size(p_header) / sizeof(uint32_t);
 }
 
+// Compute num_named_syms for the given module header.
+// Returns the index of the last contiguous named (non-INTERNAL) entry starting
+// from index 1, provided that (a) all named entries come before any INTERNAL
+// entries, and (b) the named entries are sorted lexicographically.  Returns 0
+// for old-format (unsorted) modules, which signals udynlink_lookup_symbol to
+// fall back to linear search.
+static uint16_t compute_num_named_syms(const udynlink_module_header_t *p_header) {
+    const uint32_t *p_symt = get_sym_table_pointer(p_header);
+    uint32_t num_entries = *p_symt;
+    uint16_t last_named = 0;
+    uint8_t found_local = 0;
+
+    for (size_t i = 1; i < num_entries; i++) {
+        uint32_t name_off = p_symt[i * 2 + 1];
+        uint8_t sym_type = (name_off >> UDYNLINK_SYM_INFO_SHIFT) & UDYNLINK_SYM_INFO_TYPE_MASK;
+        if (sym_type == UDYNLINK_SYM_TYPE_INTERNAL) {
+            found_local = 1;
+        } else {
+            if (found_local) return 0;
+            last_named = (uint16_t)i;
+        }
+    }
+
+    for (size_t i = 2; i <= last_named; i++) {
+        const char *prev = (const char*)p_symt + (p_symt[(i - 1) * 2 + 1] & UDYNLINK_SYM_OFFSET_MASK);
+        const char *cur  = (const char*)p_symt + (p_symt[i * 2 + 1] & UDYNLINK_SYM_OFFSET_MASK);
+        if (strcmp(prev, cur) > 0) return 0;
+    }
+
+    return last_named;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Helpers - various
 
@@ -541,6 +573,8 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
         }
     }
 
+    p_mod->num_named_syms = compute_num_named_syms(p_header);
+
     // All done
     UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Done loading module at %p\n", base_addr);
 
@@ -663,18 +697,24 @@ size_t udynlink_get_module_deps(const void *base_addr, const char **deps, size_t
 }
 
 udynlink_sym_t *udynlink_lookup_symbol(const udynlink_module_t *p_mod, const char *name, udynlink_sym_t *p_sym) {
-    size_t idx;
+    if (p_mod == NULL)
+        return NULL;
 
-    if (p_mod != NULL) { // but consider only the given one if not NULL
-        idx = 0;
-        while (get_sym_at(p_mod->p_header, idx ++, p_sym) != NULL) { // iterate through module's symbol table
-            if (!strcmp(p_sym->name, name)) { // symbol found
-                offset_sym(p_mod, p_sym); // offset value properly before returning
+    if (p_mod->num_named_syms > 0) {
+        // Binary search over named symbol entries [1, num_named_syms].
+        // mkmodule emits these lexicographically sorted; local (nameless)
+        // symbols come after num_named_syms and are not searchable.
+        size_t lo = 1;
+        size_t hi = p_mod->num_named_syms;
+
+        while (lo <= hi) {
+            size_t mid = lo + (hi - lo) / 2;
+            if (get_sym_at(p_mod->p_header, mid, p_sym) == NULL)
+                break;
+            int cmp = strcmp(p_sym->name, name);
+            if (cmp == 0) {
+                offset_sym(p_mod, p_sym);
                 if (p_sym->type == UDYNLINK_SYM_TYPE_WEAK) {
-                    // For weak symbols, runtime lookup must also resolve the
-                    // host/dependency override so external callers see the
-                    // correct address.  The three-tier resolution is identical
-                    // to the load-time path above.
                     uintptr_t sym_addr = udynlink_external_resolve_critical_symbol(name);
                     if (sym_addr == 0) {
                         for (uint8_t d = 0; d < p_mod->num_deps; d++) {
@@ -692,7 +732,38 @@ udynlink_sym_t *udynlink_lookup_symbol(const udynlink_module_t *p_mod, const cha
                     }
                 }
                 return p_sym;
+            } else if (cmp < 0) {
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
             }
+        }
+        return NULL;
+    }
+
+    // Linear search fallback for old-format (unsorted) modules.
+    size_t idx = 1;
+    while (get_sym_at(p_mod->p_header, idx++, p_sym) != NULL) {
+        if (p_sym->type != UDYNLINK_SYM_TYPE_INTERNAL && !strcmp(p_sym->name, name)) {
+            offset_sym(p_mod, p_sym);
+            if (p_sym->type == UDYNLINK_SYM_TYPE_WEAK) {
+                uintptr_t sym_addr = udynlink_external_resolve_critical_symbol(name);
+                if (sym_addr == 0) {
+                    for (uint8_t d = 0; d < p_mod->num_deps; d++) {
+                        udynlink_sym_t dep_sym;
+                        if (udynlink_lookup_symbol(p_mod->deps[d], name, &dep_sym) != NULL) {
+                            sym_addr = dep_sym.val;
+                            break;
+                        }
+                    }
+                }
+                if (sym_addr == 0)
+                    sym_addr = udynlink_external_resolve_symbol(name);
+                if (sym_addr > 0) {
+                    p_sym->val = sym_addr;
+                }
+            }
+            return p_sym;
         }
     }
     return NULL;
@@ -1030,6 +1101,8 @@ static udynlink_error_t udynlink_load_module_from_stream_impl(
             }
         }
     }
+
+    p_mod->num_named_syms = compute_num_named_syms(p_mod->p_header);
 
     if (p_hooks && p_hooks->on_event) {
         if (p_hooks->on_event(UDYNLINK_HOOK_RELOCS_APPLIED, p_mod, p_hooks->pv_hook_ctx) != UDYNLINK_OK) {

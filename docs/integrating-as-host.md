@@ -1409,7 +1409,7 @@ The following shared state is **not protected**:
 | State | Where | Risk |
 |-------|-------|------|
 | `dep_refcount` on module handles | `udynlink_load_module` increments it; `udynlink_unload_module` checks and decrements it | A read-modify-write race can corrupt the refcount, allowing a module to be unloaded while dependents still reference it |
-| `p_mod` fields (`p_header`, `p_ram`, `info`, `num_deps`, `deps`) | Written during load; read during symbol lookup and unload | A partially-initialized handle visible to another context will cause hard faults |
+| `p_mod` fields (`p_header`, `p_ram`, `info`, `num_deps`, `deps`, `user_ctx`) | Written during load; read during symbol lookup and unload | A partially-initialized handle visible to another context will cause hard faults |
 | `debug_level` static variable | Written by `udynlink_set_debug_level` from any context | Benign in practice (eventual consistency), but technically a data race |
 | Host module registry (`g_loaded_modules` etc.) | Managed by host code alongside `udynlink_external_get_module_handle` | The host's own registry is equally unprotected; concurrent lookups while a module is being registered may find a partially-inserted entry |
 

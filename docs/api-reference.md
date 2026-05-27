@@ -108,6 +108,7 @@ typedef struct _udynlink_module_t {
     uint8_t  dep_refcount;   // Number of other modules that depend on this one
     uint8_t  max_deps;       // Capacity of the deps array
     const struct _udynlink_module_t **deps;    // Host-allocated dependency handle array
+    void    *user_ctx;       // Opaque user context pointer (never touched by the loader)
 } udynlink_module_t;
 ```
 
@@ -122,6 +123,7 @@ typedef struct _udynlink_module_t {
 | `dep_refcount` | Reference count of modules that list this module as a dependency. `udynlink_unload_module` fails with `UDYNLINK_ERR_MODULE_HAS_DEPENDENTS` if this is non-zero. |
 | `max_deps` | Number of slots allocated in the `deps` array by the host. The loader refuses to load a module whose `num_deps` exceeds this value. |
 | `deps` | Pointer to a host-allocated array of dependency module handles. Used for inter-module symbol resolution. Only entries `0` through `num_deps - 1` are valid. May be `NULL` if the module has no dependencies. |
+| `user_ctx` | Opaque pointer for host use. The loader **never** reads or writes this field; it is purely a convenience slot for associating arbitrary state (e.g., a filesystem path, a language runtime handle, or a reference-counting wrapper) with a module handle. |
 
 ---
 

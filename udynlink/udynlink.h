@@ -108,6 +108,7 @@ typedef enum {
  * @brief Runtime module handle.
  *
  * Holds the loader's internal state for one loaded module instance.
+ * The host may attach arbitrary context via the @c user_ctx field.
  */
 typedef struct _udynlink_module_t {
     /** Pointer to the module header (in flash or RAM depending on load mode). */
@@ -129,6 +130,20 @@ typedef struct _udynlink_module_t {
     uint8_t max_deps;
     /** Array of pointers to dependency modules (host-allocated, may be NULL). */
     const struct _udynlink_module_t **deps;
+    /** Opaque user context pointer.  Never read or written by the loader;
+     *  provided for the host to associate arbitrary state with a module
+     *  handle (e.g., a filesystem path, a reference counter, or a
+     *  higher-level language runtime handle). */
+    void *user_ctx;
+    /**
+     * Number of named (searchable) symbol entries in the module's symbol
+     * table, starting at index 1.  The symbol table is sorted
+     * lexicographically so that udynlink_lookup_symbol can use binary
+     * search over indices [1, num_named_syms].  Local (nameless) symbols
+     * occupy the remaining entries after num_named_syms.  Computed once at
+     * load time.
+     */
+    uint16_t num_named_syms;
 } udynlink_module_t;
 
 /**

@@ -347,26 +347,13 @@ def process(output, args):
     img += struct.pack("<H", args.arch_tag_val)        # Architecture tag (2b)
     img += struct.pack("<H", lot_entries)              # LOT size (2b)
 
-    # Compute len of symbol table in advance (also name to symbol table index mapping (symt_mapping))
-    slist = [args.name]
-    symt_mapping = {}
-
-    def get_sym_index(slist, sym):
-        if sym in symt_mapping:
-                return symt_mapping[sym]
-        for s in slist_all:
-            if sym == s:
-                slist += [s]
-                symt_mapping[s] = len(slist)-1
-                return len(slist)-1
-        error("Unknown symbol '%s'" % (sym))
-
-    if len(public_symbols) == 0:
-        for s in slist_all:
-            get_sym_index(slist, s)
-    else:
-        for s in [ s for s in sorted(public_symbols) if s in sym_map]:
-            get_sym_index(slist, s)
+    # Build symbol list: module name at index 0, then named symbols sorted
+    # lexicographically for O(log n) binary search in udynlink_lookup_symbol,
+    # then local (nameless) symbols at the end.
+    named = sorted([s for s in slist_all if sym_map[s] != "local"])
+    local = [s for s in slist_all if sym_map[s] == "local"]
+    slist = [args.name] + named + local
+    symt_mapping = {s: i for i, s in enumerate(slist)}
 
     relocated = {}
     realocs, total_relocs = bytearray(), 0
@@ -382,7 +369,7 @@ def process(output, args):
         else:
             if not r in data_relocs: #if sym in reloc_name_to_idx:
                 offset = reloc_name_to_idx[sym]
-            value = get_sym_index(slist, sym)
+            value = symt_mapping[sym]
             if relocated.get(f"{sym}{offset}{value}", False):
                 continue
 
