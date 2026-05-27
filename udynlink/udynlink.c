@@ -381,9 +381,13 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
                 res = UDYNLINK_ERR_LOAD_MISSING_DEP;
                 goto exit;
             }
-            p_mod->deps[d] = dep_mod;
+            if (dep_mod == UDYNLINK_DEP_DEFERRED) {
+                // Skip: don't add to deps[], don't increment num_deps, don't increment refcount
+                dep_str += strlen(dep_str) + 1;
+                continue;
+            }
+            p_mod->deps[p_mod->num_deps++] = dep_mod;
             dep_mod->dep_refcount++;
-            p_mod->num_deps++;
             dep_str += strlen(dep_str) + 1;
         }
     }
@@ -485,6 +489,10 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
                 *p_rel_location = offset_sym(p_mod, &sym)->val;
                 {
                     uint32_t sym_addr = udynlink_external_resolve_critical_symbol(sym.name);
+                    if (sym_addr == UDYNLINK_SYM_DEFERRED) {
+                        // Keep module's own default, defer override
+                        break;
+                    }
                     if (sym_addr == 0) {
                         for (uint8_t d = 0; d < p_mod->num_deps; d++) {
                             udynlink_sym_t dep_sym;
@@ -496,6 +504,9 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
                     }
                     if (sym_addr == 0) {
                         sym_addr = udynlink_external_resolve_symbol(sym.name);
+                        if (sym_addr == UDYNLINK_SYM_DEFERRED) {
+                            break;
+                        }
                     }
                     if (sym_addr > 0) {
                         *p_rel_location = sym_addr;
@@ -507,6 +518,10 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
                 UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Applying extern relocation for symbol at index %u, name=%s at lot_offset=%u\n", symt_offset, sym.name, lot_offset);
                 {
                     uint32_t sym_addr = udynlink_external_resolve_critical_symbol(sym.name);
+                    if (sym_addr == UDYNLINK_SYM_DEFERRED) {
+                        *p_rel_location = 0;
+                        break;
+                    }
                     if (sym_addr == 0) {
                         for (uint8_t d = 0; d < p_mod->num_deps; d++) {
                             udynlink_sym_t dep_sym;
@@ -518,6 +533,10 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
                     }
                     if (sym_addr == 0) {
                         sym_addr = udynlink_external_resolve_symbol(sym.name);
+                        if (sym_addr == UDYNLINK_SYM_DEFERRED) {
+                            *p_rel_location = 0;
+                            break;
+                        }
                     }
                     if (sym_addr > 0) {
                         *p_rel_location = sym_addr;
@@ -814,9 +833,13 @@ udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
                 res = UDYNLINK_ERR_LOAD_MISSING_DEP;
                 goto exit;
             }
-            p_mod->deps[d] = dep_mod;
+            if (dep_mod == UDYNLINK_DEP_DEFERRED) {
+                // Skip: don't add to deps[], don't increment num_deps, don't increment refcount
+                str_pos += (uint32_t)nr;
+                continue;
+            }
+            p_mod->deps[p_mod->num_deps++] = dep_mod;
             dep_mod->dep_refcount++;
-            p_mod->num_deps++;
             str_pos += (uint32_t)nr;
         }
     }
@@ -963,6 +986,10 @@ udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
                     goto exit;
                 }
                 uint32_t sym_addr = udynlink_external_resolve_critical_symbol(sym_name);
+                if (sym_addr == UDYNLINK_SYM_DEFERRED) {
+                    // Keep module's own default, defer override
+                    continue;
+                }
                 if (sym_addr == 0) {
                     for (uint8_t d = 0; d < p_mod->num_deps; d++) {
                         udynlink_sym_t dep_sym;
@@ -972,8 +999,12 @@ udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
                         }
                     }
                 }
-                if (sym_addr == 0)
+                if (sym_addr == 0) {
                     sym_addr = udynlink_external_resolve_symbol(sym_name);
+                    if (sym_addr == UDYNLINK_SYM_DEFERRED) {
+                        continue;
+                    }
+                }
                 if (sym_addr > 0) {
                     *p_rel_location = sym_addr;
                 }
@@ -987,6 +1018,10 @@ udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
                 }
 
                 uint32_t sym_addr = udynlink_external_resolve_critical_symbol(sym_name);
+                if (sym_addr == UDYNLINK_SYM_DEFERRED) {
+                    *p_rel_location = 0;
+                    continue;
+                }
                 if (sym_addr == 0) {
                     for (uint8_t d = 0; d < p_mod->num_deps; d++) {
                         udynlink_sym_t dep_sym;
@@ -996,8 +1031,13 @@ udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
                         }
                     }
                 }
-                if (sym_addr == 0)
+                if (sym_addr == 0) {
                     sym_addr = udynlink_external_resolve_symbol(sym_name);
+                    if (sym_addr == UDYNLINK_SYM_DEFERRED) {
+                        *p_rel_location = 0;
+                        continue;
+                    }
+                }
                 if (sym_addr > 0) {
                     *p_rel_location = sym_addr;
                 } else {
@@ -1046,5 +1086,156 @@ uint32_t udynlink_get_stream_metadata_size(const udynlink_io_t *p_io) {
     if (n < 0 || (uint32_t)n != sizeof(header)) return 0;
     if (header.sign != UDYNLINK_MODULE_SIGN) return 0;
     return get_code_offset_from_header(&header);
+}
+
+// Helper: re-resolve all EXTERN relocations in a loaded module.
+// Used by udynlink_link_dependency() after a new dependency is added.
+static void apply_extern_relocations(udynlink_module_t *p_mod) {
+    const udynlink_module_header_t *p_header = p_mod->p_header;
+    const uint32_t *p_rels = get_relocs_pointer(p_mod);
+    uint32_t *p_lot = (uint32_t *)p_mod->p_ram;
+    uint32_t *p_data = (uint32_t *)get_data_pointer(p_mod);
+
+    for (uint32_t i = 0; i < p_header->num_rels; i++) {
+        uint32_t lot_offset = *p_rels++;
+        uint32_t symt_offset = *p_rels++;
+
+        if (symt_offset & (1u << 31)) continue; // R_ARM_ABS32 data relocation
+        if (symt_offset & (1u << 30)) continue; // R_ARM_TARGET1 relocation
+
+        udynlink_sym_t sym;
+        if (get_sym_at(p_header, symt_offset, &sym) == NULL) continue;
+        if (sym.type != UDYNLINK_SYM_TYPE_EXTERN) continue;
+
+        uint32_t *p_rel_location = (lot_offset < p_header->num_lot) ?
+            p_lot + lot_offset : p_data + lot_offset - p_header->num_lot;
+
+        uint32_t sym_addr = udynlink_external_resolve_critical_symbol(sym.name);
+        if (sym_addr == UDYNLINK_SYM_DEFERRED) {
+            *p_rel_location = 0;
+            continue;
+        }
+        if (sym_addr == 0) {
+            for (uint8_t d = 0; d < p_mod->num_deps; d++) {
+                udynlink_sym_t dep_sym;
+                if (udynlink_lookup_symbol(p_mod->deps[d], sym.name, &dep_sym) != NULL) {
+                    sym_addr = dep_sym.val;
+                    break;
+                }
+            }
+        }
+        if (sym_addr == 0) {
+            sym_addr = udynlink_external_resolve_symbol(sym.name);
+            if (sym_addr == UDYNLINK_SYM_DEFERRED) {
+                *p_rel_location = 0;
+                continue;
+            }
+        }
+        if (sym_addr > 0) {
+            *p_rel_location = sym_addr;
+        } else {
+            *p_rel_location = 0; // unresolved after re-resolution
+        }
+    }
+}
+
+udynlink_error_t udynlink_link_dependency(udynlink_module_t *a, udynlink_module_t *b) {
+    if (!a || !b) return UDYNLINK_ERR_INVALID_MODULE;
+
+    const udynlink_module_header_t *ha = a->p_header;
+    const udynlink_module_header_t *hb = b->p_header;
+
+    // Direction A -> B
+    const char *deps_a = get_deps_strtab(ha);
+    if (deps_a) {
+        for (uint16_t d = 0; d < ha->num_deps; d++) {
+            if (strcmp(deps_a, udynlink_get_module_name(b)) == 0) {
+                int already = 0;
+                for (uint16_t i = 0; i < a->num_deps; i++) {
+                    if (a->deps[i] == b) { already = 1; break; }
+                }
+                if (!already) {
+                    a->deps[a->num_deps++] = b;
+                    b->dep_refcount++;
+                    apply_extern_relocations(a);
+                }
+                break;
+            }
+            deps_a += strlen(deps_a) + 1;
+        }
+    }
+
+    // Direction B -> A
+    const char *deps_b = get_deps_strtab(hb);
+    if (deps_b) {
+        for (uint16_t d = 0; d < hb->num_deps; d++) {
+            if (strcmp(deps_b, udynlink_get_module_name(a)) == 0) {
+                int already = 0;
+                for (uint16_t i = 0; i < b->num_deps; i++) {
+                    if (b->deps[i] == a) { already = 1; break; }
+                }
+                if (!already) {
+                    b->deps[b->num_deps++] = a;
+                    a->dep_refcount++;
+                    apply_extern_relocations(b);
+                }
+                break;
+            }
+            deps_b += strlen(deps_b) + 1;
+        }
+    }
+
+    return UDYNLINK_OK;
+}
+
+udynlink_error_t udynlink_link_symbol(udynlink_module_t *p_mod, const char *sym_name, uint32_t sym_addr) {
+    if (!p_mod || !sym_name || !p_mod->p_header) return UDYNLINK_ERR_INVALID_MODULE;
+
+    const udynlink_module_header_t *p_header = p_mod->p_header;
+    const uint32_t *p_rels = get_relocs_pointer(p_mod);
+    uint32_t *p_lot = (uint32_t *)p_mod->p_ram;
+    uint32_t *p_data = (uint32_t *)get_data_pointer(p_mod);
+    int found = 0;
+
+    for (uint32_t i = 0; i < p_header->num_rels; i++) {
+        uint32_t lot_offset = *p_rels++;
+        uint32_t symt_offset = *p_rels++;
+
+        if (symt_offset & (1u << 31)) continue;
+        if (symt_offset & (1u << 30)) continue;
+
+        udynlink_sym_t sym;
+        if (get_sym_at(p_header, symt_offset, &sym) == NULL) continue;
+        if (sym.name == NULL || strcmp(sym.name, sym_name) != 0) continue;
+
+        uint32_t *p_rel_location = (lot_offset < p_header->num_lot) ?
+            p_lot + lot_offset : p_data + lot_offset - p_header->num_lot;
+        *p_rel_location = sym_addr;
+        found = 1;
+    }
+
+    return found ? UDYNLINK_OK : UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL;
+}
+
+int udynlink_is_module_fully_linked(const udynlink_module_t *p_mod) {
+    if (!p_mod || !p_mod->p_header) return 0;
+    return p_mod->num_deps == p_mod->p_header->num_deps;
+}
+
+udynlink_module_t *udynlink_get_linked_dependency(const udynlink_module_t *p_mod, const char *dep_name) {
+    if (!p_mod || !dep_name) return NULL;
+    for (uint16_t i = 0; i < p_mod->num_deps; i++) {
+        const char *name = udynlink_get_module_name(p_mod->deps[i]);
+        if (name && strcmp(name, dep_name) == 0)
+            return (udynlink_module_t *)p_mod->deps[i];
+    }
+    return NULL;
+}
+
+int udynlink_is_symbol_resolved(const udynlink_module_t *p_mod, const char *sym_name) {
+    if (!p_mod || !sym_name) return 0;
+    udynlink_sym_t sym;
+    if (!udynlink_lookup_symbol(p_mod, sym_name, &sym)) return 0;
+    return sym.val != 0;
 }
 

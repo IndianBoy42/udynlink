@@ -91,6 +91,24 @@ typedef enum {
 #endif
 
 /**
+ * @brief Sentinel returned by udynlink_external_get_module_handle() to defer a dependency.
+ *
+ * On ARM Cortex-M (32-bit), address 0x00000001 is never a valid heap-allocated
+ * struct pointer, so it cannot collide with real module handles.  Existing hosts
+ * that never return this sentinel keep the old strict behavior unchanged.
+ */
+#define UDYNLINK_DEP_DEFERRED                 ((udynlink_module_t*)1)
+
+/**
+ * @brief Sentinel returned by symbol-resolution callbacks to defer an extern symbol.
+ *
+ * Address 0x00000001 is not a valid code or data address on Cortex-M.  When a
+ * resolve callback returns this value the loader writes 0 to the relocation slot
+ * and continues loading instead of failing.
+ */
+#define UDYNLINK_SYM_DEFERRED                 ((uint32_t)1)
+
+/**
  * @brief Runtime module handle.
  *
  * Holds the loader's internal state for one loaded module instance.
@@ -576,6 +594,76 @@ uint32_t udynlink_get_ram_requirements_stream(const udynlink_io_t *p_io, udynlin
  * @return Metadata size in bytes (byte offset to code section), or 0 on I/O error.
  */
 uint32_t udynlink_get_stream_metadata_size(const udynlink_io_t *p_io);
+
+/**
+ * @brief Link a dependency between two already-loaded modules.
+ *
+ * This function is symmetric: it checks whether @p a declares @p b as a
+ * dependency (and vice-versa) and, if the dependency is not already linked,
+ * adds it to the runtime deps array and re-resolves all EXTERN relocations.
+ *
+ * Re-resolution ensures that tier-2 (dependency module) symbols take
+ * precedence over tier-3 (host fallback) symbols after the link is made.
+ *
+ * @param[in] a Pointer to the first loaded module.
+ * @param[in] b Pointer to the second loaded module.
+ *
+ * @return ::UDYNLINK_OK on success (including idempotent no-op cases).
+ */
+udynlink_error_t udynlink_link_dependency(udynlink_module_t *a, udynlink_module_t *b);
+
+/**
+ * @brief Directly patch a symbol's relocation slot in a loaded module.
+ *
+ * Scans the module's relocation table for entries referencing @p sym_name and
+ * overwrites the slot with @p sym_addr.  This is a low-level patch: it does
+ * not update refcounts, deps[], or the three-tier resolution chain.
+ *
+ * @param[in] p_mod   Pointer to the loaded module.
+ * @param[in] sym_name Null-terminated symbol name.
+ * @param[in] sym_addr Address to write into matching relocation slots.
+ *
+ * @return ::UDYNLINK_OK if at least one slot was patched,
+ *         ::UDYNLINK_ERR_LOAD_CANT_RESOLVE if the symbol is not found.
+ */
+udynlink_error_t udynlink_link_symbol(udynlink_module_t *p_mod, const char *sym_name, uint32_t sym_addr);
+
+/**
+ * @brief Check whether all declared dependencies of a module are linked.
+ *
+ * @param[in] p_mod Pointer to a loaded module.
+ *
+ * @return 1 if every dependency declared in the module header is present
+ *         in p_mod->deps[], 0 otherwise.
+ */
+int udynlink_is_module_fully_linked(const udynlink_module_t *p_mod);
+
+/**
+ * @brief Return the handle of a linked dependency by name.
+ *
+ * @param[in] p_mod    Pointer to a loaded module.
+ * @param[in] dep_name Null-terminated dependency name.
+ *
+ * @return Pointer to the dependency module if it is linked into @p p_mod,
+ *         or NULL if the dependency is not linked (either deferred or
+ *         not declared).
+ */
+udynlink_module_t *udynlink_get_linked_dependency(const udynlink_module_t *p_mod, const char *dep_name);
+
+/**
+ * @brief Check whether an extern symbol has a non-zero resolved value.
+ *
+ * A symbol that was deferred during load and has not yet been linked
+ * will resolve to 0 (or the host fallback value). After
+ * udynlink_link_dependency() resolves it from a dependency module,
+ * this function returns 1.
+ *
+ * @param[in] p_mod    Pointer to a loaded module.
+ * @param[in] sym_name Null-terminated symbol name.
+ *
+ * @return 1 if the symbol exists and its value is non-zero, 0 otherwise.
+ */
+int udynlink_is_symbol_resolved(const udynlink_module_t *p_mod, const char *sym_name);
 
 #ifdef __cplusplus
 }
