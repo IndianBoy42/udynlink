@@ -608,6 +608,33 @@ The `UDYNLINK_SYMBOL(sym)` macro expands to `{ #sym, (void *)(uintptr_t)(sym) }`
 
 See [Hash-Based Symbol Resolution](#hash-based-symbol-resolution) below. Best for: firmware with a large API (50+ symbols).
 
+### Pattern 4: Host-Side Symbol Cache
+
+Best for: firmware loading many modules that resolve the same symbols, where you want to avoid repeated lookups without adding state to the loader core.
+
+```c
+#include "udynlink.h"
+#include "udynlink_host_utils.h"
+
+static udynlink_host_sym_cache_entry_t g_sym_cache[UDYNLINK_HOST_SYM_CACHE_SIZE];
+
+static uintptr_t my_real_resolver(const char *name) {
+    // Your existing resolution logic (strcmp chain, hash table, etc.)
+    if (!strcmp(name, "printf"))
+        return (uintptr_t)&my_printf;
+    if (!strcmp(name, "delay_ms"))
+        return (uintptr_t)&my_delay_ms;
+    return 0;
+}
+
+uint32_t udynlink_external_resolve_symbol(const char *name) {
+    return (uint32_t)udynlink_host_sym_cache_lookup(
+        g_sym_cache, UDYNLINK_HOST_SYM_CACHE_SIZE, name, my_real_resolver);
+}
+```
+
+**Tradeoff:** Zero overhead if unused. The cache is a simple direct-mapped table (default 16 entries) owned by the host. Collisions silently overwrite. Call `udynlink_host_sym_cache_invalidate()` if your symbol table changes at runtime.
+
 ---
 
 ## Hash-Based Symbol Resolution

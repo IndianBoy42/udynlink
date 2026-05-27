@@ -362,18 +362,57 @@ When implementing the tasks above, these files are the primary touchpoints:
 
 ---
 
-## 9. Sign-Off & Next Steps
+## 9. Execution Complete ✅
 
-**Plan approved.** Execution begins now.
+All three tasks have been implemented, tested, and committed. Full CI (`just ci`) passes on all 5 platforms with **44/44 tests** (MPS2-AN386/385/500/505 + Olimex H405).
 
-**Order of work:**
-1. **Task 1A** (strip zero-size init-array symbols) — smallest, lowest risk, biggest immediate win.
-2. **Task 1B** (`--no-prologue` with runtime discovery) — medium complexity, high impact.
-3. **Task 1C** (host-side symbol cache utility) — small, independent.
+### Deliverables Checklist
 
-Each task is delegated to an `agent` subagent in a clean working copy, tested via `just ci`, and delivered as an atomic commit. Results are reviewed before the next task starts.
+**Task 1A — Strip Zero-Size Init-Array Symbols**
+- [x] `mkmodule` detects and omits empty init-array symbols
+- [x] Image size reduced by ~30% for non-C++ modules (288 B → 176 B)
+- [x] New integration test `test-strip-init-array/` validates C vs C++ behavior
+- [x] Full CI passes
+
+**Task 1B — Host-Sets-r9 Mode (`--no-prologue`) with Runtime Discovery**
+- [x] `mkmodule --no-prologue` sets header flag and skips prologue generation
+- [x] `udynlink_module_has_no_prologue()` runtime query added to public API
+- [x] `UDYNLINK_PREPARE_CALL()` universal macro works for both prologued and non-prologued modules
+- [x] Test harness updated to use the macro
+- [x] New integration test `test-no-prologue/` passes (all 3 load modes)
+- [x] Documentation updated in `docs/integrating-as-host.md` and `AGENTS.md`
+- [x] Full CI passes
+
+**Task 1C — Host-Side Symbol Resolution Cache Utility**
+- [x] `udynlink/udynlink_host_utils.h` created with cache lookup + invalidate helpers
+- [x] Header is pure inline / header-only — no loader core changes
+- [x] New integration test `test-sym-cache/` validates cache hit/miss behavior
+- [x] Documentation updated in `docs/integrating-as-host.md`
+- [x] Full CI passes
+
+### Commits
+
+| Commit | Description |
+|--------|-------------|
+| `nukzwnso` | Strip empty init-array sentinel symbols from C module symbol table |
+| `wwovqtst` | feat: add `--no-prologue` flag with runtime discovery via `arch_tag` bit |
+| `slpqlyon` | feat: add `udynlink_host_utils.h` header-only symbol cache utility |
+
+### Impact Summary
+
+For a minimal single-export micro-module (C, `-O3`, Cortex-M4):
+
+| Optimization | Size | Delta |
+|--------------|------|-------|
+| Baseline (before any changes) | **288 B** | — |
+| After Task 1A (strip init-array) | **176 B** | **–112 B (39%)** |
+| After Task 1B (`--no-prologue`) | **84 B** | **–92 B (52% from 176 B)** |
+
+**Total reduction: 288 B → 84 B (71% smaller)**
+
+At the user's scale of 20–50 modules, flash metadata drops from **~6–14 KB** to **~1.7–4.2 KB**.
 
 ---
 
-*Plan version: 2.1 (final, approved for execution)*
+*Plan version: 2.2 (execution complete)*
 *Date: 2026-05-27*
