@@ -4,37 +4,15 @@
 #include <stdio.h>
 #include <string.h>
 
-static const uint8_t *g_stream_data;
-static size_t g_stream_size;
-
-static int32_t mock_read(void *pv_ctx, void *buf, size_t num_bytes, size_t offset) {
-    (void)pv_ctx;
-    if (offset >= g_stream_size) return -1;
-    size_t avail = g_stream_size - offset;
-    if (num_bytes > avail) num_bytes = avail;
-    memcpy(buf, g_stream_data + offset, num_bytes);
-    return (int32_t)num_bytes;
-}
-
-static int32_t mock_get_size(void *pv_ctx) {
-    (void)pv_ctx;
-    return (int32_t)g_stream_size;
-}
-
-static int test_streaming_load(size_t scratch_buf_size, udynlink_load_mode_t mode) {
-    uint8_t scratch_buf[512];
-    udynlink_io_t io = { mock_read, mock_get_size, NULL };
+static int test_load_module_image(udynlink_load_mode_t mode) {
+    udynlink_module_image_t image;
+    udynlink_image_from_memory(mod_hello_module_data, &image);
     udynlink_module_t mod;
     int res = 0;
 
-    g_stream_data = mod_hello_module_data;
-    g_stream_size = sizeof(mod_hello_module_data);
-
-    if (scratch_buf_size > sizeof(scratch_buf)) scratch_buf_size = sizeof(scratch_buf);
-
-    udynlink_error_t err = udynlink_load_module_from_stream(&mod, &io, NULL, 0, mode, scratch_buf, scratch_buf_size);
+    udynlink_error_t err = udynlink_load_module_image(&mod, &image, NULL, 0, mode);
     if (err != UDYNLINK_OK) {
-        printf("Streaming load failed: err=%d mode=%d sbsz=%zu\n", err, (int)mode, scratch_buf_size);
+        printf("load_module_image failed: err=%d mode=%d\n", err, (int)mode);
         return 0;
     }
 
@@ -44,12 +22,12 @@ static int test_streaming_load(size_t scratch_buf_size, udynlink_load_mode_t mod
 
         udynlink_sym_t sym;
         if (udynlink_lookup_symbol(&mod, "test", &sym) == NULL) {
-            printf("lookup_symbol 'test' failed (mode=%d sbsz=%zu)\n", (int)mode, scratch_buf_size);
+            printf("lookup_symbol 'test' failed (mode=%d)\n", (int)mode);
             goto exit;
         }
         int (*p_func)(void) = (int (*)(void))sym.val;
         if (!p_func()) {
-            printf("Module 'test' function returned 0 (mode=%d sbsz=%zu)\n", (int)mode, scratch_buf_size);
+            printf("Module 'test' function returned 0 (mode=%d)\n", (int)mode);
             goto exit;
         }
     }
@@ -60,69 +38,82 @@ exit:
     return res;
 }
 
-static int test_xip_rejected(void) {
-    uint8_t scratch_buf[UDYNLINK_STREAM_MIN_SCRATCH_BUF_SIZE];
-    udynlink_io_t io = { mock_read, mock_get_size, NULL };
+static int test_xip(void) {
+    udynlink_module_image_t image;
+    udynlink_image_from_memory(mod_hello_module_data, &image);
     udynlink_module_t mod;
 
-    g_stream_data = mod_hello_module_data;
-    g_stream_size = sizeof(mod_hello_module_data);
-
-    if (udynlink_load_module_from_stream(&mod, &io, NULL, 0,
-                                     UDYNLINK_LOAD_MODE_XIP, scratch_buf, sizeof(scratch_buf))
-        != UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED) {
-        printf("XIP streaming should have been rejected\n");
+    udynlink_error_t err = udynlink_load_module_image(&mod, &image, NULL, 0,
+        UDYNLINK_LOAD_MODE_XIP);
+    if (err != UDYNLINK_OK) {
+        printf("XIP load failed: err=%d\n", err);
         return 0;
     }
+    udynlink_unload_module(&mod);
     return 1;
 }
 
-static int test_ram_requirements_stream(void) {
-    udynlink_io_t io = { mock_read, mock_get_size, NULL };
-
-    g_stream_data = mod_hello_module_data;
-    g_stream_size = sizeof(mod_hello_module_data);
-
-    size_t ram_copy_all = udynlink_get_ram_requirements_stream(&io, UDYNLINK_LOAD_MODE_COPY_ALL);
-    size_t ram_copy_code = udynlink_get_ram_requirements_stream(&io, UDYNLINK_LOAD_MODE_COPY_TEXT_DATA);
+static int test_ram_requirements_image(void) {
+    udynlink_module_header_t *header = (udynlink_module_header_t *)mod_hello_module_data;
+    size_t ram_copy_all = udynlink_compute_ram_size(header, UDYNLINK_LOAD_MODE_COPY_ALL);
+    size_t ram_copy_code = udynlink_compute_ram_size(header, UDYNLINK_LOAD_MODE_COPY_TEXT_DATA);
 
     if (ram_copy_all == 0) {
-        printf("ram_requirements_stream COPY_ALL returned 0\n");
+        printf("compute_ram_size COPY_ALL returned 0\n");
         return 0;
     }
     if (ram_copy_code == 0) {
-        printf("ram_requirements_stream COPY_CODE returned 0\n");
+        printf("compute_ram_size COPY_CODE returned 0\n");
         return 0;
     }
     printf("ram COPY_ALL=%zu COPY_CODE=%zu\n", ram_copy_all, ram_copy_code);
     return 1;
 }
 
-static int test_stream_metadata_size(void) {
-    udynlink_io_t io = { mock_read, mock_get_size, NULL };
-
-    g_stream_data = mod_hello_module_data;
-    g_stream_size = sizeof(mod_hello_module_data);
-
-    size_t wbsz = udynlink_get_stream_metadata_size(&io);
+static int test_image_metadata_size(void) {
+    udynlink_module_header_t *header = (udynlink_module_header_t *)mod_hello_module_data;
+    size_t wbsz = udynlink_get_image_metadata_size(header);
     if (wbsz == 0) {
-        printf("get_stream_metadata_size returned 0\n");
+        printf("get_image_metadata_size returned 0\n");
         return 0;
     }
-    printf("stream metadata_size=%zu\n", wbsz);
+    printf("image metadata_size=%zu\n", wbsz);
     return 1;
 }
 
 static int test_ram_requirements_compat(void) {
     size_t ram_mmap = udynlink_get_ram_requirements(mod_hello_module_data, UDYNLINK_LOAD_MODE_COPY_ALL);
-    udynlink_io_t io = { mock_read, mock_get_size, NULL };
+    udynlink_module_header_t *header = (udynlink_module_header_t *)mod_hello_module_data;
+    size_t ram_image = udynlink_compute_ram_size(header, UDYNLINK_LOAD_MODE_COPY_ALL);
+    if (ram_mmap != ram_image) {
+        printf("ram_requirements mismatch: mmap=%zu image=%zu\n", ram_mmap, ram_image);
+        return 0;
+    }
+    return 1;
+}
 
-    g_stream_data = mod_hello_module_data;
-    g_stream_size = sizeof(mod_hello_module_data);
+static int test_validate_header(void) {
+    udynlink_module_header_t *header = (udynlink_module_header_t *)mod_hello_module_data;
+    if (udynlink_validate_header(header) != UDYNLINK_OK) {
+        printf("validate_header failed for valid image\n");
+        return 0;
+    }
 
-    size_t ram_stream = udynlink_get_ram_requirements_stream(&io, UDYNLINK_LOAD_MODE_COPY_ALL);
-    if (ram_mmap != ram_stream) {
-        printf("ram_requirements mismatch: mmap=%zu stream=%zu\n", ram_mmap, ram_stream);
+    udynlink_module_header_t bad = *header;
+    bad.sign = 0xDEADBEEF;
+    if (udynlink_validate_header(&bad) != UDYNLINK_ERR_LOAD_INVALID_SIGN) {
+        printf("validate_header did not reject bad sign\n");
+        return 0;
+    }
+    return 1;
+}
+
+static int test_image_get_module_name(void) {
+    udynlink_module_image_t image;
+    udynlink_image_from_memory(mod_hello_module_data, &image);
+    const char *name = udynlink_image_get_module_name(image.p_symtab);
+    if (!name || strcmp(name, "mod_hello") != 0) {
+        printf("image_get_module_name returned wrong name: %s\n", name ? name : "(null)");
         return 0;
     }
     return 1;
@@ -131,32 +122,29 @@ static int test_ram_requirements_compat(void) {
 int test_qemu(void) {
     int ok = 1;
 
-    printf("== Streaming: COPY_ALL, 512B scratch_buf ==\n");
-    ok = test_streaming_load(512, UDYNLINK_LOAD_MODE_COPY_ALL) && ok;
+    printf("== Image load: COPY_ALL ==\n");
+    ok = test_load_module_image(UDYNLINK_LOAD_MODE_COPY_ALL) && ok;
 
-    printf("== Streaming: COPY_ALL, min scratch_buf (132B) ==\n");
-    ok = test_streaming_load(UDYNLINK_STREAM_MIN_SCRATCH_BUF_SIZE, UDYNLINK_LOAD_MODE_COPY_ALL) && ok;
+    printf("== Image load: COPY_TEXT_DATA ==\n");
+    ok = test_load_module_image(UDYNLINK_LOAD_MODE_COPY_TEXT_DATA) && ok;
 
-    printf("== Streaming: COPY_ALL, 256B scratch_buf ==\n");
-    ok = test_streaming_load(256, UDYNLINK_LOAD_MODE_COPY_ALL) && ok;
+    printf("== Image load: XIP ==\n");
+    ok = test_xip() && ok;
 
-    printf("== Streaming: COPY_CODE, 512B scratch_buf ==\n");
-    ok = test_streaming_load(512, UDYNLINK_LOAD_MODE_COPY_TEXT_DATA) && ok;
+    printf("== Image load: compute_ram_size ==\n");
+    ok = test_ram_requirements_image() && ok;
 
-    printf("== Streaming: COPY_CODE, min scratch_buf (132B) ==\n");
-    ok = test_streaming_load(UDYNLINK_STREAM_MIN_SCRATCH_BUF_SIZE, UDYNLINK_LOAD_MODE_COPY_TEXT_DATA) && ok;
+    printf("== Image load: metadata_size ==\n");
+    ok = test_image_metadata_size() && ok;
 
-    printf("== Streaming: XIP rejection ==\n");
-    ok = test_xip_rejected() && ok;
-
-    printf("== Streaming: ram_requirements_stream ==\n");
-    ok = test_ram_requirements_stream() && ok;
-
-    printf("== Streaming: stream_metadata_size ==\n");
-    ok = test_stream_metadata_size() && ok;
-
-    printf("== Streaming: ram_requirements compat ==\n");
+    printf("== Image load: ram_requirements compat ==\n");
     ok = test_ram_requirements_compat() && ok;
+
+    printf("== Image load: validate_header ==\n");
+    ok = test_validate_header() && ok;
+
+    printf("== Image load: get_module_name ==\n");
+    ok = test_image_get_module_name() && ok;
 
     return ok;
 }

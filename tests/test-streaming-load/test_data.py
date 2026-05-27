@@ -1,6 +1,6 @@
 test_data = {
-    "desc": "Streaming I/O module loading test",
+    "desc": "Non-contiguous image loading test",
     "modules": [["mod_hello.c"]],
-    "required": [r"^== Streaming:"],
+    "required": [r"^== Image load:"],
     "total_loads": 1
 }
