@@ -353,7 +353,7 @@ Loads a module from a memory-mapped image.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `p_mod` | `udynlink_module_t *` | Pointer to a module handle structure allocated by the caller. Must not be `NULL`. |
+| `p_mod` | `udynlink_module_t *` | Pointer to a module handle structure allocated by the caller. Must not be `NULL`. **Must be zero-initialized before the first call** (e.g. `memset(p_mod, 0, sizeof(*p_mod))`), or the error-path cleanup may attempt to free garbage pointers. |
 | `base_addr` | `const void *` | Start address of the module binary image in memory (flash or RAM). |
 | `load_addr` | `void *` | RAM address where the module should be loaded, or `NULL` to request automatic allocation via `udynlink_external_malloc`. |
 | `load_size` | `uint32_t` | If `load_addr` is not `NULL`, the size of the pre-allocated memory region. Ignored when `load_addr` is `NULL`. |
@@ -380,6 +380,7 @@ Loads a module from a memory-mapped image.
 
 **Notes:**
 
+- **Zero-initialization is required.** The caller must clear `*p_mod` (e.g. with `memset`) before the first call to `udynlink_load_module()`. If the structure contains uninitialized garbage, a mid-load error will read `p_mod->p_ram` and potentially call `udynlink_external_free()` on an invalid address.
 - On error, all internally allocated memory is freed and `p_mod` is zeroed.
 - The host must write `p_mod->ram_base` to `*(uint32_t *)UDYNLINK_LOT_BASE_ADDR` before calling any module function.
 
@@ -399,7 +400,7 @@ Loads a module from a stream (e.g., SD card, serial flash).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `p_mod` | `udynlink_module_t *` | Pointer to caller-allocated module handle. Must not be `NULL`. |
+| `p_mod` | `udynlink_module_t *` | Pointer to caller-allocated module handle. Must not be `NULL`. **Must be zero-initialized before the first call** (e.g. `memset(p_mod, 0, sizeof(*p_mod))`), or the error-path cleanup may attempt to free garbage pointers. |
 | `p_io` | `const udynlink_io_t *` | Streaming callbacks and context. See [`udynlink_io_t`](#udynlink_io_t). |
 | `load_addr` | `void *` | RAM address for loading, or `NULL` for automatic allocation. |
 | `load_size` | `uint32_t` | Size of pre-allocated RAM if `load_addr` is not `NULL`. |
@@ -420,6 +421,7 @@ Loads a module from a stream (e.g., SD card, serial flash).
 - The streaming loader reads the header first, validates it, then pulls the rest of the image through the `read` callback.
 - Relocations and symbol names are fetched on demand from the stream; the work buffer is reused for each chunk.
 - Internally, `COPY_TEXT_DATA` mode is converted to `COPY_ALL` because the header must reside in RAM for relocation processing.
+- **Zero-initialization is required.** The caller must clear `*p_mod` (e.g. with `memset`) before the first call to `udynlink_load_module_from_stream()`, for the same reason as `udynlink_load_module()`.
 - On error, allocated memory is freed and `p_mod` is zeroed.
 
 **Thread safety:** The loader does **not** use any locking. Concurrent calls to `udynlink_load_module_from_stream` from multiple interrupt levels will corrupt the internal module table and `dep_refcount` fields. See [Thread Safety](integrating-as-host.md#thread-safety-and-concurrency) for full details.

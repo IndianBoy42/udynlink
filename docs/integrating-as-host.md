@@ -41,7 +41,7 @@ Follow this checklist to integrate udynlink into your firmware:
 3. **Implement all external callbacks** — the 8 functions declared in `udynlink_externals.h`.
 4. **Set up the LOT base address** before calling any module function (`udynlink_cpp_init()` sets it internally, so you only need to re-set it before other module calls).
 5. **Build a host symbol table** — decide how your firmware will resolve symbols requested by modules.
-6. **Write module loading/unloading code** — call `udynlink_load_module()`, manage handles, and call `udynlink_unload_module()` when done.
+6. **Write module loading/unloading code** — call `udynlink_load_module()`, manage handles, and call `udynlink_unload_module()` when done. **Remember to zero-initialize the module handle before the first load.**
 7. **(Optional) Set up hash-based symbol resolution** — use `scripts/mkhostsyms` for O(1) lookup when you export many symbols.
 8. **(Optional) Implement streaming I/O** — if loading modules from SD card, SPI flash, or over a network.
 
@@ -652,9 +652,11 @@ uint32_t udynlink_external_resolve_symbol(const char *name) {
 
 ### Loading a Module
 
+Before loading, you **must** zero-initialize the module handle. The loader does not guard against garbage values in `p_mod->p_ram` during error-path cleanup; an uninitialized handle can cause `udynlink_external_free()` to be called with a garbage pointer.
+
 ```c
 udynlink_module_t mod;
-memset(&mod, 0, sizeof(mod));
+memset(&mod, 0, sizeof(mod));   // REQUIRED before first load
 
 udynlink_error_t err = udynlink_load_module(
     &mod,              // module handle (allocated by host)
@@ -1065,6 +1067,10 @@ udynlink_set_debug_level(UDYNLINK_DEBUG_INFO);     // Everything (very verbose)
 At `UDYNLINK_DEBUG_INFO`, the loader prints the module name, RAM allocation details, every relocation applied, and symbol resolution steps. This is invaluable during integration but should be disabled in production to avoid semihosting or UART overhead.
 
 ### Common Integration Problems and Solutions
+
+**Problem:** `udynlink_load_module()` crashes or calls `udynlink_external_free()` with an invalid pointer during error cleanup.
+
+**Solution:** You forgot to zero-initialize the module handle before the first load. Always call `memset(p_mod, 0, sizeof(*p_mod))` before `udynlink_load_module()` or `udynlink_load_module_from_stream()`. The loader reads `p_mod->p_ram` on the error path; if it contains stack garbage, it will pass that garbage to `udynlink_external_free()`.
 
 **Problem:** Module loads successfully, but calling a module function causes a hard fault.
 

@@ -332,7 +332,11 @@ typedef struct {
  * according to @p load_mode, applies relocations, and resolves extern
  * symbols via the host callbacks.
  *
- * @param[out] p_mod      Module handle to populate on success.
+ * @param[out] p_mod      Module handle to populate on success. Must be
+ *                       zero-initialized by the caller before the first call
+ *                       (e.g. via @c memset(p_mod, 0, sizeof(*p_mod))), or
+ *                       the error-path cleanup may attempt to free garbage
+ *                       pointers.
  * @param[in]  base_addr  Address of the module image in memory (e.g., flash).
  * @param[in]  load_addr  RAM address for the module, or NULL to auto-allocate.
  * @param[in]  load_size  Size of the region at @p load_addr (ignored if NULL).
@@ -499,7 +503,11 @@ uint8_t *udynlink_get_text_pointer(const udynlink_module_t *p_mod);
  * via callbacks.  XIP mode is not supported and returns
  * ::UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED.
  *
- * @param[out] p_mod          Module handle to populate on success.
+ * @param[out] p_mod          Module handle to populate on success. Must be
+ *                           zero-initialized by the caller before the first call
+ *                           (e.g. via @c memset(p_mod, 0, sizeof(*p_mod))),
+ *                           or the error-path cleanup may attempt to free garbage
+ *                           pointers.
  * @param[in]  p_io           Streaming I/O callbacks.
  * @param[in]  load_addr      RAM address for the module, or NULL to auto-allocate.
  * @param[in]  load_size      Size of the region at @p load_addr (ignored if NULL).
