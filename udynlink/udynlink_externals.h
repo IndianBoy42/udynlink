@@ -51,6 +51,9 @@ struct _udynlink_module_t;
  *
  * @note A typical implementation compares the address against the
  *       MCU's SRAM region(s).
+ *
+ * @note A weak default returning 0 (not RAM) is provided.  Hosts that
+ *       use XIP mode must override it with a real implementation.
  */
 int udynlink_external_is_pointer_in_ram(const void *p);
 
@@ -94,8 +97,8 @@ void udynlink_external_free(void *p);
  * @param s  Printf-style format string.
  * @param va Varargs list with the format arguments.
  *
- * @note This may be a no-op if debug output is not required.  It is
- *       never called when the debug level is ::UDYNLINK_DEBUG_NONE.
+ * @note A weak no-op default is provided.  Hosts only need to
+ *       implement this if debug output is desired.
  */
 void udynlink_external_vprintf(const char *s, va_list va);
 
@@ -112,8 +115,9 @@ void udynlink_external_vprintf(const char *s, va_list va);
  * @return The absolute address of the symbol if the host provides it,
  *         or 0 if the symbol is not found.
  *
- * @note This is the main mechanism for exposing host firmware
- *       functions to loadable modules.
+ * @note A weak default returning 0 (symbol not found) is provided.
+ *       Hosts that load modules without external symbols do not need
+ *       to override it.
  */
 uint32_t udynlink_external_resolve_symbol(const char *name);
 
@@ -131,8 +135,8 @@ uint32_t udynlink_external_resolve_symbol(const char *name);
  * @return The absolute address of the symbol if the host provides it,
  *         or 0 to let the resolution chain continue.
  *
- * @note May be provided as a weak function that simply returns 0 if
- *       the critical-symbol tier is not needed.
+ * @note A weak default returning 0 is provided.  Hosts that do not
+ *       need the critical-symbol tier do not need to override it.
  */
 uint32_t udynlink_external_resolve_critical_symbol(const char *name);
 
@@ -151,6 +155,9 @@ uint32_t udynlink_external_resolve_critical_symbol(const char *name);
  * @note If any required dependency is not found,
  *       udynlink_load_module() fails with
  *       ::UDYNLINK_ERR_LOAD_MISSING_DEP.
+ *
+ * @note A weak default returning NULL is provided.  Hosts that do not
+ *       use module dependencies do not need to override it.
  */
 struct _udynlink_module_t *udynlink_external_get_module_handle(const char *module_name);
 

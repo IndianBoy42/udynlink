@@ -10,6 +10,36 @@ int udynlink_external_is_module_loading(const char *module_name) {
     return 0;
 }
 
+__attribute__((weak))
+uint32_t udynlink_external_resolve_critical_symbol(const char *name) {
+    (void)name;
+    return 0;
+}
+
+__attribute__((weak))
+uint32_t udynlink_external_resolve_symbol(const char *name) {
+    (void)name;
+    return 0;
+}
+
+__attribute__((weak))
+struct _udynlink_module_t *udynlink_external_get_module_handle(const char *module_name) {
+    (void)module_name;
+    return NULL;
+}
+
+__attribute__((weak))
+int udynlink_external_is_pointer_in_ram(const void *p) {
+    (void)p;
+    return 0;
+}
+
+__attribute__((weak))
+void udynlink_external_vprintf(const char *s, va_list va) {
+    (void)s;
+    (void)va;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Local macros and data
 
