@@ -2,7 +2,7 @@
 
 ## Goal
 
-Eliminate stack-allocated buffers in the streaming loader path by using host-provided scratch space, and reduce unnecessary data copies.
+Eliminate stack-allocated buffers in the streaming loader by using host-provided scratch space, and eliminate the double-copy (work_buf intermediate) by reading directly into final destinations.
 
 ## Current State
 
@@ -10,7 +10,7 @@ Eliminate stack-allocated buffers in the streaming loader path by using host-pro
 
 | Line | Variable | Size | Lifetime |
 |------|----------|------|----------|
-| 684 | `udynlink_module_header_t header` | 36B | Function scope — needed throughout |
+| 684 | `udynlink_module_header_t header` | 36B | Function scope |
 | 739 | `char dep_name[64]` | 64B | Per dep iteration |
 | 836 | `uint32_t rel_pair[2]` | 8B | Per reloc iteration |
 | 859 | `uint32_t sym_count` | 4B | Per reloc iteration |
@@ -18,183 +18,179 @@ Eliminate stack-allocated buffers in the streaming loader path by using host-pro
 | 899 | `char sym_name[64]` | 64B | Per extern reloc iteration |
 | 910 | `udynlink_sym_t dep_sym` | ~12B | Per extern reloc iteration |
 
-### Stack Buffers in Helper Functions
+### Double-Copy in `stream_read_exact()`
 
-| Function | Variable | Size |
-|----------|----------|------|
-| `udynlink_get_ram_requirements_stream()` | `header` | 36B |
-| `udynlink_get_stream_metadata_size()` | `header` | 36B |
+Every read: `stream -> work_buf -> memcpy -> dest`. The work_buf intermediate is unnecessary - the `read` callback already writes directly to the buffer it's given. The work_buf provides no alignment guarantee (typically a stack `uint8_t[64]`), so removing it loses no real benefit.
 
-### Copy Overhead in `stream_read_exact()`
+### Scope: Single Consumer
 
-Every read: `stream → work_buf → memcpy → dest`. When the final destination is module RAM (bulk copy), this intermediate copy is unnecessary if the stream callback can write directly to dest.
+The streaming API has exactly one consumer: `tests/test-streaming-load/test_qemu.c`. Migration is trivial.
+
+## Decisions
+
+- **Scratch buffer size: 132 bytes (tight)** - no padding for future-proofing. If the header grows, the constant will be bumped.
+- **Remove work_buf entirely** - `read` callback writes directly to dest. Block-device drivers manage their own alignment.
+- **Helper functions unchanged** - `udynlink_get_ram_requirements_stream()` and `udynlink_get_stream_metadata_size()` keep 36B stack header.
+- **Raw void* + min size constant** - no exposed struct for scratch buffer layout.
 
 ## Design
 
-### 1. Add `scratch_buf` Parameter
+### 1. Remove `work_buf`, Add `scratch_buf`
 
-Add `void *scratch_buf, uint32_t scratch_buf_size` to the streaming load function. This buffer holds all temporary state that currently lives on the stack.
+**Old signature:**
+```c
+udynlink_error_t udynlink_load_module_from_stream(
+    udynlink_module_t *p_mod, const udynlink_io_t *p_io,
+    void *load_addr, uint32_t load_size,
+    udynlink_load_mode_t load_mode,
+    void *work_buf, uint32_t work_buf_size);
+```
 
-**Why a separate parameter, not a partitioned `work_buf`:**
-- `work_buf` serves as an I/O intermediate for `stream_read_exact()`/`stream_read_string()`. It cannot overlap with `dest` (memcpy UB).
-- Many stream implementations (SD card, flash) require `work_buf` to be sector-aligned and sector-sized. Carving space out of `work_buf` breaks these drivers.
-- Separation keeps concerns clean: `work_buf` = I/O, `scratch_buf` = temp state.
+**New signature:**
+```c
+udynlink_error_t udynlink_load_module_from_stream(
+    udynlink_module_t *p_mod, const udynlink_io_t *p_io,
+    void *load_addr, uint32_t load_size,
+    udynlink_load_mode_t load_mode,
+    void *scratch_buf, uint32_t scratch_buf_size);
+```
 
-### 2. Scratch Buffer Layout (Internal, Phased Reuse)
+Same parameter count, same position. `scratch_buf` replaces `work_buf` with different semantics:
+- `work_buf` was an I/O intermediate (read into work_buf, memcpy to dest)
+- `scratch_buf` holds temp state (header, names, reloc data) that was on the stack
 
-The scratch buffer is used in phases — regions are reused as processing progresses:
+### 2. Eliminate Double-Copy: Read Directly to Dest
+
+**`stream_read_exact()`** simplified to read directly into dest:
+```c
+static int32_t stream_read_exact(const udynlink_io_t *p_io, void *dest,
+                                 uint32_t offset, uint32_t len) {
+    uint8_t *d = (uint8_t *)dest;
+    uint32_t pos = 0;
+    while (pos < len) {
+        int32_t n = p_io->read(p_io->pv_ctx, d + pos, len - pos, offset + pos);
+        if (n <= 0) return -1;
+        pos += (uint32_t)n;
+    }
+    return (int32_t)len;
+}
+```
+
+The loop handles partial reads. If the callback always returns exact-length reads, this collapses to a single call.
+
+**`stream_read_string()`** reads directly into dest and scans for NUL in-place:
+```c
+static int32_t stream_read_string(const udynlink_io_t *p_io, char *dest,
+                                  uint32_t offset, uint32_t max_len) {
+    if (max_len < 2) return -1;
+    uint32_t total_read = 0;
+    uint32_t cur_offset = offset;
+    while (total_read + 1 < max_len) {
+        uint32_t chunk = max_len - total_read - 1;
+        int32_t n = p_io->read(p_io->pv_ctx, dest + total_read, chunk, cur_offset);
+        if (n <= 0) return -1;
+        for (int32_t i = 0; i < n; i++) {
+            if (dest[total_read + i] == '\0') return (int32_t)(total_read + i + 1);
+        }
+        total_read += (uint32_t)n;
+        cur_offset += (uint32_t)n;
+        if ((uint32_t)n < chunk) return -1;
+    }
+    dest[total_read] = '\0';
+    return -1;
+}
+```
+
+Both helpers drop to 4 params: `(p_io, dest, offset, len/max_len)`.
+
+### 3. Scratch Buffer Layout (Internal, Phased Reuse)
 
 ```
 Offset 0..35:    udynlink_module_header_t header  (needed throughout entire function)
-Offset 36..99:   char name_buf[64]                 (reused for dep_name AND sym_name)
+Offset 36..99:   char name_buf[64]                 (reused for dep_name AND sym_name, phased)
 Offset 100..107: uint32_t reloc_pair[2]            (per-reloc iteration, reused)
 Offset 108..111: uint32_t sym_count                (per-reloc iteration, reused)
 Offset 112..119: uint32_t sym_entry[2]             (per-reloc iteration, reused)
 Offset 120..131: udynlink_sym_t dep_sym            (per-extern-reloc, reused)
 ```
 
-**Minimum scratch size: 132 bytes** (define as `UDYNLINK_STREAM_MIN_SCRATCH_BUF_SIZE`)
+**Minimum scratch size: 132 bytes** -> `UDYNLINK_STREAM_MIN_SCRATCH_BUF_SIZE 132`
 
 **Phased reuse rules:**
-- `name_buf` is used for `dep_name` during dependency resolution, then reused for `sym_name` during relocation. These phases never overlap.
-- `reloc_pair`, `sym_count`, `sym_entry`, `dep_sym` are all per-iteration variables that share the same loop phase. They're at separate offsets within scratch_buf (not a union) to give the compiler natural alignment.
+- `name_buf` (offset 36): used for `dep_name` during dependency resolution, then reused for `sym_name` during relocation. These phases never overlap.
+- All per-iteration variables (reloc_pair through dep_sym) are at separate offsets for natural alignment. They're reused across iterations.
 
-### 3. API Changes
+**Validation:** `_Static_assert` in `udynlink.c` to catch drift against struct sizes.
 
-#### Primary function — modify existing signature:
+### 4. Removed Constants
 
-```c
-udynlink_error_t udynlink_load_module_from_stream(
-    udynlink_module_t *p_mod,
-    const udynlink_io_t *p_io,
-    void *load_addr, uint32_t load_size,
-    udynlink_load_mode_t load_mode,
-    void *work_buf, uint32_t work_buf_size,
-    void *scratch_buf, uint32_t scratch_buf_size);  // NEW
-```
+- `UDYNLINK_STREAM_BUF_SIZE` (512) -> removed (never referenced in C code)
+- `UDYNLINK_STREAM_MIN_WORK_BUF_SIZE` (64) -> replaced by `UDYNLINK_STREAM_MIN_SCRATCH_BUF_SIZE` (132)
 
-This is a **breaking API change**. On embedded systems, downstream consumers are typically rebuilt from source, so this is acceptable. The new parameter is validated: if `scratch_buf == NULL` or `scratch_buf_size < UDYNLINK_STREAM_MIN_SCRATCH_BUF_SIZE`, return `UDYNLINK_ERR_LOAD_INVALID_MODE`.
+### 5. `read` Callback Contract Update
 
-#### Helper functions — add scratch parameter:
+The `read` callback documentation should note that `buf` may point to any writable address (including module RAM, scratch buffer, or stack). The callback must write data directly to `buf`. This is already the de facto contract.
 
-```c
-uint32_t udynlink_get_ram_requirements_stream(
-    const udynlink_io_t *p_io, udynlink_load_mode_t mode,
-    void *scratch_buf, uint32_t scratch_buf_size);  // NEW
-
-uint32_t udynlink_get_stream_metadata_size(
-    const udynlink_io_t *p_io,
-    void *scratch_buf, uint32_t scratch_buf_size);  // NEW
-```
-
-These only need 36 bytes of scratch for the header. The same scratch buffer can be reused across all three calls in a typical load sequence.
-
-### 4. Reduce Double-Copy in `stream_read_exact()`
-
-**Current:** `p_io->read(ctx, work_buf, chunk, offset)` → `memcpy(dest, work_buf, chunk)`  
-**Problem:** For bulk copies into module RAM (COPY_ALL/COPY_TEXT_DATA), the work_buf → dest memcpy is pure overhead.
-
-**Optimization:** Add a `read_direct` field to `udynlink_io_t`:
-
-```c
-typedef struct {
-    udynlink_read_cb_t      read;
-    udynlink_get_size_cb_t  get_size;
-    udynlink_read_cb_t      read_direct;  // NEW (optional)
-    void                   *pv_ctx;
-} udynlink_io_t;
-```
-
-- When `read_direct != NULL`, `stream_read_exact()` calls it with `dest` directly — no work_buf intermediate.
-- When `read_direct == NULL`, falls back to the existing work_buf → memcpy path.
-- Block-device stream implementations leave `read_direct = NULL` (they need sector-aligned buffers).
-- Memory-mapped or buffered stream implementations can set `read_direct = read` to eliminate the copy.
-
-This is **backward compatible** at the struct level: the new field is at the end, and zero-initialized (NULL) by default. Existing code that initializes `udynlink_io_t` with designated initializers or `= {read, get_size, ctx}` will get `read_direct = NULL` (struct padding/initialization rules).
-
-**Wait** — actually, adding a field to the middle of a struct breaks ABI if anyone uses positional initialization: `= {read, get_size, ctx}`. We must add it BEFORE `pv_ctx` to maintain offset compatibility, or use designated initializers. Since this is C99+ embedded code, we should assume designated initializers.
-
-**Actually** — a simpler alternative: just check if `dest != work_buf` and if so, try to read directly into dest for the full length first, falling back to chunked work_buf if the read returns short:
-
-```c
-if (dest != work_buf && len <= work_buf_size) {
-    int32_t n = p_io->read(p_io->pv_ctx, dest, len, offset);
-    if (n > 0 && (uint32_t)n == len) return (int32_t)len;
-    // fall through to chunked path
-}
-```
-
-This is simpler but only eliminates the copy for short reads that complete in one callback call. For large bulk copies (which is the common case), we still need chunked reads.
-
-**Decision point: `read_direct` callback vs. opportunistic direct read vs. neither.**
-
-### 5. Helper Function Changes
-
-`stream_read_exact()` and `stream_read_string()` currently take `(p_io, dest, offset, len, work_buf, work_buf_size)`. No changes needed to their signatures — the scratch buffer is not passed to them, it's used as `dest` by the caller.
-
-Specifically:
-- `stream_read_string(p_io, (char*)scratch_name_buf, ...)` — scratch_buf provides the dest
-- `stream_read_exact(p_io, scratch_rel_pair, ...)` — scratch_buf provides the dest
-- The header read: `p_io->read(p_io->pv_ctx, scratch_header_buf, sizeof(header), 0)` — reads directly into scratch (no work_buf intermediate needed for a single 36-byte read)
+Block-device stream drivers that require sector-aligned buffers must internally buffer sectors and copy to `buf`.
 
 ## Task Breakdown
 
-### Task 1: Add scratch_buf to API surface
-**File:** `udynlink/udynlink.h`
-- Add `UDYNLINK_STREAM_MIN_SCRATCH_BUF_SIZE` constant (132)
-- Add `scratch_buf, scratch_buf_size` parameters to `udynlink_load_module_from_stream()`
-- Add `scratch_buf, scratch_buf_size` parameters to `udynlink_get_ram_requirements_stream()` and `udynlink_get_stream_metadata_size()`
-- Update doc comments
+### Task 1: Refactor streaming helpers - remove work_buf, read directly to dest
+**Files:** `udynlink/udynlink.c`
+- Simplify `stream_read_exact()`: remove `work_buf`/`work_buf_size` params, read directly into `dest`
+- Simplify `stream_read_string()`: remove `work_buf`/`work_buf_size` params, read directly into `dest` and scan in-place for NUL
+- Handle partial reads with a loop in `stream_read_exact()`
+- Both helpers drop to 4 params: `(p_io, dest, offset, len/max_len)`
 
-### Task 2: Refactor udynlink_load_module_from_stream() to use scratch_buf
-**File:** `udynlink/udynlink.c`
-- Add internal accessor macros/inline helpers for scratch_buf offsets
-- Replace stack `header` with `(udynlink_module_header_t*)scratch_buf`
-- Replace stack `dep_name[64]` with `scratch_buf + 36`
-- Replace stack `sym_name[64]` with `scratch_buf + 36` (same region, phased reuse)
-- Replace stack `rel_pair[2]` with `scratch_buf + 100`
-- Replace stack `sym_count` with `scratch_buf + 108`
-- Replace stack `sym_entry[2]` with `scratch_buf + 112`
-- Replace stack `dep_sym` with `scratch_buf + 120`
-- Add scratch_buf validation at function entry
-- Update all access patterns (pointer dereference through scratch base instead of local variable)
+### Task 2: Update API surface - replace work_buf with scratch_buf
+**Files:** `udynlink/udynlink.h`
+- Replace `work_buf`/`work_buf_size` with `scratch_buf`/`scratch_buf_size` in `udynlink_load_module_from_stream()` signature
+- Remove `UDYNLINK_STREAM_BUF_SIZE` and `UDYNLINK_STREAM_MIN_WORK_BUF_SIZE`
+- Add `UDYNLINK_STREAM_MIN_SCRATCH_BUF_SIZE 132`
+- Update doc comments: new `read` callback contract, scratch_buf semantics
 
-### Task 3: Refactor helper functions to use scratch_buf
-**File:** `udynlink/udynlink.c`
-- `udynlink_get_ram_requirements_stream()`: use scratch_buf for header instead of stack local
-- `udynlink_get_stream_metadata_size()`: same
+### Task 3: Refactor `udynlink_load_module_from_stream()` to use scratch_buf and direct reads
+**Files:** `udynlink/udynlink.c`
+- Replace `work_buf`/`work_buf_size` params with `scratch_buf`/`scratch_buf_size`
+- Add scratch_buf validation (NULL check, min size check)
+- Replace stack `header` -> `(udynlink_module_header_t*)scratch_buf`
+- Replace stack `dep_name[64]` -> `(char*)(scratch_buf + 36)`
+- Replace stack `sym_name[64]` -> `(char*)(scratch_buf + 36)` (phased reuse)
+- Replace stack `rel_pair[2]` -> `(uint32_t*)(scratch_buf + 100)`
+- Replace stack `sym_count` -> `(uint32_t*)(scratch_buf + 108)`
+- Replace stack `sym_entry[2]` -> `(uint32_t*)(scratch_buf + 112)`
+- Replace stack `dep_sym` -> `(udynlink_sym_t*)(scratch_buf + 120)`
+- Update all calls to `stream_read_exact()` and `stream_read_string()` (remove work_buf args, pass scratch offsets as dest)
+- Add `_Static_assert` for scratch size validation
+- Update error handling paths
 
-### Task 4: Optimize stream_read_exact to reduce copies (optional)
-**File:** `udynlink/udynlink.c`, `udynlink/udynlink.h`
-- Add `read_direct` optional callback to `udynlink_io_t`
-- Modify `stream_read_exact()` to use `read_direct` when available
-- Update test mock stream to support `read_direct`
+### Task 4: Update test harness
+**Files:** `tests/test-streaming-load/test_qemu.c`
+- Remove `work_buf[512]` and `work_buf[128]` stack allocations
+- Add scratch buffer to `test_streaming_load()` (min 132 bytes)
+- Pass scratch_buf to `udynlink_load_module_from_stream()`
+- Remove work_buf_size from test function signatures
+- Add a test case with minimum scratch_buf size (132 bytes)
+- Keep testing all load modes
 
-### Task 5: Update test harness
-**File:** `tests/test-streaming-load/test_qemu.c`
-- Add scratch_buf allocations to `test_streaming_load()`
-- Pass scratch_buf to all streaming API calls
-- Add a test with minimum scratch_buf size (132 bytes)
-- Verify all 6 test vectors still pass
-
-### Task 6: Run test suite
-- `just test-f429` or equivalent to validate all streaming tests pass
-- Verify at both `-O0` and `-Os`
-
-## Open Questions
-
-1. **read_direct optimization** — Is eliminating the double-copy worth the added API complexity? The `read_direct` callback in `udynlink_io_t` is clean but adds another field to maintain. For typical streaming loads from SD card, the bulk copy memcpy cost is small relative to I/O latency. Is this optimization valued?
-
-2. **Scratch buffer layout stability** — If we define `UDYNLINK_STREAM_MIN_SCRATCH_BUF_SIZE = 132`, it's part of the ABI. If future headers grow or we need more scratch space, this constant increases. Should we expose a struct (e.g., `udynlink_stream_scratch_t`) that callers allocate, so they get the right size automatically from `sizeof()`?
-
-3. **Static assert on scratch layout** — Should we add `_Static_assert` to ensure the internal offsets match? This prevents drift between the scratch layout and the actual struct sizes.
+### Task 5: Run full test suite
+- `just test-f429` or equivalent
+- Verify all streaming tests pass at both `-O0` and `-Os`
 
 ## Context Guide for Implementation Agents
 
 Key files:
-- `udynlink/udynlink.h` — Public API declarations (streaming section starts at line 273)
-- `udynlink/udynlink.c` — Implementation (streaming helpers at line 246, main function at line 678)
-- `tests/test-streaming-load/test_qemu.c` — Streaming test harness
-- `udynlink/udynlink_externals.h` — Host callback interface (no changes needed)
+- `udynlink/udynlink.h` - Public API (streaming section: line 273-559)
+- `udynlink/udynlink.c` - Implementation (helpers: line 246-282, main function: line 678-943)
+- `tests/test-streaming-load/test_qemu.c` - Test harness
 
-The scratch buffer replaces ALL stack-allocated buffers listed in "Current State" section. The phased reuse is safe because deps are resolved before relocations, and each relocation is processed sequentially. No two phases of scratch_buf usage overlap.
+The scratch buffer replaces ALL stack-allocated buffers. The phased reuse is safe because:
+1. Dependency resolution completes before relocation processing
+2. Within dependency resolution, `dep_name` is used one at a time (sequential)
+3. Within relocation, `sym_name` is used one at a time (sequential)
+4. No two name-buffer uses overlap in time
+
+The direct-read approach is safe because:
+1. The `read` callback already writes directly to the provided buffer
+2. Block-device drivers manage their own alignment internally
+3. The existing `work_buf` provided no alignment guarantee anyway

@@ -176,6 +176,11 @@ def process(output, args):
                 sym_map[s] = "external"
                 debug("Added symbol '%s' (%s) to list of external symbols" % (s, syms[s]["type"]), args)
         elif d["bind"] == "STB_WEAK":
+            # Defined weak symbols are classified as "weak" so the loader can
+            # apply the module's own address as a default and optionally patch
+            # it with a host override.  Undefined weak symbols are treated as
+            # "external" (still fail if unresolved — unlike ELF they do not
+            # silently resolve to NULL).
             defined = d["section"] != "SHN_UNDEF"
             if defined:
                 sym_map[s] = "weak"

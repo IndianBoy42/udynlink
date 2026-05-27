@@ -139,9 +139,20 @@ def get_symbols_in_elf(obj):
     return syms
 
 def get_public_functions_in_object(obj):
+    """Return public (global or weak) function symbols.
+
+    Weak functions need a prologue wrapper so that internal callers in the
+    module can reach them via the renamed local implementation.  The wrapper
+    is emitted as a .weak symbol so the host can override it if desired.
+    """
     return [s for s, d in get_symbols_in_elf(obj).items() if d["type"] == "STT_FUNC" and d["bind"] in ("STB_GLOBAL", "STB_WEAK")]
 
 def get_weak_functions_in_object(obj):
+    """Return only STB_WEAK function symbols.
+
+    These need .weak (not .globl) in the assembly prologue so the ELF
+    binding is preserved correctly.
+    """
     return [s for s, d in get_symbols_in_elf(obj).items() if d["type"] == "STT_FUNC" and d["bind"] == "STB_WEAK"]
 
 def get_local_symbols_in_object(obj):

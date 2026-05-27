@@ -9,6 +9,12 @@ static int g_override = 0;
 static int host_weak_func(void) { return 99; }
 static int host_weak_var = 88;
 
+/*
+ * Host symbol resolver used by the loader.  When g_override is set,
+ * the host provides its own definitions for weak_func and weak_var.
+ * When g_override is clear, the resolver returns 0 and the loader
+ * falls back to the module's own weak definitions.
+ */
 uint32_t test_resolve_symbol(const char *name) {
     if (g_override) {
         if (!strcmp(name, "weak_func"))
@@ -19,6 +25,21 @@ uint32_t test_resolve_symbol(const char *name) {
     return 0;
 }
 
+/*
+ * Test: weak symbol host override across all load modes.
+ *
+ * What IS tested:
+ *   - Data weak variable (weak_var) is correctly overridden by the host
+ *     in all load modes (COPY_ALL, COPY_TEXT_DATA, XIP).
+ *   - Weak function address returned by udynlink_lookup_symbol() reflects
+ *     the host override (indirect / external callers).
+ *
+ * What is NOT tested (and cannot be with the current architecture):
+ *   - Direct internal calls to weak_func() inside the module.  These
+ *     always reach the module's own implementation because the compiler
+ *     emits a PC-relative `bl` to the prologue wrapper, which
+ *     unconditionally branches to the renamed local __wrapped_weak_func.
+ */
 int test_qemu(void) {
     const char *exported_syms[] = {"test", NULL};
     const char *weak_syms[] = {"weak_func", "weak_var", NULL};
@@ -46,6 +67,7 @@ int test_qemu(void) {
             int expected_func = override ? 99 : 42;
             int expected_var = override ? 88 : 7;
 
+            /* Verify weak function override via udynlink_lookup_symbol (indirect caller) */
             if (udynlink_lookup_symbol(&mod, "weak_func", &sym) == NULL) {
                 printf("weak_func not found\n");
                 goto exit;
@@ -56,6 +78,7 @@ int test_qemu(void) {
                 goto exit;
             }
 
+            /* Verify weak data variable override */
             if (udynlink_lookup_symbol(&mod, "weak_var", &sym) == NULL) {
                 printf("weak_var not found\n");
                 goto exit;

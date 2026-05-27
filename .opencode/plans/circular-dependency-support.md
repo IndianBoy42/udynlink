@@ -54,6 +54,28 @@ Instead of splitting `udynlink_load_module()` into two new functions (`load_modu
 - `NULL` → dependency not found, load fails with `UDYNLINK_ERR_LOAD_MISSING_DEP` (existing behavior)
 - `UDYNLINK_DEP_DEFERRED` → dependency exists but should not be linked yet. Loader skips it.
 
+#### 1a. `UDYNLINK_SYM_DEFERRED` Sentinel for Symbol Resolution
+
+```c
+#define UDYNLINK_SYM_DEFERRED ((uint32_t)1)
+```
+
+**Rationale**: The same pattern applies to the **three-tier symbol resolution chain**. The host may want to defer resolution of an individual `EXTERN` symbol rather than fail the entire module load.
+
+**Contract change**: `udynlink_external_resolve_symbol()` and `udynlink_external_resolve_critical_symbol()` may now return `UDYNLINK_SYM_DEFERRED`:
+- Valid address → symbol resolved, written to relocation slot (existing behavior)
+- `0` → symbol not found, load fails with `UDYNLINK_ERR_LOAD_CANT_RESOLVE` (existing behavior)
+- `UDYNLINK_SYM_DEFERRED` → symbol is known but not yet available. Loader writes `0` to the relocation slot and **continues loading** (does not fail).
+
+**When this is useful**:
+- A module references a host function that will be registered later (e.g., after hardware initialization)
+- A module references a symbol from another module that hasn't been loaded yet, and the host wants to allow this (even without using `UDYNLINK_DEP_DEFERRED` for the whole dependency)
+- Optional symbols that the module can gracefully handle being NULL
+
+**Interaction with `link_dependency()`**: When `link_dependency()` re-runs the three-tier chain for EXTERN relocations, deferred symbols are attempted again. If the host now returns a real address, the slot is updated. If it still returns `UDYNLINK_SYM_DEFERRED`, the slot stays at `0`.
+
+**Important**: The critical-symbol callback (`udynlink_external_resolve_critical_symbol`) returning `UDYNLINK_SYM_DEFERRED` is treated the same way — the load does not fail, and the symbol is deferred. This is a change from the current behavior where critical symbols are, well, critical. **Hosts should only return this sentinel from the critical callback if they truly intend to defer a critical symbol.**
+
 ### 2. Modified `udynlink_load_module()` Dependency Loop
 
 Inside `udynlink_load_module()` and `udynlink_load_module_from_stream()`:

@@ -141,7 +141,22 @@ typedef struct {
 #define UDYNLINK_SYM_TYPE_EXTERN              2
 /** Special symbol representing the module name. */
 #define UDYNLINK_SYM_TYPE_MODULE_NAME                3
-/** Weak symbol: resolved by the host if available, otherwise uses the module's own definition. */
+/**
+ * Weak symbol (defined in the module).
+ *
+ * At load time the loader first applies the module's own address (as for
+ * INTERNAL/EXPORTED), then attempts host/dependency override via the same
+ * three-tier resolution used for EXTERN symbols.  If no override is found the
+ * module's own definition remains in place.
+ *
+ * Limitation: direct PC-relative calls inside the module (e.g. `bl weak_func`)
+ * are resolved at link time and cannot be rewritten at load time.  Therefore
+ * internal callers still reach the prologue wrapper, which unconditionally
+ * branches to the module's renamed local implementation.  Host override only
+ * takes effect for:
+ *   - LOT/data relocations (data weak symbols, function pointers)
+ *   - External callers via `udynlink_lookup_symbol()`
+ */
 #define UDYNLINK_SYM_TYPE_WEAK                       4
 
 /** Symbol resides in the code (.text) section. */

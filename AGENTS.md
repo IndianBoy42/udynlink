@@ -180,6 +180,16 @@ With module dependency tracking, symbol resolution follows a three-tier search o
 
 This allows modules to depend on symbols exported by other modules without the host firmware needing to re-export them.
 
+### Weak Symbol Support
+`__attribute__((weak))` symbols defined in a module are classified as `UDYNLINK_SYM_TYPE_WEAK`.  At load time the loader applies the module's own address as the default, then attempts host/dependency override via the same three-tier resolution used for extern symbols.  If no override is found, the module's definition remains — the load does **not** fail.
+
+**Important limitation:** direct internal calls (`bl`) are PC-relative and resolved at link time.  The generated prologue wrapper unconditionally branches to the module's renamed local implementation, so **internal callers always use the module's own weak definition**.  Host override is only effective for:
+- **Data weak symbols** — LOT/data relocations are patched at load time
+- **Function pointers / indirect calls** — address taken through the GOT
+- **External callers** — `udynlink_lookup_symbol()` resolves the override at runtime
+
+Undefined weak symbols (`STB_WEAK` + `SHN_UNDEF`) are treated as `external` and still fail module load if unresolved.  Standard ELF silently resolves them to NULL; a dedicated `weak_undef` type could be added in a follow-up.
+
 ### C++ Module Support
 - Call `udynlink_cpp_init(p_mod)` after loading a C++ module to run global constructors via `__init_array`
 - The host must set `*(uint32_t*)UDYNLINK_LOT_BASE_ADDR = p_mod->ram_base` before calling `udynlink_cpp_init`

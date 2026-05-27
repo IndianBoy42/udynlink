@@ -216,6 +216,9 @@ static udynlink_sym_t *get_sym_at(const udynlink_module_header_t *p_header, uint
 static udynlink_sym_t *offset_sym(const udynlink_module_t *p_mod, udynlink_sym_t *p_sym) {
     uint32_t prev_val = p_sym->val;
 
+    // Weak symbols are initially offset like internal/exported symbols so the
+    // module's own definition is the default.  If the host provides an override
+    // the loader patches the LOT/data entry afterwards.
     if ((p_sym->type == UDYNLINK_SYM_TYPE_INTERNAL) || (p_sym->type == UDYNLINK_SYM_TYPE_EXPORTED) || (p_sym->type == UDYNLINK_SYM_TYPE_WEAK)) {
         if (p_sym->location == UDYNLINK_SYM_LOCATION_CODE) {
             p_sym->val += (uint32_t)(uintptr_t)get_code_pointer(p_mod);
@@ -474,6 +477,10 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
                 break;
 
             case UDYNLINK_SYM_TYPE_WEAK:
+                // Write the module's own address first (default fallback), then
+                // try host/dependency override.  Unlike EXTERN, failure to
+                // resolve a weak symbol is not fatal — the module definition
+                // remains.
                 UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Applying weak relocation for symbol at index %u, name=%s at lot_offset=%u\n", symt_offset, sym.name, lot_offset);
                 *p_rel_location = offset_sym(p_mod, &sym)->val;
                 {
@@ -658,6 +665,10 @@ udynlink_sym_t *udynlink_lookup_symbol(const udynlink_module_t *p_mod, const cha
             if (!strcmp(p_sym->name, name)) { // symbol found
                 offset_sym(p_mod, p_sym); // offset value properly before returning
                 if (p_sym->type == UDYNLINK_SYM_TYPE_WEAK) {
+                    // For weak symbols, runtime lookup must also resolve the
+                    // host/dependency override so external callers see the
+                    // correct address.  The three-tier resolution is identical
+                    // to the load-time path above.
                     uint32_t sym_addr = udynlink_external_resolve_critical_symbol(name);
                     if (sym_addr == 0) {
                         for (uint8_t d = 0; d < p_mod->num_deps; d++) {
@@ -937,6 +948,8 @@ udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
                     sym_val += (uint32_t)(uintptr_t)get_data_pointer(p_mod);
                 *p_rel_location = sym_val;
             } else if (sym_type == UDYNLINK_SYM_TYPE_WEAK) {
+                // Same semantics as the in-memory loader: default to the
+                // module's own address, then optionally override via host.
                 if (sym_location == UDYNLINK_SYM_LOCATION_CODE)
                     sym_val += (uint32_t)(uintptr_t)get_code_pointer(p_mod);
                 else
