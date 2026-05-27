@@ -541,9 +541,9 @@ void udynlink_cpp_init(udynlink_module_t *p_mod){
     udynlink_sym_t __init_array= {};
     if(udynlink_lookup_symbol(p_mod, "__init_array", &__init_array) != NULL)
     {
-        UDYNLINK_PREPARE_CALL(p_mod);
         typedef void (*void_func)(void);
         void_func f = (void_func)__init_array.val;
+        UDYNLINK_PREPARE_CALL(p_mod);
         f();
     }   
 }

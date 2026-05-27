@@ -393,8 +393,6 @@ def process(output, args):
     img += struct.pack("<I", len(code_sect))  # Size of code section (4b)
     img += struct.pack("<I", len(data_sect))  # Size of data section (4b)
     img += struct.pack("<I", len(bss_sect))  # Size of bss section (4b)
-    # Reserved field (was deps_strtab_size, now 0 for ABI v3.0+)
-    img += struct.pack("<I", 0)  # Reserved (4b)
     # Write relocations: (lot off, symy off) pairs
     img += realocs
     

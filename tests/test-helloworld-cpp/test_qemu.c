@@ -6,15 +6,13 @@
 int run_test_func2(const udynlink_module_t *p_mod, int a, int b, int c) {
     udynlink_sym_t sym;
 
-    uintptr_t* mod_base = (uintptr_t*)0x20000000; //see asm_template.tmpl
-    *mod_base = p_mod->ram_base;
-
     // Run test
     if (udynlink_lookup_symbol(p_mod, "test2", &sym) == NULL) {
         printf("'test2' symbol not found.\n");
         return 0;
     }
     int (*p_func)(int, int, int) = (int (*)(int, int, int))sym.val;
+    UDYNLINK_PREPARE_CALL(p_mod);
     return p_func(a, b, c);
 }
 
