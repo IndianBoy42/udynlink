@@ -139,6 +139,14 @@ def test_one(full_path, opt):
     sys.path.remove(full_path)
     test_name = os.path.basename(full_path)
     aopt = "Os" if opt else "O3"
+
+    # Check if this test should be skipped on the current platform
+    platform = os.environ.get("UDYNLINK_PLATFORM", "")
+    skip_platforms = test_data.get("skip_platforms", [])
+    if platform in skip_platforms:
+        safe_print("--- Skipping test '%s' on platform '%s' (known QEMU bug) ---" % (test_name, platform))
+        return True, "Skipped on %s" % platform
+
     safe_print("--- Running test '%s' in '%s' with opt %s ---" % (test_data["desc"], test_name, "-Os" if opt else "-O3"))
     os.chdir(full_path)
 

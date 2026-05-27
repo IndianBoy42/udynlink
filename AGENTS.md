@@ -232,7 +232,7 @@ Unlike the original, the eh2k fork allows **multiple instances of the same modul
 
 | Platform | QEMU Machine | QEMU Binary | CPU | Status | Notes |
 |----------|--------------|-------------|-----|--------|-------|
-| `stm32f429_discovery` | STM32F429I-Discovery | `qemu-system-gnuarmeclipse` | cortex-m4 | ✅ **All 38 tests pass** | Fast, legacy xPack fork |
+| `stm32f429_discovery` | STM32F429I-Discovery | `qemu-system-gnuarmeclipse` | cortex-m4 | ✅ **48/50 pass (2 skipped)** | Fast, legacy xPack fork; `test-strip-init-array` skipped due to semihosting heap corruption |
 | `mps2_an386` | mps2-an386 | `qemu-system-arm` (9.2.4+) | cortex-m4 | ✅ **All 38 tests pass** | Mainline QEMU, ~0.5s/test |
 | `olimex_stm32_h405` | olimex-stm32-h405 | `qemu-system-arm` | cortex-m4f | ✅ **All 38 tests pass** | Hard-float M4F on mainline QEMU |
 | `mps2_an385` | mps2-an385 | `qemu-system-arm` | cortex-m3 | ✅ **All 38 tests pass** | Mainline QEMU |
@@ -257,6 +257,7 @@ QEMU's `microbit` machine does not properly load ELF files via `-kernel` at `0x0
 
 - **No thread safety** — `module_table` is a bare static array with no locking. Cortex-M targets often use interrupts; concurrent load/unload from different interrupt levels will corrupt state. (OUT OF SCOPE)
 - **M3/M0 QEMU hosts have Flash→RAM call quirk** — Modules calling host functions (e.g. `printf`) hang under `qemu-system-gnuarmeclipse` for STM32F103/STM32F051 boards, but work correctly on STM32F429. This is a known `qemu-system-gnuarmeclipse` emulation bug; mainline QEMU (`qemu-system-arm`) does **not** exhibit this issue.
+- **F429 semihosting heap corruption** — `qemu-system-gnuarmeclipse` 2.8.0 corrupts heap-allocated guest RAM at low addresses (0x20000400–0x20000600 range) during semihosting `SYS_WRITE0` calls. This causes `test-strip-init-array` to fail on the F429 platform. All other platforms (MPS2, H405, etc.) using mainline `qemu-system-arm` are unaffected. The test is skipped on `stm32f429_discovery` via `skip_platforms` in `test_data.py`.
 - **xPack QEMU 9.2.4 discontinued `qemu-system-gnuarmeclipse`** — Latest xPack releases only include `qemu-system-arm` (mainline). STM32F429 fast testing requires an older xPack release or the `xpack-dev-tools/qemu-arm` project.
 
 
