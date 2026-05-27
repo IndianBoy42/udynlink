@@ -64,9 +64,9 @@ target_compile_definitions(test1.elf PRIVATE
     UDYNLINK_MAX_HANDLES=8
 )
 
-# Allow overriding the udynlink debug level at build time
+# Allow overriding the compile-time debug level at build time
 if(DEFINED UDYNLINK_TEST_DEBUG_LEVEL)
-    target_compile_definitions(test1.elf PRIVATE UDYNLINK_TEST_DEBUG_LEVEL=${UDYNLINK_TEST_DEBUG_LEVEL})
+    target_compile_definitions(test1.elf PRIVATE UDYNLINK_DEBUG_LEVEL=${UDYNLINK_TEST_DEBUG_LEVEL})
 endif()
 
 # Ensure the udynlink library is compiled with the same core flags

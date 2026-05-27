@@ -238,6 +238,17 @@ typedef enum {
 
 /* Compile-time configuration */
 
+#ifndef UDYNLINK_DEBUG_LEVEL
+/** Compile-time debug level (defaults to none). Overridden with -DUDYNLINK_DEBUG_LEVEL=... */
+#define UDYNLINK_DEBUG_LEVEL UDYNLINK_DEBUG_NONE
+#endif
+
+#if UDYNLINK_DEBUG_LEVEL > UDYNLINK_DEBUG_NONE
+#define UDYNLINK_DEBUG(...) udynlink_debug(__func__, __LINE__, __VA_ARGS__)
+#else
+#define UDYNLINK_DEBUG(...) ((void)0)
+#endif
+
 #ifndef UDYNLINK_HOST_ARCH_TAG
 /** Architecture tag of the host MCU (defaults to Cortex-M4). */
 #define UDYNLINK_HOST_ARCH_TAG UDYNLINK_ARCH_TAG_CORTEX_M4
@@ -319,9 +330,6 @@ static inline int udynlink_module_has_no_prologue(const udynlink_module_header_t
  * @param v Packed version value.
  */
 #define UDYNLINK_GET_MINOR_VERSION(v)         ((v) & 0xFF)
-
-/** Internal macro used to emit debug messages with file context. */
-#define UDYNLINK_DEBUG(...)                   udynlink_debug(__func__, __LINE__, __VA_ARGS__)
 
 /**
  * @brief Prepare the LOT base and r9 before calling a module function.

@@ -154,11 +154,7 @@ int udynlink_external_is_module_loading(const char *module_name) {
 extern int test_qemu(void);
 
 int main() {
-#ifdef UDYNLINK_TEST_DEBUG_LEVEL
-    udynlink_set_debug_level(UDYNLINK_TEST_DEBUG_LEVEL);
-#else
-    udynlink_set_debug_level(UDYNLINK_DEBUG_NONE);
-#endif
+    udynlink_set_debug_level(UDYNLINK_DEBUG_LEVEL);
     int ok = test_qemu();
     printf (ok ? "*** TEST OK ***\n" : "*** TEST FAILED! ***\n");
     exit(ok ? 0 : 1);

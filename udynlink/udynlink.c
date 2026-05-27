@@ -45,8 +45,6 @@ void udynlink_external_vprintf(const char *s, va_list va) {
 
 #define UDYNLINK_MODULE_SIGN                  (((uint32_t)'M' << 24) | ((uint32_t)'L' << 16) | ((uint32_t)'D' << 8) | (uint32_t)'U')
 
-static udynlink_debug_level_t debug_level;
-
 #define _UDYNLINK_EXPAND(x)                   #x"\n"
 static const char * const error_codes[] = {
     UDYNLINK_ERROR_CODES
@@ -91,10 +89,9 @@ static void internal_printf(const char *msg, ...) {
 // The debug output function
 static void udynlink_debug(const char *func, int line, udynlink_debug_level_t level, const char *msg, ...) {
     va_list va;
-    // If the array below is modified, remember to also modify the "udynlink_debug_level_t" enum in the header!
     static const char * const names[] = {"n/a", "error", "warning", "info"};
 
-    if ((int)level > (int)debug_level) {
+    if ((int)level > UDYNLINK_DEBUG_LEVEL) {
         return;
     }
     internal_printf("[udynlink %s in function %s, line %d] ", names[(int)level], func, line);
@@ -716,7 +713,7 @@ uintptr_t udynlink_get_symbol_value(const udynlink_module_t *p_mod, const char *
 }
 
 void udynlink_set_debug_level(udynlink_debug_level_t level) {
-    debug_level = level;
+    (void)level;
 }
 
 size_t udynlink_get_image_size(const void *base_addr)
