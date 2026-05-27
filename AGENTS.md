@@ -17,6 +17,21 @@ This repo is based on the **eh2k fork** which adds: C++ support (`__init_array`)
 
 Recent expansion adds: compile-time target configuration (`UDYNLINK_LOT_BASE_ADDR`), ABI versioning with `mod_version`/`udynlink_version`/`arch_tag`, architecture tag validation at load time, a Python target database (`scripts/targets.py`) supporting Cortex-M0/M0+/M3/M4/M4F/M7/M33/M55/M85, and per-target assembly prologue templates.
 
+## Documentation Structure
+
+All user-facing documentation lives under `docs/` and is summarized in `docs/README.md`:
+
+| Guide | Description |
+|-------|-------------|
+| `docs/how-it-works.md` | Technical deep-dive: PIC model, LOT/r9 mechanism, relocations, binary format, ABI versioning, deferred dependencies |
+| `docs/integrating-as-host.md` | Adding udynlink to your firmware, implementing callbacks, symbol tables, lifecycle, thread safety, circular/optional deps |
+| `docs/writing-modules.md` | Creating loadable C/C++ modules, consuming symbols, dependencies, mkmodule reference, optional dep detection |
+| `docs/api-reference.md` | Complete reference for all public functions, structs, macros, and callbacks |
+| `docs/examples.md` | Working code examples for every major feature |
+| `docs/testing.md` | Running tests, adding test cases and platforms, debugging |
+
+> **Always keep documentation in sync.** If you change code, public APIs, test behavior, build commands, or toolchain requirements, update the corresponding `docs/*.md` file(s) before finishing the task. `AGENTS.md` itself must also be updated if build/test commands, architecture constraints, or the platform matrix change.
+
 ## Toolchain Requirements
 
 - **`arm-none-eabi-gcc`** / **`arm-none-eabi-g++`** / **`arm-none-eabi-objcopy`** (GCC ARM Embedded)
