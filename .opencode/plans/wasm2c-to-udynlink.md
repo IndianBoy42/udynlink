@@ -371,6 +371,72 @@ mkwasm2c-module --enable-bulk-memory --enable-custom-page-sizes=4096 \
 
 ---
 
+---
+
+## Phase 2 Results (Completed)
+
+**Status: ✅ SUCCESS** — The toolchain integration is complete and all tests pass with zero regressions.
+
+### What was accomplished
+1. **Created `scripts/mkwasm2c-module`** — A Python CLI that wraps `wasm2c` + `mkmodule`. It runs `wasm2c` on `.wasm`, patches generated C with `#define NDEBUG`, auto-generates a setup shim, and compiles everything into a `.bin`. Supports `--static-memory`, `--dynamic-memory`, `--custom-page-size`, `--trap-handler`, `--malloc`, `--free`, and all standard `mkmodule` flags.
+2. **Created `udynlink/wasm2c_runtime/wasm-rt.h` and `wasm-rt-udynlink.c`** — A proper hook-based bare-metal runtime:
+   - Weak hook declarations: `wasm_rt_malloc`, `wasm_rt_mem_free`, `wasm_rt_mem_realloc`, `wasm_rt_trap_handler`, `wasm_rt_resolve_import`
+   - Defaults delegate to `udynlink_external_malloc`/`free`/`resolve_symbol`
+   - Static memory mode: pre-allocated `.bss` buffer
+   - Dynamic memory mode: `malloc`/`realloc`/`free`
+   - `__attribute__((used))` on essential functions to survive `--gc-sections`
+   - Hand-rolled `memcpy`/`memset`/`memmove`/`memcmp` (no libc)
+3. **Added new tests:**
+   - `tests/test-wasm2c-fac/` — Recursive factorial (`fac(5) == 120`)
+   - `tests/test-wasm2c-hello/` — Static linear memory with data segment (`"hello, world"`)
+4. **Modified existing files (minimal, safe):**
+   - `tests/qemu_host/src/main.c` — Added `udynlink_external_malloc`/`free`/`resolve_symbol` to the host resolver so the runtime hooks can link
+   - `tests/test_driver.py` — Fixed objdump target filename when leading `-D` flags are present
+
+### Test Results
+**Platform:** MPS2-AN386 (Cortex-M4, mainline QEMU 9.2.4)
+**Command:** `just test-mps2`
+
+| Test | `-O3` | `-Os` | Notes |
+|------|-------|-------|-------|
+| `test-wasm2c-add` (spike) | ✅ | ✅ | Baseline still passes |
+| `test-wasm2c-fac` | ✅ | ✅ | **New** — recursion |
+| `test-wasm2c-hello` | ✅ | ✅ | **New** — static memory + data segment |
+| All 20 existing tests | ✅ | ✅ | **0 regressions** |
+| **Total** | **46/46** | **46/46** | **All pass** |
+
+### Runtime Size
+| Module | `.text` | `.data` | `.bss` | Notes |
+|--------|---------|---------|--------|-------|
+| `test-wasm2c-fac` | 1336 B | 104 B | 4 B | Full runtime, dead-code stripped |
+| `test-wasm2c-hello` | 1416 B | 124 B | 65540 B | Includes 64 KiB static linear memory |
+| **Runtime overhead** | **~912 B** | — | — | Well under the 2 KB MVP budget |
+
+### Issues encountered and resolved
+| Issue | Resolution |
+|-------|------------|
+| `wasm_rt_free` conflicting with upstream lifecycle `wasm_rt_free()` | Renamed hook to `wasm_rt_mem_free` |
+| `udynlink_externals.h` not found during build | `mkwasm2c-module` now copies it alongside runtime sources |
+| Unresolved `udynlink_external_malloc`/`free` in host test | Added them to `tests/qemu_host/src/main.c` resolver |
+| `memcpy` unresolved (GCC lowers builtin to libcall for large copies) | Provided hand-rolled `memcpy`/`memset`/`memmove`/`memcmp` |
+| Test driver objdump failure on `-D` flags | Fixed `test_driver.py` to skip leading `-D` when computing ELF basename |
+
+---
+
+## Updated Status & Next Steps
+
+| Phase | Status | Action |
+|-------|--------|--------|
+| Phase 1: Feasibility Spike | ✅ **DONE** | — |
+| Phase 2: Toolchain Integration | ✅ **DONE** | — |
+| Phase 2.5: Dynamic Memory (`memory.grow`) | ⏳ **READY** | Create `test-wasm2c-memgrow`; validate `wasm_rt_grow_memory` end-to-end |
+| Phase 3: Bulk Memory, Multi-value, Tail-call, Custom Page Sizes | ⏳ **PENDING** | Add tests and validate newer Wasm proposals |
+| Phase 4: Multi-memory, MPU Hooks, Imports | ⏳ **PENDING** | Advanced features for power users |
+| Phase 5: Documentation & CI | ⏳ **PENDING** | Write `docs/wasm2c-integration.md`; add Justfile targets |
+
+---
+
 *Plan created: 2026-05-28*  
 *Phase 1 completed: 2026-05-28*  
-*Status: Ready for Phase 2*
+*Phase 2 completed: 2026-05-28*  
+*Status: Ready for Phase 2.5 / 3*

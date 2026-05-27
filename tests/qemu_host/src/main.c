@@ -103,6 +103,12 @@ uintptr_t udynlink_external_resolve_symbol(const char *name) {
         return (uintptr_t)&_write;
     else if (!strcmp(name, "puts"))
         return (uintptr_t)&puts;
+    else if (!strcmp(name, "udynlink_external_malloc"))
+        return (uintptr_t)&udynlink_external_malloc;
+    else if (!strcmp(name, "udynlink_external_free"))
+        return (uintptr_t)&udynlink_external_free;
+    else if (!strcmp(name, "udynlink_external_resolve_symbol"))
+        return (uintptr_t)&udynlink_external_resolve_symbol;
     else
         return test_resolve_symbol(name);
 }

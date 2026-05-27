@@ -538,89 +538,93 @@ When module A calls `math_add(a, b)` which is defined in module B:
 
 ### Two-Level Dispatch: Shared Module Gateway + Per-Function Stubs
 
-Instead of each thunk storing the callee's `ram_base` redundantly, we use a **two-level dispatch**:
+Instead of each thunk redundantly storing the callee's `ram_base`, we use a **two-level dispatch** that shares the `ram_base` word across all stubs targeting the same module.
 
-1. **Per-module gateway** (shared): saves caller's `r9`, loads the callee's `ram_base`, calls the function via `r0`, restores `r9`.
-2. **Per-function stub** (one per cross-module function reference): loads the target function address into `r0`, then branches to the module's gateway.
+**Why two-level is a clear win:** A corrected size analysis shows the break-even is at N≈1, making it better for virtually all realistic cases (see table below).
 
-**Why this works:** `b gateway` does **not** modify `lr`. The original return address (from the caller in module A) remains intact in `lr`. The gateway pushes `lr`, calls the target function via `blx`, then pops `lr` back into `pc`.
+| Approach | v7m/v8m | v6m | Notes |
+|----------|---------|-----|-------|
+| Inline thunk (original) | 22 bytes | 26 bytes | `ram_base` repeated per function |
+| Two-level (stub + gateway) | 8N + 16 | 8N + 18 | `ram_base` stored once in gateway |
+| **Break-even N** | **N ≈ 1.1** | **N ≈ 1.1** | Two-level wins for all N ≥ 2 |
 
-### Per-Function Stub (v7m / v8m / v6m)
+### Per-Function Stub (all architectures)
 
 ```asm
-stub_math_add:                     ; one per cross-module function reference
-    ldr     r0, [pc, #4]           ; load func_addr into r0
+stub_math_add:                     ; 8 bytes, one per cross-module function reference
+    ldr     r0, [pc, #0]           ; load func_addr into r0 (loads from .word below)
     b       gateway_B              ; branch to module B's shared gateway
     .word   math_add               ; patched: actual function address
 ```
 
-Size: **12 bytes** (2 instructions + 1 word).
+The `b` instruction does **not** modify `lr`. The caller's return address in `lr` remains intact. The gateway pushes `lr`, calls the target via `blx`, then pops `lr` back into `pc`.
+
+**Stub size: 8 bytes** (2 instructions + 1 word). The `b` offset is patched at allocation time based on the distance to the module's gateway.
 
 ### Per-Module Gateway (v7m / v8m)
 
+The gateway is generated at load time by copying a **flash-resident template** into the thunk pool and patching the `ram_base` word.
+
+**Template (16 bytes, stored in flash as `const uint8_t[]`):**
 ```asm
-gateway_B:                          ; one per dependency module
-    push    {r9, lr}               ; save caller's r9 and return address
-    ldr     r9, [pc, #8]           ; load B->ram_base from literal pool
-    blx     r0                     ; call func_addr (passed in r0 from stub)
-    pop     {r9, pc}               ; restore r9 and return
-    .word   B->ram_base            ; patched once when module B is loaded
+gateway_B:
+    push    {r9, lr}               ; 32-bit (r9 is high register)
+    ldr     r9, [pc, #4]           ; 16-bit, loads from .word below
+    blx     r0                     ; 16-bit, call func_addr (r0 from stub)
+    pop     {r9, pc}               ; 32-bit
+    .word   B->ram_base            ; 4 bytes, patched at load time
 ```
 
-Size: **16 bytes**.
+**Gateway size: 16 bytes.**
 
 ### Per-Module Gateway (v6m / M0)
 
-M0 lacks `push {r9, lr}` (arbitrary register sets) and `blx` with high registers.
+M0 lacks `push {r9, lr}` (arbitrary register sets) and `blx` with high registers. The template uses `r4` as scratch:
 
+**Template (18 bytes, stored in flash as `const uint8_t[]`):**
 ```asm
 gateway_B:
-    mov     r2, r9                 ; r2 = caller's r9 (save in low reg)
-    push    {r2, lr}               ; push caller's r9 and lr
-    ldr     r2, [pc, #8]           ; load B->ram_base
-    mov     r9, r2                 ; r9 = callee's ram_base
-    mov     r12, r0                ; r12 = func_addr (r12 is IP, scratch)
-    bl      .L_m0_veneer           ; PC-relative call
-    pop     {r2, r3}               ; r2 = saved r9, r3 = saved lr
-    mov     r9, r2                 ; restore caller's r9
-    bx      r3                     ; return
-.L_m0_veneer:
-    bx      r12                    ; indirect call to func_addr
-    .word   B->ram_base
+    push    {r4, lr}               ; 16-bit
+    mov     r4, r9                 ; 16-bit, save caller's r9 in r4
+    ldr     r2, [pc, #8]           ; 16-bit, load ram_base
+    mov     r9, r2                 ; 16-bit, set callee's r9
+    blx     r0                     ; 16-bit, call func_addr (r0 from stub)
+    mov     r9, r4                 ; 16-bit, restore caller's r9
+    pop     {r4, pc}               ; 16-bit
+    .word   B->ram_base            ; 4 bytes, patched at load time
 ```
 
-Size: **24 bytes**.
+**Gateway size: 18 bytes.**
 
-### Memory Comparison
+### Template-Based Generation (No Hand-Written Assembly Files)
 
-For module A referencing **N** functions from module B:
+The gateway and stub templates are stored as **`const uint8_t` arrays in C code** (not separate `.S` files). At load time, the dependency manager:
 
-| Design | v7m/v8m Size | v6m Size |
-|--------|-------------|----------|
-| Original (inline ram_base per thunk) | 16N | 16N |
-| Two-level (gateway + stubs) | 12N + 16 | 12N + 24 |
-| **Savings for N=20** | **64 bytes** | **56 bytes** |
+1. Allocates RAM from the thunk pool.
+2. `memcpy` the appropriate template from flash into the allocated slot.
+3. Patches the `.word` value(s) and the `b` offset.
 
-The two-level approach eliminates the duplicate `ram_base` word from every thunk.
+This approach:
+- **Avoids separate assembly files** and toolchain complexity.
+- **Keeps the template bytes verifiable** — they can be tested by disassembling the `const uint8_t` array with `arm-none-eabi-objdump`.
+- **Supports all three architectures** with three small template arrays (~16-18 bytes each).
 
-### Shared Trampoline in C (not assembly)
+### Thunk Pool Layout
 
-The gateway is implemented as a **`__attribute__((naked))` C function** with inline assembly, rather than a separate `.S` file:
+The thunk pool allocates per-module blocks contiguously:
 
-```c
-__attribute__((naked, section("udynlink_gateways"), used))
-static void udynlink_gateway_v7m(void) {
-    __asm volatile(
-        "push   {r9, lr}        \n"
-        "ldr    r9, [pc, #8]    \n"  // load callee ram_base from literal pool
-        "blx    r0              \n"  // call func_addr (r0 passed from stub)
-        "pop    {r9, pc}        \n"
-        ".word  0                 \n"  // patched by udynlink_dep_link_gateway()
-    );
-}
+```
+[stub1]          // 8 bytes
+[stub2]          // 8 bytes
+...
+[stubN]          // 8 bytes
+[gateway_B]      // 16 bytes (v7m) or 18 bytes (v6m)
+[stub1]          // 8 bytes (next module)
+...
+[gateway_C]      // 16/18 bytes
 ```
 
-The `naked` attribute prevents the compiler from generating a prologue/epilogue. The `section` attribute places all gateways in a contiguous region so the `b` instruction in stubs can reach them (±2 KB on M0, ±16 MB on v7m+).
+All stubs for module B branch to `gateway_B` via `b`. The distance is `8*(N-1)` bytes from the first stub, well within the `b` range (±2 KB Thumb-1, ±16 MB Thumb-2).
 
 ### Thunk Pool
 
@@ -697,7 +701,7 @@ The manager is host-allocated and host-managed. The standalone header provides i
 | `udynlink_dep_is_dependency(name)` | Check if a symbol name is a dep declaration |
 | `udynlink_dep_get_name(name)` | Extract module name from dep symbol |
 | `udynlink_thunk_pool_init(pool, buf, size)` | Initialize a thunk pool |
-| `udynlink_thunk_alloc_stub(pool, func)` | Allocate a per-function stub (12 bytes) |
+| `udynlink_thunk_alloc_stub(pool, func)` | Allocate a per-function stub (8 bytes) |
 | `udynlink_thunk_link_gateway(pool, mod)` | Allocate/return a per-module gateway for `mod` |
 | `udynlink_dep_mgr_init(mgr, buf, cap)` | Initialize dependency manager |
 | `udynlink_dep_load(mgr, mod, base, addr, size, mode, pool)` | Load module with auto-deps and thunks |
@@ -734,7 +738,7 @@ However, we may want to add an optional `--gen-deps-header` flag to mkmodule tha
 
 1. **Dummy symbols vs. header fields** — Dummy symbols leverage the existing symbol table and relocation machinery. No header format changes, no mkmodule changes for basic usage.
 2. **Thunks vs. direct calls** — Thunks are the only way to make cross-module calls safe on all load modes (COPY_ALL, COPY_TEXT_DATA, XIP). Direct `bl` to another module's function leaves `r9` pointing to the caller's LOT.
-3. **Two-level dispatch (gateway + stub)** — Per-module gateway stores `ram_base` once (16 bytes v7m, 24 bytes v6m). Per-function stubs are 12 bytes each. Saves ~4 bytes per cross-module function reference compared to inline thunks.
+3. **Two-level dispatch (gateway + stub)** — Per-module gateway stores `ram_base` once (16 bytes v7m, 18 bytes v6m). Per-function stubs are 8 bytes each. Saves ~14 bytes per cross-module function reference compared to inline thunks (22 bytes v7m, 26 bytes v6m). Break-even at N≈1.
 4. **Trampoline in C, not assembly** — The gateway is a `__attribute__((naked))` C function with inline assembly. Easier to maintain than a separate `.S` file, but requires careful section placement to keep `b` range valid.
 4. **Single callback vs. multiple callbacks** — The host still implements only `udynlink_external_resolve_symbol()`. The standalone header provides helpers the host calls from inside that one callback.
 5. **No automatic module unloading** — `udynlink_dep_unload()` decrements refcounts but doesn't cascade. The host decides when to actually call `udynlink_unload_module()`. This avoids surprise unload side effects.
@@ -756,7 +760,7 @@ However, we may want to add an optional `--gen-deps-header` flag to mkmodule tha
 Please confirm or refine:
 
 1. ✅ **Dummy symbol approach confirmed** — `.udynlink.mod.requires.{name}` as EXTERN symbols.
-2. ✅ **Two-level dispatch confirmed** — Per-module gateway (16 bytes v7m, 24 bytes v6m) + per-function stub (12 bytes). Saves ~4 bytes per cross-module function reference vs. inline thunks.
+2. ✅ **Two-level dispatch confirmed** — Per-module gateway (16 bytes v7m, 18 bytes v6m) + per-function stub (8 bytes). Saves ~14 bytes per cross-module function reference vs. inline thunks (22/26 bytes). Break-even at N≈1.
 3. ✅ **Trampoline in C confirmed** — `__attribute__((naked))` with inline assembly. Easier to maintain than separate `.S` files.
 4. ✅ **No core changes confirmed** — Standalone header uses only existing v3.0 APIs.
 5. ✅ **Data symbols confirmed** — Direct address resolution, no thunks. Functions need stubs + gateway.

@@ -1,0 +1,418 @@
+#!/usr/bin/env python3
+"""
+mkwasm2c-module — Compile a .wasm binary to a udynlink loadable .bin module.
+
+This script wraps the wasm2c + mkmodule pipeline:
+  1. Runs wasm2c on the input .wasm
+  2. Patches the generated .c for bare-metal (NDEBUG, builtin string ops)
+  3. Inspects the module for memory usage and export signatures
+  4. Writes a setup shim + optional export wrappers
+  5. Compiles everything with mkmodule (or reuses its core logic)
+
+Usage:
+  python3 mkwasm2c-module [options] input.wasm
+"""
+
+import os
+import sys
+import re
+import shutil
+import tempfile
+import subprocess
+import argparse
+
+# Ensure we can import scripts/ modules
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(SCRIPT_DIR)
+sys.path.insert(0, SCRIPT_DIR)
+
+import targets
+from udynlink_utils import execute, error, debug, warn, get_tool, split_fname, change_ext
+
+# ---------------------------------------------------------------------------
+# Runtime source paths (relative to repo root)
+# ---------------------------------------------------------------------------
+RUNTIME_DIR = os.path.join(REPO_ROOT, "udynlink", "wasm2c_runtime")
+RUNTIME_C = os.path.join(RUNTIME_DIR, "wasm-rt-udynlink.c")
+RUNTIME_H = os.path.join(RUNTIME_DIR, "wasm-rt.h")
+
+# ---------------------------------------------------------------------------
+# Patch wasm2c-generated .c for bare-metal
+# ---------------------------------------------------------------------------
+
+def patch_wasm2c_generated(c_path, args):
+    """Patch a wasm2c-generated .c file for bare-metal udynlink compilation."""
+    with open(c_path, "r") as f:
+        text = f.read()
+
+    # Insert #define NDEBUG at the very top to neutralise assert() calls
+    if not text.startswith("#define NDEBUG"):
+        text = "#define NDEBUG\n" + text
+
+    # Replace heavy string.h includes with builtin mappings so we don't pull
+    # in libc object code.  wasm2c only uses memcpy, memset, memmove, memcmp.
+    text = re.sub(
+        r'#include\s+<string\.h>',
+        '/* bare-metal: string.h replaced by builtins */\n'
+        '#define memset __builtin_memset\n'
+        '#define memcpy __builtin_memcpy\n'
+        '#define memmove __builtin_memmove\n'
+        '#define memcmp __builtin_memcmp',
+        text
+    )
+
+    # math.h is kept; unused float helper functions are stripped by --gc-sections.
+    # If the user knows the module is integer-only they can pass --build-flags
+    # to add -DNO_MATH_H or similar, but we leave it alone by default.
+
+    with open(c_path, "w") as f:
+        f.write(text)
+
+    if args.no_debug:
+        print("Patched %s for bare-metal build." % c_path)
+
+# ---------------------------------------------------------------------------
+# Inspect generated code for memory usage
+# ---------------------------------------------------------------------------
+
+def inspect_memory_usage(c_path):
+    """Scan the generated .c for wasm_rt_allocate_memory calls and memory.grow."""
+    with open(c_path, "r") as f:
+        text = f.read()
+
+    has_grow = "wasm_rt_grow_memory" in text
+
+    # Look for: wasm_rt_allocate_memory(&instance->..., initial, max, is64)
+    m = re.search(
+        r'wasm_rt_allocate_memory\s*\(\s*&[^,]+,\s*(\d+),\s*(\d+),\s*(\d+)\s*\)',
+        text
+    )
+    if m:
+        initial_pages = int(m.group(1))
+        max_pages = int(m.group(2))
+        is64 = bool(int(m.group(3)))
+    else:
+        initial_pages = 0
+        max_pages = 0
+        is64 = False
+
+    return {
+        "has_memory": m is not None,
+        "has_grow": has_grow,
+        "initial_pages": initial_pages,
+        "max_pages": max_pages,
+        "is64": is64,
+    }
+
+# ---------------------------------------------------------------------------
+# Parse exports from generated header
+# ---------------------------------------------------------------------------
+
+def parse_exports(h_path):
+    """Extract export signatures from the generated header.
+
+    Returns a list of dicts:
+      { 'wasm_name': 'add', 'c_name': 'w2c_add_add',
+        'ret': 'u32', 'params': ['w2c_add*', 'u32', 'u32'] }
+    """
+    with open(h_path, "r") as f:
+        text = f.read()
+
+    exports = []
+    # Match comment /* export: 'name' */ followed by a function declaration
+    pattern = re.compile(
+        r"/\*\s*export:\s*'([^']+)'\s*\*/\s*"
+        r"([a-zA-Z0-9_]+)\s+"
+        r"([a-zA-Z0-9_]+)\s*\(([^)]*)\)\s*;"
+    )
+    for m in pattern.finditer(text):
+        ret_type = m.group(2)
+        c_name = m.group(3)
+        params_str = m.group(4).strip()
+        params = [p.strip() for p in params_str.split(",") if p.strip()]
+        exports.append({
+            "wasm_name": m.group(1),
+            "c_name": c_name,
+            "ret": ret_type,
+            "params": params,
+        })
+
+    return exports
+
+# ---------------------------------------------------------------------------
+# Generate shim file
+# ---------------------------------------------------------------------------
+
+def generate_shim(shim_path, module_name, h_name, mem_info, exports, args):
+    """Write a setup shim that configures the runtime and wraps exports."""
+
+    lines = []
+    lines.append("/* Auto-generated shim for wasm2c -> udynlink */")
+    lines.append("")
+    lines.append('#include "%s"' % h_name)
+    lines.append("")
+
+    # Memory model
+    if args.static_memory:
+        lines.append("#define WASM_RT_STATIC_MEMORY")
+        if mem_info["has_memory"]:
+            lines.append("#define WASM_RT_INITIAL_PAGES %d" % mem_info["initial_pages"])
+            if args.custom_page_size:
+                lines.append("#define WASM_RT_PAGE_SIZE %d" % args.custom_page_size)
+    elif args.dynamic_memory:
+        # Nothing special needed; runtime will malloc on instantiate
+        pass
+    else:
+        # Auto-detect: static if no memory.grow, else dynamic
+        if mem_info["has_memory"] and not mem_info["has_grow"]:
+            lines.append("#define WASM_RT_STATIC_MEMORY")
+            lines.append("#define WASM_RT_INITIAL_PAGES %d" % mem_info["initial_pages"])
+            if args.custom_page_size:
+                lines.append("#define WASM_RT_PAGE_SIZE %d" % args.custom_page_size)
+
+    # Custom trap handler
+    if args.trap_handler:
+        lines.append("")
+        lines.append("#define WASM_RT_TRAP_HANDLER %s" % args.trap_handler)
+        lines.append("void %s(wasm_rt_trap_t code) { (void)code; }" % args.trap_handler)
+        # Note: the runtime's weak wasm_rt_trap_handler will be overridden by
+        # a strong definition if the user links one.  We just document it here.
+
+    # Custom malloc / free hooks
+    if args.malloc:
+        lines.append("")
+        lines.append("void* %s(size_t);" % args.malloc)
+        lines.append("void* wasm_rt_malloc(size_t size) { return %s(size); }" % args.malloc)
+    if args.free:
+        lines.append("")
+        lines.append("void %s(void*);" % args.free)
+        lines.append("void wasm_rt_mem_free(void* p) { %s(p); }" % args.free)
+
+    lines.append("")
+
+    # Instance type and instantiate function names
+    instance_type = "w2c_%s" % module_name
+    instantiate_func = "wasm2c_%s_instantiate" % module_name
+
+    # Static instance for stateful modules (memory / globals)
+    if mem_info["has_memory"] or exports:
+        lines.append("static %s __wasm_instance;" % instance_type)
+        lines.append("static int __wasm_instantiated = 0;")
+        lines.append("")
+        lines.append("static void __wasm_ensure_instantiated(void) {")
+        lines.append("    if (!__wasm_instantiated) {")
+        lines.append("        %s(&__wasm_instance);" % instantiate_func)
+        lines.append("        __wasm_instantiated = 1;")
+        lines.append("    }")
+        lines.append("}")
+        lines.append("")
+
+    # Export wrappers — each wrapped function is exported for the host
+    for exp in exports:
+        c_name = exp["c_name"]
+        wrapper_name = exp["wasm_name"]  # host-visible name
+        ret = exp["ret"]
+        params = exp["params"]
+
+        # Build parameter list for the wrapper, skipping the instance pointer
+        wrapper_params = []
+        call_args = ["&__wasm_instance"]
+        for i, p in enumerate(params[1:]):  # skip instance pointer
+            pname = "p%d" % i
+            wrapper_params.append("%s %s" % (p, pname))
+            call_args.append(pname)
+
+        lines.append("%s %s(%s) {" % (
+            ret,
+            wrapper_name,
+            ", ".join(wrapper_params) if wrapper_params else "void"
+        ))
+        lines.append("    __wasm_ensure_instantiated();")
+        if ret == "void":
+            lines.append("    %s(%s);" % (c_name, ", ".join(call_args)))
+        else:
+            lines.append("    return %s(%s);" % (c_name, ", ".join(call_args)))
+        lines.append("}")
+        lines.append("")
+
+    # Default test() entry point if there are no exports (rare)
+    if not exports:
+        lines.append("/* No exports found — provide a dummy test() */")
+        lines.append("int test(void) { return 1; }")
+        lines.append("")
+
+    with open(shim_path, "w") as f:
+        f.write("\n".join(lines))
+
+# ---------------------------------------------------------------------------
+# Build via mkmodule
+# ---------------------------------------------------------------------------
+
+def build_with_mkmodule(sources, output_bin, output_header_dir, args):
+    """Invoke mkmodule on the given sources in the current directory."""
+    cmd_parts = [
+        sys.executable,
+        os.path.join(SCRIPT_DIR, "mkmodule"),
+        "--target", args.target,
+        "--mcpu", args.mcpu,
+        "-O", args.opt_level,
+        "--bin-name", output_bin,
+    ]
+    if args.gen_c_header:
+        cmd_parts += ["--gen-c-header", "--header-path", output_header_dir]
+    if args.public_symbols:
+        cmd_parts += ["--public-symbols", args.public_symbols]
+    if args.no_prologue:
+        cmd_parts += ["--no-prologue"]
+    if args.mod_version:
+        cmd_parts += ["--mod-version", args.mod_version]
+    if args.udynlink_version:
+        cmd_parts += ["--udynlink-version", args.udynlink_version]
+    if args.build_flags:
+        cmd_parts += ["--build-flags", args.build_flags]
+    if getattr(args, 'no_verbose', False):
+        cmd_parts.append("--no-verbose")
+    if getattr(args, 'no_debug', False):
+        cmd_parts.append("--no-debug")
+
+    cmd_parts += sources
+
+    cmd = " ".join(cmd_parts)
+    res = os.system(cmd)
+    if res != 0:
+        error("mkmodule failed (exit code %d)" % res)
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(description="Compile .wasm to udynlink .bin")
+    parser.add_argument("input", help="Input .wasm file")
+    parser.add_argument("--target", default=targets.DEFAULT_TARGET,
+                        help="Target name from targets.py (default: %s)" % targets.DEFAULT_TARGET)
+    parser.add_argument("--mcpu", default="cortex-m4", help="Target CPU (default: cortex-m4)")
+    parser.add_argument("-O", dest="opt_level", default="s",
+                        help="Optimization level: 0, s, 2, 3, z (default: s)")
+    parser.add_argument("--bin-name", default=None, help="Output binary path")
+    parser.add_argument("--gen-c-header", action="store_true",
+                        help="Generate embeddable C header")
+    parser.add_argument("--header-path", default=".",
+                        help="Path for generated header (default: current dir)")
+    parser.add_argument("--public-symbols", default=None,
+                        help="Comma-separated list of symbols to export")
+    parser.add_argument("--no-prologue", action="store_true",
+                        help="Skip assembly prologue generation")
+    parser.add_argument("--mod-version", default="1.0",
+                        help="Module ABI version (default: 1.0)")
+    parser.add_argument("--udynlink-version", default="3.0",
+                        help="Loader ABI version (default: 3.0)")
+    parser.add_argument("--static-memory", action="store_true",
+                        help="Force static linear memory model")
+    parser.add_argument("--dynamic-memory", action="store_true",
+                        help="Force dynamic linear memory model")
+    parser.add_argument("--custom-page-size", type=int, default=None,
+                        help="Override default 65536-byte Wasm page size")
+    parser.add_argument("--trap-handler", default=None,
+                        help="Custom trap handler function name")
+    parser.add_argument("--malloc", default=None,
+                        help="Custom malloc hook name (default: udynlink_external_malloc)")
+    parser.add_argument("--free", default=None,
+                        help="Custom free hook name (default: udynlink_external_free)")
+    parser.add_argument("--build-flags", default=None,
+                        help="Extra compiler flags (prepended to compile command)")
+    parser.add_argument("--no-export-wrappers", action="store_true",
+                        help="Do not auto-generate export wrapper functions")
+    parser.add_argument("--no-verbose", action="store_true")
+    parser.add_argument("--no-debug", action="store_true")
+
+    args = parser.parse_args()
+
+    # Validate target
+    try:
+        target_meta = targets.get_target(args.target)
+    except ValueError as e:
+        error(str(e))
+
+    if not any(a.startswith("--mcpu") for a in sys.argv[1:]):
+        args.mcpu = target_meta["mcpu"]
+
+    # Paths
+    input_wasm = os.path.abspath(args.input)
+    if not os.path.isfile(input_wasm):
+        error("Input file not found: %s" % input_wasm)
+
+    path, basename, _ = split_fname(input_wasm)
+    module_name = basename  # e.g. "add" from add.wasm
+
+    if args.bin_name is None:
+        args.bin_name = os.path.join(path, "mod_%s.bin" % module_name)
+    else:
+        args.bin_name = os.path.abspath(args.bin_name)
+
+    # Work in a temp directory so we don't pollute the source tree
+    tmpdir = tempfile.mkdtemp(prefix="mkwasm2c_")
+    try:
+        # Copy input wasm into temp dir
+        tmp_wasm = os.path.join(tmpdir, basename + ".wasm")
+        shutil.copy2(input_wasm, tmp_wasm)
+
+        # Run wasm2c
+        generated_c = os.path.join(tmpdir, basename + ".c")
+        generated_h = os.path.join(tmpdir, basename + ".h")
+        wasm2c_cmd = "wasm2c %s -o %s" % (tmp_wasm, generated_c)
+        if not args.no_verbose:
+            print("[Executing] " + wasm2c_cmd)
+        res = os.system(wasm2c_cmd)
+        if res != 0:
+            error("wasm2c failed (exit code %d)" % res)
+
+        # Patch generated C file
+        patch_wasm2c_generated(generated_c, args)
+
+        # Inspect memory usage
+        mem_info = inspect_memory_usage(generated_c)
+        if not args.no_debug:
+            print("[debug] Memory info: %s" % mem_info)
+
+        # Parse exports
+        exports = parse_exports(generated_h)
+        if not args.no_debug:
+            print("[debug] Exports found: %s" % [e["wasm_name"] for e in exports])
+
+        # Generate shim
+        shim_name = basename + "_udynlink_shim.c"
+        shim_path = os.path.join(tmpdir, shim_name)
+        if args.no_export_wrappers:
+            exports = []
+        generate_shim(shim_path, module_name, basename + ".h", mem_info, exports, args)
+
+        # Copy runtime into temp dir so mkmodule builds everything in one place
+        shutil.copy2(RUNTIME_C, os.path.join(tmpdir, "wasm-rt-udynlink.c"))
+        shutil.copy2(RUNTIME_H, os.path.join(tmpdir, "wasm-rt.h"))
+        # Also copy udynlink_externals.h which the runtime includes
+        externals_h = os.path.join(REPO_ROOT, "udynlink", "udynlink_externals.h")
+        shutil.copy2(externals_h, os.path.join(tmpdir, "udynlink_externals.h"))
+
+        # Build sources list (shim first so bin name is based on it)
+        sources = [shim_name, basename + ".c", "wasm-rt-udynlink.c"]
+
+        # Run mkmodule from the temp directory
+        os.chdir(tmpdir)
+        build_with_mkmodule(sources, args.bin_name, args.header_path, args)
+
+        # Copy generated header if requested
+        if args.gen_c_header:
+            header_name = os.path.splitext(os.path.basename(args.bin_name))[0] + "_module_data.h"
+            src_header = os.path.join(args.header_path, header_name)
+            if os.path.isfile(src_header):
+                print("Generated header: %s" % src_header)
+
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    print("Done. Binary: %s" % args.bin_name)
+
+
+if __name__ == "__main__":
+    main()

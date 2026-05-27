@@ -191,7 +191,14 @@ def test_one(full_path, opt):
         with open(full_path + "/output_build_%s.txt" % aopt, 'w') as fout:
             fout.write(out)
         objdump = f"{os.environ.get('UDYNLINK_CC_PREFIX', 'arm-none-eabi-')}objdump"
-        cmd = f"{objdump} -Dztr --source ./{os.path.splitext(m[0])[0]}.elf"
+        # Skip leading -D flags when determining the objdump target (they are not files)
+        objdump_target = m[0]
+        idx = 0
+        while idx < len(m) and m[idx].startswith("-D"):
+            idx += 1
+        if idx < len(m):
+            objdump_target = m[idx]
+        cmd = f"{objdump} -Dztr --source ./{os.path.splitext(objdump_target)[0]}.elf"
         res, out = run_cmd(cmd)
         out = out.decode()
         with open(full_path + "/output_objdump_%s.txt" % aopt, 'w') as fout:
