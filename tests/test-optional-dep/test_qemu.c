@@ -8,10 +8,13 @@
 static int test_optional_dep_single(udynlink_load_mode_t mode) {
     udynlink_module_t consumer;
     udynlink_module_t logging;
+    const udynlink_module_t *consumer_deps[4];
     int ok = 0;
 
     memset(&consumer, 0, sizeof(consumer));
     memset(&logging, 0, sizeof(logging));
+    consumer.deps = consumer_deps;
+    consumer.max_deps = 4;
 
     // Mark logging as "loading" so it returns DEFERRED
     udynlink_test_add_loading_name("mod_logging");

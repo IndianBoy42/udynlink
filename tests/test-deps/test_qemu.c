@@ -11,8 +11,12 @@ static int test_dep_single(udynlink_load_mode_t mode) {
     udynlink_module_t mod_consumer;
     int ok = 0;
 
+    const udynlink_module_t *consumer_deps[4];
+
     memset(&mod_provider, 0, sizeof(mod_provider));
     memset(&mod_consumer, 0, sizeof(mod_consumer));
+    mod_consumer.deps = consumer_deps;
+    mod_consumer.max_deps = 4;
 
     if (test_load_module(&mod_provider, mod_provider_module_data, NULL, 0, mode))
         return 0;

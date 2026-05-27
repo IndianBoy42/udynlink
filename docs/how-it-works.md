@@ -656,7 +656,7 @@ During `udynlink_load_module`:
 1. The loader reads each dependency name from the dependency string table.
 2. For each name, it calls `udynlink_external_get_module_handle(dep_name)`.
 3. If any dependency is not found, loading fails with `UDYNLINK_ERR_LOAD_MISSING_DEP`.
-4. Valid dependency handles are stored in `p_mod->deps[]`, and each dependency's `dep_refcount` is incremented.
+4. Valid dependency handles are stored in `p_mod->deps`, and each dependency's `dep_refcount` is incremented.
 
 ### Unload Protection
 
@@ -687,15 +687,15 @@ Hosts that need to load circular dependency graphs can use **deferred dependency
 #define UDYNLINK_DEP_DEFERRED ((udynlink_module_t*)1)
 ```
 
-When the loader sees this sentinel, it skips the dependency: no entry is added to `deps[]`, no `dep_refcount` is incremented, and loading continues. The deferred symbol's LOT slot is left at `0`.
+When the loader sees this sentinel, it skips the dependency: no entry is added to `deps`, no `dep_refcount` is incremented, and loading continues. The deferred symbol's LOT slot is left at `0`.
 
 After both modules are loaded, the host calls `udynlink_link_dependency(a, b)` to link them symmetrically:
 
-1. Checks if `a` declares `b` as a dependency and `b` is not yet in `a->deps[]`. If so, adds `b` and increments `b->dep_refcount`, then re-runs the three-tier EXTERN resolution chain for `a`.
+1. Checks if `a` declares `b` as a dependency and `b` is not yet in `a->deps`. If so, adds `b` and increments `b->dep_refcount`, then re-runs the three-tier EXTERN resolution chain for `a`.
 2. Repeats the check in the reverse direction (`b` → `a`).
 3. Returns `UDYNLINK_OK` even if nothing changed (idempotent).
 
-**Why re-resolve:** During initial load, an `EXTERN` symbol might have resolved from the host fallback (tier 3) because the dependency wasn't in `deps[]` yet. After linking, tier 2 (dependency module) should take precedence. A full re-scan is correct and the overhead is negligible for typical embedded modules.
+**Why re-resolve:** During initial load, an `EXTERN` symbol might have resolved from the host fallback (tier 3) because the dependency wasn't in `deps` yet. After linking, tier 2 (dependency module) should take precedence. A full re-scan is correct and the overhead is negligible for typical embedded modules.
 
 **Example:**
 
@@ -765,7 +765,7 @@ udynlink_error_t udynlink_link_symbol(udynlink_module_t *mod,
                                       uint32_t sym_addr);
 ```
 
-This scans the module's relocation table for entries referencing `sym_name` and overwrites the slot directly with `sym_addr`. It does not update `deps[]`, `dep_refcount`, or the symbol table. Use cases:
+This scans the module's relocation table for entries referencing `sym_name` and overwrites the slot directly with `sym_addr`. It does not update `deps`, `dep_refcount`, or the symbol table. Use cases:
 1. **Deferred host symbols** — the host knows the address now and wants to patch it directly.
 2. **Hot-patching** — replace a module's extern reference with a different implementation at runtime (e.g., a mock for testing).
 3. **Dynamic symbol tables** — the host maintains its own symbol table and pushes updates into loaded modules.

@@ -40,6 +40,24 @@ void udynlink_external_vprintf(const char *s, va_list va) {
     (void)va;
 }
 
+udynlink_error_t udynlink_check_arch_tag(uint16_t mod_arch, uint16_t host_arch) {
+    if ((mod_arch & UDYNLINK_ARCH_FAMILY_MASK) != (host_arch & UDYNLINK_ARCH_FAMILY_MASK)) {
+        UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, "Module architecture family mismatch (mod=0x%04X, host=0x%04X)\n", mod_arch, host_arch);
+        return UDYNLINK_ERR_LOAD_ARCH_MISMATCH;
+    }
+    uint16_t mod_float = (mod_arch >> UDYNLINK_ARCH_FLOAT_ABI_SHIFT) & 0x03;
+    uint16_t host_float = (host_arch >> UDYNLINK_ARCH_FLOAT_ABI_SHIFT) & 0x03;
+    if (mod_float == UDYNLINK_ARCH_FLOAT_ABI_HARD && host_float != UDYNLINK_ARCH_FLOAT_ABI_HARD) {
+        UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, "Module requires hard-float, host has soft-float\n");
+        return UDYNLINK_ERR_LOAD_ARCH_MISMATCH;
+    }
+    if (mod_float == UDYNLINK_ARCH_FLOAT_ABI_SOFTFP && host_float == UDYNLINK_ARCH_FLOAT_ABI_SOFT) {
+        UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, "Module requires softfp, host has soft-float\n");
+        return UDYNLINK_ERR_LOAD_ARCH_MISMATCH;
+    }
+    return UDYNLINK_OK;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Local macros and data
 
@@ -307,37 +325,14 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
         goto exit;
     }
 
-    // Check architecture tag compatibility
-    {
-        uint16_t host_arch = UDYNLINK_HOST_ARCH_TAG;
-        uint16_t mod_arch = p_header->arch_tag;
-        if ((mod_arch & UDYNLINK_ARCH_FAMILY_MASK) != (host_arch & UDYNLINK_ARCH_FAMILY_MASK)) {
-            UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, "Module architecture family mismatch (mod=0x%04X, host=0x%04X)\n", mod_arch, host_arch);
-            res = UDYNLINK_ERR_LOAD_ARCH_MISMATCH;
-            goto exit;
-        }
-        uint16_t mod_float = (mod_arch >> UDYNLINK_ARCH_FLOAT_ABI_SHIFT) & 0x03;
-        uint16_t host_float = (host_arch >> UDYNLINK_ARCH_FLOAT_ABI_SHIFT) & 0x03;
-        if (mod_float == UDYNLINK_ARCH_FLOAT_ABI_HARD && host_float != UDYNLINK_ARCH_FLOAT_ABI_HARD) {
-            UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, "Module requires hard-float, host has soft-float\n");
-            res = UDYNLINK_ERR_LOAD_ARCH_MISMATCH;
-            goto exit;
-        }
-        if (mod_float == UDYNLINK_ARCH_FLOAT_ABI_SOFTFP && host_float == UDYNLINK_ARCH_FLOAT_ABI_SOFT) {
-            UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, "Module requires softfp, host has soft-float\n");
-            res = UDYNLINK_ERR_LOAD_ARCH_MISMATCH;
-            goto exit;
-        }
-    }
-
     UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Processing module at %p named '%s' with load mode %d\n", base_addr, udynlink_get_module_name(p_mod), (int)load_mode);
 
     // Dependency validation (v2.0+ modules only)
     p_mod->num_deps = 0;
     p_mod->dep_refcount = 0;
     if (p_header->udynlink_version >= UDYNLINK_MAKE_VERSION(2, 0) && p_header->num_deps > 0) {
-        if (p_header->num_deps > UDYNLINK_MAX_DEPS) {
-            UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, "Module has %u dependencies, max is %u\n", p_header->num_deps, UDYNLINK_MAX_DEPS);
+        if (p_mod->deps == NULL || p_header->num_deps > p_mod->max_deps) {
+            UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, "Module has %u dependencies, buffer capacity is %u\n", p_header->num_deps, p_mod->max_deps);
             res = UDYNLINK_ERR_LOAD_MISSING_DEP;
             goto exit;
         }
@@ -374,7 +369,7 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
                 goto exit;
             }
             if (dep_mod == UDYNLINK_DEP_DEFERRED) {
-                // Skip: don't add to deps[], don't increment num_deps, don't increment refcount
+                // Skip: don't add to deps, don't increment num_deps, don't increment refcount
                 dep_str += strlen(dep_str) + 1;
                 continue;
             }
@@ -778,26 +773,6 @@ static udynlink_error_t udynlink_load_module_from_stream_impl(
         goto exit;
     }
 
-    {
-        uint16_t host_arch = UDYNLINK_HOST_ARCH_TAG;
-        uint16_t mod_arch = header->arch_tag;
-        if ((mod_arch & UDYNLINK_ARCH_FAMILY_MASK) != (host_arch & UDYNLINK_ARCH_FAMILY_MASK)) {
-            UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, "Module architecture family mismatch (mod=0x%04X, host=0x%04X)\n", mod_arch, host_arch);
-            res = UDYNLINK_ERR_LOAD_ARCH_MISMATCH;
-            goto exit;
-        }
-        uint16_t mod_float = (mod_arch >> UDYNLINK_ARCH_FLOAT_ABI_SHIFT) & 0x03;
-        uint16_t host_float = (host_arch >> UDYNLINK_ARCH_FLOAT_ABI_SHIFT) & 0x03;
-        if (mod_float == UDYNLINK_ARCH_FLOAT_ABI_HARD && host_float != UDYNLINK_ARCH_FLOAT_ABI_HARD) {
-            res = UDYNLINK_ERR_LOAD_ARCH_MISMATCH;
-            goto exit;
-        }
-        if (mod_float == UDYNLINK_ARCH_FLOAT_ABI_SOFTFP && host_float == UDYNLINK_ARCH_FLOAT_ABI_SOFT) {
-            res = UDYNLINK_ERR_LOAD_ARCH_MISMATCH;
-            goto exit;
-        }
-    }
-
     UDYNLINK_LOAD_SET_MODE(p_mod, load_mode);
     UDYNLINK_LOAD_CLR_STREAM_HDR(p_mod);
     p_mod->num_deps = 0;
@@ -812,7 +787,7 @@ static udynlink_error_t udynlink_load_module_from_stream_impl(
     }
 
     if (header->udynlink_version >= UDYNLINK_MAKE_VERSION(2, 0) && header->num_deps > 0) {
-        if (header->num_deps > UDYNLINK_MAX_DEPS) {
+        if (p_mod->deps == NULL || header->num_deps > p_mod->max_deps) {
             res = UDYNLINK_ERR_LOAD_MISSING_DEP;
             goto exit;
         }

@@ -18,7 +18,10 @@ static int test_circular_single(udynlink_load_mode_t mode) {
     printf("deps read ok\n");
 
     udynlink_module_t mod;
+    const udynlink_module_t *mod_deps[4];
     memset(&mod, 0, sizeof(mod));
+    mod.deps = mod_deps;
+    mod.max_deps = 4;
     udynlink_error_t err = udynlink_load_module(&mod, mod_self_dep_module_data, NULL, 0, mode);
     if (err == UDYNLINK_ERR_LOAD_CIRCULAR_DEP) {
         printf("circular dep detected ok\n");

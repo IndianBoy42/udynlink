@@ -28,8 +28,6 @@ These macros control the behavior of the udynlink loader. Some are **required** 
 | `UDYNLINK_HOST_ARCH_TAG` | No | `UDYNLINK_ARCH_TAG_CORTEX_M4` | Architecture tag of the host MCU. Used at load time to validate that a module was compiled for a compatible core family and float ABI. |
 | `UDYNLINK_LOT_BASE_ADDR` | No | `0x20000000` | Fixed RAM address where the loader writes the current module's `ram_base` before calling any module function. The module's assembly prologue reads this address to set `r9` (the LOT base register). |
 | `UDYNLINK_STREAM_BUF_SIZE` | No | `512` | Default work buffer size for streaming I/O operations. |
-| `UDYNLINK_MAX_DEPS` | No | `4` | Maximum number of dependencies a single module may declare. Affects the size of `udynlink_module_t`. |
-
 ### Sentinel Macros
 
 | Macro | Value | Description |
@@ -108,7 +106,8 @@ typedef struct _udynlink_module_t {
     uint8_t  info;           // Load mode and RAM ownership flags
     uint8_t  num_deps;       // Number of successfully resolved dependencies
     uint8_t  dep_refcount;   // Number of other modules that depend on this one
-    const struct _udynlink_module_t *deps[UDYNLINK_MAX_DEPS];
+    uint8_t  max_deps;       // Capacity of the deps array
+    const struct _udynlink_module_t **deps;    // Host-allocated dependency handle array
 } udynlink_module_t;
 ```
 
@@ -121,7 +120,8 @@ typedef struct _udynlink_module_t {
 | `info` | Bitfield storing the [load mode](#udynlink_load_mode_t) and whether the RAM was provided by the host (`FOREIGN_RAM`) or allocated by the loader. |
 | `num_deps` | Count of dependencies actually linked at load time. May be less than `p_header->num_deps` if some dependencies were deferred. |
 | `dep_refcount` | Reference count of modules that list this module as a dependency. `udynlink_unload_module` fails with `UDYNLINK_ERR_MODULE_HAS_DEPENDENTS` if this is non-zero. |
-| `deps[]` | Array of pointers to dependency module handles. Used for inter-module symbol resolution. Only entries `0` through `num_deps - 1` are valid. |
+| `max_deps` | Number of slots allocated in the `deps` array by the host. The loader refuses to load a module whose `num_deps` exceeds this value. |
+| `deps` | Pointer to a host-allocated array of dependency module handles. Used for inter-module symbol resolution. Only entries `0` through `num_deps - 1` are valid. May be `NULL` if the module has no dependencies. |
 
 ---
 
@@ -273,7 +273,7 @@ Error codes returned by loader functions.
 | `8` | `UDYNLINK_ERR_LOAD_DUPLICATE_NAME` | A module with the same name is already loaded. (Currently unused; the eh2k fork allows duplicate instances.) |
 | `10` | `UDYNLINK_ERR_LOAD_VERSION_MISMATCH` | The module's `udynlink_version` is greater than the loader's `UDYNLINK_LOADER_ABI_VERSION`. |
 | `11` | `UDYNLINK_ERR_LOAD_ARCH_MISMATCH` | The module's `arch_tag` is incompatible with the host (different core family or stricter float ABI). |
-| `12` | `UDYNLINK_ERR_LOAD_MISSING_DEP` | A declared dependency was not found, the dependency string table is missing, or `num_deps > UDYNLINK_MAX_DEPS`. |
+| `12` | `UDYNLINK_ERR_LOAD_MISSING_DEP` | A declared dependency was not found, the dependency string table is missing, or `num_deps` exceeds the host-provided `max_deps` capacity. |
 | `13` | `UDYNLINK_ERR_LOAD_CIRCULAR_DEP` | A circular dependency was detected: a module depends on itself, or the host reported a dependency is already being loaded via `udynlink_external_is_module_loading()`. |
 | `14` | `UDYNLINK_ERR_LOAD_IO_ERROR` | A streaming read operation failed (returned `-1` or short count). |
 | `15` | `UDYNLINK_ERR_MODULE_HAS_DEPENDENTS` | `udynlink_unload_module` was called on a module that other loaded modules still depend on. |
@@ -576,7 +576,7 @@ Links a dependency between two already-loaded modules.
 
 **Behavior:**
 
-1. Checks if `a`'s header lists `b` as a dependency and `b` is not yet in `a->deps[]`. If so, adds `b` and increments `b->dep_refcount`, then re-resolves all EXTERN relocations in `a`.
+1. Checks if `a`'s header lists `b` as a dependency and `b` is not yet in `a->deps`. If so, adds `b` and increments `b->dep_refcount`, then re-resolves all EXTERN relocations in `a`.
 2. Repeats the check in the reverse direction (`b` → `a`).
 3. Returns `UDYNLINK_OK` even if neither direction applies.
 
@@ -585,7 +585,7 @@ Links a dependency between two already-loaded modules.
 - Linking optional dependencies after they are loaded later.
 - Re-resolving symbols when a dependency becomes available.
 
-**Thread safety:** This function reads and writes `deps[]`, `num_deps`, and `dep_refcount` on both modules. The host must ensure no concurrent load/unload operations are in progress. See [Thread Safety](integrating-as-host.md#thread-safety-and-concurrency).
+**Thread safety:** This function reads and writes `deps`, `num_deps`, and `dep_refcount` on both modules. The host must ensure no concurrent load/unload operations are in progress. See [Thread Safety](integrating-as-host.md#thread-safety-and-concurrency).
 
 ---
 
@@ -615,7 +615,7 @@ Directly patches a symbol's relocation slot in a loaded module.
 **Behavior:**
 - Scans the module's relocation table for entries referencing `sym_name`.
 - For each matching relocation (any type), overwrites the slot with `sym_addr`.
-- Does **not** update `deps[]`, `dep_refcount`, or the symbol table.
+- Does **not** update `deps`, `dep_refcount`, or the symbol table.
 
 **Use cases:**
 1. Deferred host symbols — host knows the address now and patches directly.
@@ -642,7 +642,7 @@ Checks whether all declared dependencies of a module are linked.
 |-----------|------|-------------|
 | `p_mod` | `const udynlink_module_t *` | Loaded module. |
 
-**Return value:** `1` if every dependency declared in the module header is present in `p_mod->deps[]`, `0` otherwise.
+**Return value:** `1` if every dependency declared in the module header is present in `p_mod->deps`, `0` otherwise.
 
 ---
 

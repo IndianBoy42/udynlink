@@ -474,7 +474,7 @@ uDynlink supports **opt-in deferred dependency loading** and **deferred symbol r
 This sentinel is returned by `udynlink_external_get_module_handle()` instead of a real module pointer. On ARM Cortex-M, address `0x00000001` is never a valid heap-allocated struct pointer, so it cannot collide with real handles.
 
 When the loader receives this sentinel for a dependency:
-- The dependency is **skipped**: no entry in `deps[]`, no `num_deps` increment, no `dep_refcount` increment.
+- The dependency is **skipped**: no entry in `deps`, no `num_deps` increment, no `dep_refcount` increment.
 - The module loads successfully.
 - Any `EXTERN` symbols from the deferred dependency fall through to tier 3 (host fallback) or resolve to `0`.
 
@@ -520,7 +520,7 @@ After deferred modules are loaded, call this to link them:
 udynlink_error_t udynlink_link_dependency(udynlink_module_t *a, udynlink_module_t *b);
 ```
 
-This function is **symmetric**: it checks both directions and links whichever is missing. After adding a dependency to `deps[]`, it re-runs the three-tier EXTERN resolution chain so that dependency symbols (tier 2) take precedence over host fallbacks (tier 3).
+This function is **symmetric**: it checks both directions and links whichever is missing. After adding a dependency to `deps`, it re-runs the three-tier EXTERN resolution chain so that dependency symbols (tier 2) take precedence over host fallbacks (tier 3).
 
 **Example:**
 
@@ -544,7 +544,7 @@ udynlink_error_t udynlink_link_symbol(udynlink_module_t *mod,
                                       uint32_t sym_addr);
 ```
 
-This patches relocation slots directly. It does not touch `deps[]`, `dep_refcount`, or the symbol table. Use it for hot-patching or dynamic symbol tables.
+This patches relocation slots directly. It does not touch `deps`, `dep_refcount`, or the symbol table. Use it for hot-patching or dynamic symbol tables.
 
 ### Query Helpers
 
@@ -552,7 +552,7 @@ Three small read-only APIs let hosts inspect module state:
 
 | Function | Purpose |
 |----------|---------|
-| `udynlink_is_module_fully_linked(p_mod)` | Returns `1` if all declared dependencies are present in `deps[]`. |
+| `udynlink_is_module_fully_linked(p_mod)` | Returns `1` if all declared dependencies are present in `deps`. |
 | `udynlink_get_linked_dependency(p_mod, name)` | Returns the handle of a linked dependency by name, or `NULL`. |
 | `udynlink_is_symbol_resolved(p_mod, name)` | Returns `1` if the symbol exists and has a non-zero value. |
 
@@ -1409,7 +1409,7 @@ The following shared state is **not protected**:
 | State | Where | Risk |
 |-------|-------|------|
 | `dep_refcount` on module handles | `udynlink_load_module` increments it; `udynlink_unload_module` checks and decrements it | A read-modify-write race can corrupt the refcount, allowing a module to be unloaded while dependents still reference it |
-| `p_mod` fields (`p_header`, `p_ram`, `info`, `num_deps`, `deps[]`) | Written during load; read during symbol lookup and unload | A partially-initialized handle visible to another context will cause hard faults |
+| `p_mod` fields (`p_header`, `p_ram`, `info`, `num_deps`, `deps`) | Written during load; read during symbol lookup and unload | A partially-initialized handle visible to another context will cause hard faults |
 | `debug_level` static variable | Written by `udynlink_set_debug_level` from any context | Benign in practice (eventual consistency), but technically a data race |
 | Host module registry (`g_loaded_modules` etc.) | Managed by host code alongside `udynlink_external_get_module_handle` | The host's own registry is equally unprotected; concurrent lookups while a module is being registered may find a partially-inserted entry |
 

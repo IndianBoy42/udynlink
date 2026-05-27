@@ -86,11 +86,6 @@ typedef enum {
     UDYNLINK_LOAD_MODE_XIP,
 } udynlink_load_mode_t;
 
-#ifndef UDYNLINK_MAX_DEPS
-/** Maximum number of dependencies a single module may declare. */
-#define UDYNLINK_MAX_DEPS 4
-#endif
-
 /**
  * @brief Sentinel returned by udynlink_external_get_module_handle() to defer a dependency.
  *
@@ -130,8 +125,10 @@ typedef struct _udynlink_module_t {
     uint8_t num_deps;
     /** Number of other loaded modules that list this module as a dependency. */
     uint8_t dep_refcount;
-    /** Array of pointers to dependency modules. */
-    const struct _udynlink_module_t *deps[UDYNLINK_MAX_DEPS];
+    /** Capacity of the @c deps array (number of slots the host allocated). */
+    uint8_t max_deps;
+    /** Array of pointers to dependency modules (host-allocated, may be NULL). */
+    const struct _udynlink_module_t **deps;
 } udynlink_module_t;
 
 /**
@@ -457,12 +454,34 @@ typedef struct {
 // Public interface
 
 /**
+ * @brief Check architecture tag compatibility between a module and the host.
+ *
+ * Compares the core family and float-ABI encoded in @p mod_arch against
+ * @p host_arch.  Returns ::UDYNLINK_OK if the module can safely run on the
+ * host, or ::UDYNLINK_ERR_LOAD_ARCH_MISMATCH if the families differ or the
+ * float-ABI requirements are incompatible.
+ *
+ * This is an optional pre-load check; neither udynlink_load_module() nor
+ * udynlink_load_module_from_stream() performs it automatically.  Call it
+ * before loading if your application cares about catching mismatches early.
+ *
+ * @param[in] mod_arch  Architecture tag from the module header (@c arch_tag).
+ * @param[in] host_arch Architecture tag of the host (typically
+ *                      ::UDYNLINK_HOST_ARCH_TAG).
+ *
+ * @return ::UDYNLINK_OK if compatible, ::UDYNLINK_ERR_LOAD_ARCH_MISMATCH otherwise.
+ */
+udynlink_error_t udynlink_check_arch_tag(uint16_t mod_arch, uint16_t host_arch);
+
+/**
  * @brief Load a module from a memory-mapped image.
  *
- * Validates the header, checks ABI version and architecture tag
- * compatibility, resolves dependencies, allocates RAM, copies sections
- * according to @p load_mode, applies relocations, and resolves extern
- * symbols via the host callbacks.
+ * Validates the header, checks ABI version, resolves dependencies, allocates
+ * RAM, copies sections according to @p load_mode, applies relocations, and
+ * resolves extern symbols via the host callbacks.
+ *
+ * Architecture tag compatibility is **not** checked by this function.  Call
+ * udynlink_check_arch_tag() beforehand if you want to enforce it.
  *
  * @param[out] p_mod      Module handle to populate on success. Must be
  *                       zero-initialized by the caller before the first call
@@ -635,6 +654,9 @@ uint8_t *udynlink_get_text_pointer(const udynlink_module_t *p_mod);
  * via callbacks.  XIP mode is not supported and returns
  * ::UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED.
  *
+ * Architecture tag compatibility is **not** checked by this function.  Call
+ * udynlink_check_arch_tag() beforehand if you want to enforce it.
+ *
  * @param[out] p_mod          Module handle to populate on success. Must be
  *                           zero-initialized by the caller before the first call
  *                           (e.g. via @c memset(p_mod, 0, sizeof(*p_mod))),
@@ -742,7 +764,7 @@ udynlink_error_t udynlink_link_dependency(udynlink_module_t *a, udynlink_module_
  *
  * Scans the module's relocation table for entries referencing @p sym_name and
  * overwrites the slot with @p sym_addr.  This is a low-level patch: it does
- * not update refcounts, deps[], or the three-tier resolution chain.
+ * not update refcounts, deps, or the three-tier resolution chain.
  *
  * @param[in] p_mod   Pointer to the loaded module.
  * @param[in] sym_name Null-terminated symbol name.
@@ -759,7 +781,7 @@ udynlink_error_t udynlink_link_symbol(udynlink_module_t *p_mod, const char *sym_
  * @param[in] p_mod Pointer to a loaded module.
  *
  * @return 1 if every dependency declared in the module header is present
- *         in p_mod->deps[], 0 otherwise.
+ *         in p_mod->deps, 0 otherwise.
  */
 int udynlink_is_module_fully_linked(const udynlink_module_t *p_mod);
 

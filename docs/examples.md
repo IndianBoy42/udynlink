@@ -854,7 +854,7 @@ int main(void) {
 ### Key points
 
 - `udynlink_link_symbol()` patches relocation slots directly.
-- It does not update `deps[]`, `dep_refcount`, or the symbol table.
+- It does not update `deps`, `dep_refcount`, or the symbol table.
 - Useful for testing, A/B switching, and dynamic plugin updates.
 
 ---

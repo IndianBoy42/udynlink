@@ -8,10 +8,16 @@
 static int test_circular_link_single(udynlink_load_mode_t mode) {
     udynlink_module_t mod_a;
     udynlink_module_t mod_b;
+    const udynlink_module_t *a_deps[4];
+    const udynlink_module_t *b_deps[4];
     int ok = 0;
 
     memset(&mod_a, 0, sizeof(mod_a));
     memset(&mod_b, 0, sizeof(mod_b));
+    mod_a.deps = a_deps;
+    mod_a.max_deps = 4;
+    mod_b.deps = b_deps;
+    mod_b.max_deps = 4;
 
     // Pre-register both as "loading" so the callback returns DEFERRED
     udynlink_test_add_loading_name("mod_a");
