@@ -686,6 +686,8 @@ Incrementally resolves unresolved `EXTERN` relocations in a loaded module.
 - Linking optional dependencies after they are loaded later.
 - Bulk-linking multiple dependencies efficiently (only zero slots are touched).
 
+> ⚠️ **Warning:** Resolving a dependency symbol so that module A can call module B does **not** automatically fix the LOT base register. When A calls B's resolved function, B's wrapper prologue still loads `r9` from the global `UDYNLINK_LOT_BASE_ADDR` word, which at that moment likely contains A's base. B will execute with the wrong `r9` unless the host manually rewrote the LOT base before the call. This is safe only for pure leaf functions that never access global data. See [Cross-Module Calls and the LOT Base](integrating-as-host.md#cross-module-calls-and-the-lot-base).
+
 **Thread safety:** This function reads `deps` and writes relocation slots. The host must ensure no concurrent load/unload operations are in progress. See [Thread Safety](integrating-as-host.md#thread-safety-and-concurrency).
 
 ---
@@ -717,6 +719,8 @@ Re-resolves **all** `EXTERN` relocations in a loaded module from scratch.
 **Use cases:**
 - Re-linking after adding a dependency that should override an existing host fallback symbol.
 - Explicit full re-resolution when the incremental behavior is insufficient.
+
+> ⚠️ **Warning:** Same LOT base limitation as `udynlink_link_incremental()`. Re-linking a dependency symbol does not fix the `r9` register at call time. See [Cross-Module Calls and the LOT Base](integrating-as-host.md#cross-module-calls-and-the-lot-base).
 
 **Thread safety:** Same as `udynlink_link_incremental`.
 
@@ -1209,6 +1213,8 @@ Looks up a loaded module by its name string.
 - `UDYNLINK_DEP_DEFERRED` — dependency exists but should not be linked yet; loader skips it.
 
 **Note:** The eh2k fork allows multiple instances of the same module name; this callback should return **any** matching instance for dependency resolution.
+
+> ⚠️ **Warning:** Returning a valid module handle here enables the loader to resolve the dependency's exported symbols into the consuming module's LOT. However, this does **not** make cross-module function calls safe at runtime. When module A calls a function resolved from dependency B, B's wrapper prologue loads `r9` from the global `UDYNLINK_LOT_BASE_ADDR` word, which may still contain A's base. See [Cross-Module Calls and the LOT Base](integrating-as-host.md#cross-module-calls-and-the-lot-base).
 
 ---
 

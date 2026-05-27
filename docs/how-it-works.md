@@ -547,6 +547,16 @@ With the introduction of module dependencies, resolution follows a three-tier se
 
 This allows modules to depend on symbols exported by other modules without the host firmware needing to re-export them explicitly.
 
+> ⚠️ **CRITICAL ARCHITECTURAL LIMITATION — Cross-Module Function Calls**
+>
+> When module **A** resolves a function symbol from dependency module **B**, the loader writes **B's exported wrapper address** into A's LOT slot. When A calls that address, B's assembly prologue loads `r9` from the single global word at `UDYNLINK_LOT_BASE_ADDR`. At that moment the word almost certainly still contains **A's** `ram_base`, because the host wrote it before calling A. Consequently B executes with `r9` pointing to **A's LOT**, not B's.
+>
+> **What breaks:** Any dependency function that accesses its own global variables, calls its own exported (wrappered) functions, or calls back into the original module will read/write the wrong memory and likely hard-fault.
+>
+> **What happens to work (accidentally):** Pure leaf functions that never touch global data via `r9` (e.g. `return a + b;` or `return 123;`). The existing QEMU tests (`test-deps`, `test-circular-deps-link`, `test-optional-dep`) all use such trivial leaf functions and therefore pass without exposing the bug.
+>
+> **Implication:** Module-to-module direct function calls via `--depends` are **experimental and dangerous** for real-world code. They are safe only when every called dependency function is guaranteed to be a leaf with no global data access. For production use, prefer host-mediated callbacks (the host sets the correct LOT base before dispatching to the target module) rather than letting one module call another directly.
+
 ### Hash-Based O(1) Resolution
 
 For hosts with large symbol tables, the `scripts/mkhostsyms` tool can read a host firmware ELF and generate a C header with a const GNU hash table. The host implements `udynlink_external_resolve_symbol` as a hash table lookup for O(1) resolution. See the [Host Guide](integrating-as-host.md) for details.

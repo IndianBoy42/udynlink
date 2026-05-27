@@ -31,6 +31,8 @@ The host has three core responsibilities:
 
 The host-module contract is simple: the host exposes a set of symbols (functions and variables), and modules consume them. Modules can also export symbols for other modules to consume via the three-tier dependency resolution system.
 
+> ⚠️ **Limitation:** When module A calls a function resolved from dependency module B, B's assembly prologue loads `r9` from the global `UDYNLINK_LOT_BASE_ADDR` word. Unless the host manually rewrote that word to B's `ram_base` before the call, B will execute with `r9` pointing to A's LOT. This is safe only for pure leaf functions that never access global data. See [Cross-Module Calls and the LOT Base](#cross-module-calls-and-the-lot-base) below.
+
 ---
 
 ## Integration Checklist
@@ -625,6 +627,37 @@ int result = p_func();
 - Override via: `#define UDYNLINK_LOT_BASE_ADDR 0x20000000`
 
 **Pitfall:** If you forget to set the LOT base, module functions will use a stale `r9` value, causing them to read/write the wrong memory region. This typically results in a hard fault or silent data corruption.
+
+### Cross-Module Calls and the LOT Base
+
+The assembly prologue for every exported module function does:
+
+```asm
+push    {r9, lr}
+ldr     r9, [UDYNLINK_LOT_BASE_ADDR]
+bl      __real_function
+pop     {r9, pc}
+```
+
+This means the prologue **always trusts the global word** regardless of which module it actually belongs to. When the host calls module A, A's wrapper loads `r9` correctly. But if A then calls a function pointer that was resolved from dependency module B, control jumps to **B's wrapper**, which loads `r9` from the same global word — which still contains A's base.
+
+**Safe cases (accidentally):**
+- Dependency functions that are pure leaves (no global data, no further calls).
+- Dependency functions that only use stack locals and arguments.
+
+**Dangerous cases:**
+- Dependency functions that read/write their own global variables.
+- Dependency functions that call their own exported (wrappered) functions.
+- Dependency functions that call back into the caller module.
+
+**Workaround for host-mediated cross-module calls:**
+If the host needs module A to invoke module B, do not let A call B directly. Instead:
+1. A calls a host callback (resolved via `udynlink_external_resolve_symbol`).
+2. The host callback sets `UDYNLINK_LOT_BASE_ADDR` to B's `ram_base`.
+3. The host callback calls B's exported function.
+4. B's wrapper loads the correct `r9`, runs, and restores the caller's `r9` on return.
+
+Because of this limitation, module-to-module direct function calls via `--depends` are considered **experimental and dangerous** for any non-trivial dependency. They are safe only when the dependency exports nothing but stateless leaf functions.
 
 ### Calling Modules Built With `--no-prologue`
 
@@ -1254,6 +1287,8 @@ The LOT base address (`*(uint32_t *)UDYNLINK_LOT_BASE_ADDR`) is a **single globa
 This means an ISR can safely call module B even while module A was preempted mid-execution. When the ISR returns, module A resumes with the correct r9 value.
 
 **The real concern is the shared memory word itself.** If the ISR writes B's `ram_base` to `UDYNLINK_LOT_BASE_ADDR`, and module A later calls one of its *own wrappered* functions (e.g., via a function pointer through the symbol table), that wrapper will load r9 from the fixed address and get B's base instead of A's. In practice this is rare — module code rarely calls its own wrappers — but it is the mechanism by which a stale LOT base can cause trouble.
+
+> ⚠️ **The same problem applies to cross-module dependency calls.** If module A resolves a function symbol from dependency module B, the LOT slot contains B's wrapper address. When A calls it, B's wrapper loads `r9` from `UDYNLINK_LOT_BASE_ADDR`. Unless the host rewrote that word to B's base before the call, B executes with A's `r9`. This is safe only for pure leaf functions that never touch global data. See [Cross-Module Calls and the LOT Base](#cross-module-calls-and-the-lot-base) above.
 
 Guidelines:
 

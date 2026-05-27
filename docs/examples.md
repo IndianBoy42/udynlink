@@ -410,6 +410,8 @@ XIP saves **1008 bytes** in this example because the 1 KiB code section stays in
 
 A module can declare dependencies on other modules. The loader enforces that all dependencies are loaded first, and it resolves `extern` symbols by searching dependency modules before falling back to the host.
 
+> ⚠️ **Warning:** The consumer module (`mod_consumer`) in this example calls `provider_add` and `provider_mul` from `mod_provider`. Because `provider_add` and `provider_mul` are pure leaf functions that do not access global data, this happens to work. If the provider functions accessed their own global variables or called their own exported functions, they would execute with the wrong `r9` (the consumer's LOT base) and hard-fault. See [Cross-Module Calls and the LOT Base](integrating-as-host.md#cross-module-calls-and-the-lot-base).
+
 ### Provider module (`mod_provider.c`)
 
 ```c
@@ -720,6 +722,8 @@ int main(void) {
 - `UDYNLINK_DEP_DEFERRED` breaks the cycle by allowing the loader to skip a dependency.
 - The host manually appends dependency pointers to `deps[]` and then calls `udynlink_link_incremental()` to resolve deferred symbols.
 - Circular modules remain un-unloadable (`dep_refcount >= 1` for all members).
+
+> ⚠️ **Warning:** This example uses trivial leaf functions (`mod_a_get_value` and `mod_b_get_value` return constants). It appears to work because neither function accesses global data. In real-world circular dependencies where each module uses its own global variables, direct cross-module calls will fail because the callee's wrapper prologue loads `r9` from the caller's LOT base. See [Cross-Module Calls and the LOT Base](integrating-as-host.md#cross-module-calls-and-the-lot-base).
 
 ---
 

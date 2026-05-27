@@ -286,6 +286,14 @@ udynlink_unload_module(&provider);   // OK — no more dependents
 
 If you try to unload `provider` while `consumer` is still loaded, the call returns `UDYNLINK_ERR_MODULE_HAS_DEPENDENTS`.
 
+> ⚠️ **CRITICAL — Cross-Module Calls and the LOT Base**
+>
+> When the consumer calls `provider_add`, the compiler generates an indirect call through the LOT. The LOT slot contains the **provider's exported wrapper address**. When execution reaches that wrapper, it loads `r9` from the global `UDYNLINK_LOT_BASE_ADDR` word. If the host last wrote the **consumer's** base there, the provider function runs with `r9` pointing to the **consumer's LOT**.
+>
+> **This is safe only when the provider function is a pure leaf** — no global variables, no calls to its own exported functions, no callbacks back into the consumer. The existing test suite uses only trivial leaf functions (`return a + b;`, `return 123;`) and therefore passes without exposing the bug.
+>
+> **For production use, do not rely on direct module-to-module function calls via `--depends` unless every called dependency function is provably stateless.** Prefer host-mediated dispatch where the host sets the correct LOT base before calling the target module.
+
 ### Optional Dependencies
 
 A module can declare an optional dependency and detect at runtime whether it is linked. If the host returns `UDYNLINK_DEP_DEFERRED` during load (or the dependency is never loaded), the extern symbol's LOT slot contains `0`. The module can check for this:
