@@ -6,9 +6,9 @@
 
 static int test_circular_single(udynlink_load_mode_t mode) {
     const char *deps[4];
-    uint32_t ndeps = udynlink_get_module_deps(mod_self_dep_module_data, deps, 4);
+    size_t ndeps = udynlink_get_module_deps(mod_self_dep_module_data, deps, 4);
     if (ndeps != 1) {
-        printf("expected 1 dep, got %u\n", ndeps);
+        printf("expected 1 dep, got %zu\n", ndeps);
         return 0;
     }
     if (strcmp(deps[0], "mod_self_dep") != 0) {

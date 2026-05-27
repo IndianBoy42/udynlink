@@ -5,12 +5,12 @@
 #include <string.h>
 
 static const uint8_t *g_stream_data;
-static uint32_t g_stream_size;
+static size_t g_stream_size;
 
-static int32_t mock_read(void *pv_ctx, void *buf, uint32_t num_bytes, uint32_t offset) {
+static int32_t mock_read(void *pv_ctx, void *buf, size_t num_bytes, size_t offset) {
     (void)pv_ctx;
     if (offset >= g_stream_size) return -1;
-    uint32_t avail = g_stream_size - offset;
+    size_t avail = g_stream_size - offset;
     if (num_bytes > avail) num_bytes = avail;
     memcpy(buf, g_stream_data + offset, num_bytes);
     return (int32_t)num_bytes;
@@ -21,7 +21,7 @@ static int32_t mock_get_size(void *pv_ctx) {
     return (int32_t)g_stream_size;
 }
 
-static int test_streaming_load(uint32_t work_buf_size, udynlink_load_mode_t mode) {
+static int test_streaming_load(size_t work_buf_size, udynlink_load_mode_t mode) {
     uint8_t work_buf[512];
     udynlink_io_t io = { mock_read, mock_get_size, NULL };
     udynlink_module_t mod;
@@ -34,22 +34,22 @@ static int test_streaming_load(uint32_t work_buf_size, udynlink_load_mode_t mode
 
     udynlink_error_t err = udynlink_load_module_from_stream(&mod, &io, NULL, 0, mode, work_buf, work_buf_size);
     if (err != UDYNLINK_OK) {
-        printf("Streaming load failed: err=%d mode=%d wbsz=%u\n", err, (int)mode, work_buf_size);
+        printf("Streaming load failed: err=%d mode=%d wbsz=%zu\n", err, (int)mode, work_buf_size);
         return 0;
     }
 
     {
-        uint32_t* mod_base = (uint32_t*)UDYNLINK_LOT_BASE_ADDR;
+        uintptr_t* mod_base = (uintptr_t*)UDYNLINK_LOT_BASE_ADDR;
         *mod_base = mod.ram_base;
 
         udynlink_sym_t sym;
         if (udynlink_lookup_symbol(&mod, "test", &sym) == NULL) {
-            printf("lookup_symbol 'test' failed (mode=%d wbsz=%u)\n", (int)mode, work_buf_size);
+            printf("lookup_symbol 'test' failed (mode=%d wbsz=%zu)\n", (int)mode, work_buf_size);
             goto exit;
         }
         int (*p_func)(void) = (int (*)(void))sym.val;
         if (!p_func()) {
-            printf("Module 'test' function returned 0 (mode=%d wbsz=%u)\n", (int)mode, work_buf_size);
+            printf("Module 'test' function returned 0 (mode=%d wbsz=%zu)\n", (int)mode, work_buf_size);
             goto exit;
         }
     }
@@ -83,8 +83,8 @@ static int test_ram_requirements_stream(void) {
     g_stream_data = mod_hello_module_data;
     g_stream_size = sizeof(mod_hello_module_data);
 
-    uint32_t ram_copy_all = udynlink_get_ram_requirements_stream(&io, UDYNLINK_LOAD_MODE_COPY_ALL);
-    uint32_t ram_copy_code = udynlink_get_ram_requirements_stream(&io, UDYNLINK_LOAD_MODE_COPY_TEXT_DATA);
+    size_t ram_copy_all = udynlink_get_ram_requirements_stream(&io, UDYNLINK_LOAD_MODE_COPY_ALL);
+    size_t ram_copy_code = udynlink_get_ram_requirements_stream(&io, UDYNLINK_LOAD_MODE_COPY_TEXT_DATA);
 
     if (ram_copy_all == 0) {
         printf("ram_requirements_stream COPY_ALL returned 0\n");
@@ -94,7 +94,7 @@ static int test_ram_requirements_stream(void) {
         printf("ram_requirements_stream COPY_CODE returned 0\n");
         return 0;
     }
-    printf("ram COPY_ALL=%u COPY_CODE=%u\n", ram_copy_all, ram_copy_code);
+    printf("ram COPY_ALL=%zu COPY_CODE=%zu\n", ram_copy_all, ram_copy_code);
     return 1;
 }
 
@@ -104,25 +104,25 @@ static int test_stream_metadata_size(void) {
     g_stream_data = mod_hello_module_data;
     g_stream_size = sizeof(mod_hello_module_data);
 
-    uint32_t wbsz = udynlink_get_stream_metadata_size(&io);
+    size_t wbsz = udynlink_get_stream_metadata_size(&io);
     if (wbsz == 0) {
         printf("get_stream_metadata_size returned 0\n");
         return 0;
     }
-    printf("stream metadata_size=%u\n", wbsz);
+    printf("stream metadata_size=%zu\n", wbsz);
     return 1;
 }
 
 static int test_ram_requirements_compat(void) {
-    uint32_t ram_mmap = udynlink_get_ram_requirements(mod_hello_module_data, UDYNLINK_LOAD_MODE_COPY_ALL);
+    size_t ram_mmap = udynlink_get_ram_requirements(mod_hello_module_data, UDYNLINK_LOAD_MODE_COPY_ALL);
     udynlink_io_t io = { mock_read, mock_get_size, NULL };
 
     g_stream_data = mod_hello_module_data;
     g_stream_size = sizeof(mod_hello_module_data);
 
-    uint32_t ram_stream = udynlink_get_ram_requirements_stream(&io, UDYNLINK_LOAD_MODE_COPY_ALL);
+    size_t ram_stream = udynlink_get_ram_requirements_stream(&io, UDYNLINK_LOAD_MODE_COPY_ALL);
     if (ram_mmap != ram_stream) {
-        printf("ram_requirements mismatch: mmap=%u stream=%u\n", ram_mmap, ram_stream);
+        printf("ram_requirements mismatch: mmap=%zu stream=%zu\n", ram_mmap, ram_stream);
         return 0;
     }
     return 1;

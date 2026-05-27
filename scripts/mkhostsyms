@@ -154,6 +154,7 @@ def emit_c_header(table, output_path, guard_name=None):
         f.write("#ifndef %s\n" % guard_name)
         f.write("#define %s\n\n" % guard_name)
         f.write("#include <stdint.h>\n")
+        f.write("#include <stddef.h>\n")
         f.write('#include "udynlink_hash.h"\n\n')
 
         f.write("static const uint32_t g_host_hash_bloom[] = {\n    ")
@@ -177,7 +178,7 @@ def emit_c_header(table, output_path, guard_name=None):
             f.write("0x%08X" % v)
         f.write("\n};\n\n")
 
-        f.write("static const uint32_t g_host_sym_addrs[] = {\n    ")
+        f.write("static const uintptr_t g_host_sym_addrs[] = {\n    ")
         for i, v in enumerate(table['sym_addrs']):
             if i > 0:
                 f.write(",\n    " if i % 4 == 0 else ", ")
@@ -191,7 +192,7 @@ def emit_c_header(table, output_path, guard_name=None):
             f.write("0x%02X" % b)
         f.write("\n};\n\n")
 
-        f.write("static const uint32_t g_host_strtab_offsets[] = {\n    ")
+        f.write("static const size_t g_host_strtab_offsets[] = {\n    ")
         for i, v in enumerate(table['strtab_offsets']):
             if i > 0:
                 f.write(",\n    " if i % 4 == 0 else ", ")

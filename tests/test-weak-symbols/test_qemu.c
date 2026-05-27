@@ -15,12 +15,12 @@ static int host_weak_var = 88;
  * When g_override is clear, the resolver returns 0 and the loader
  * falls back to the module's own weak definitions.
  */
-uint32_t test_resolve_symbol(const char *name) {
+uintptr_t test_resolve_symbol(const char *name) {
     if (g_override) {
         if (!strcmp(name, "weak_func"))
-            return (uint32_t)(uintptr_t)&host_weak_func;
+            return (uintptr_t)&host_weak_func;
         if (!strcmp(name, "weak_var"))
-            return (uint32_t)(uintptr_t)&host_weak_var;
+            return (uintptr_t)&host_weak_var;
     }
     return 0;
 }
@@ -60,7 +60,7 @@ int test_qemu(void) {
             if (!check_extern_symbols(&mod, extern_syms))
                 goto exit;
 
-            uint32_t* mod_base = (uint32_t*)UDYNLINK_LOT_BASE_ADDR;
+            uintptr_t* mod_base = (uintptr_t*)UDYNLINK_LOT_BASE_ADDR;
             *mod_base = mod.ram_base;
 
             udynlink_sym_t sym;

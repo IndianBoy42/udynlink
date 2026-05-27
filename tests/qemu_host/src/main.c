@@ -98,14 +98,14 @@ void udynlink_external_vprintf(const char *s, va_list va) {
     vprintf(s, va);
 }
 
-uint32_t test_resolve_symbol(const char *name) __attribute__((weak));
-uint32_t test_resolve_symbol(const char *name) {
+uintptr_t test_resolve_symbol(const char *name) __attribute__((weak));
+uintptr_t test_resolve_symbol(const char *name) {
     (void)name;
     return 0;
 }
 
-uint32_t udynlink_external_resolve_critical_symbol(const char *name) __attribute__((weak));
-uint32_t udynlink_external_resolve_critical_symbol(const char *name) {
+uintptr_t udynlink_external_resolve_critical_symbol(const char *name) __attribute__((weak));
+uintptr_t udynlink_external_resolve_critical_symbol(const char *name) {
     if (is_deferred_symbol(name))
         return UDYNLINK_SYM_DEFERRED;
     return 0;
@@ -113,15 +113,15 @@ uint32_t udynlink_external_resolve_critical_symbol(const char *name) {
 
 extern int _write(int file, char *ptr, int len);
 
-uint32_t udynlink_external_resolve_symbol(const char *name) {
+uintptr_t udynlink_external_resolve_symbol(const char *name) {
     if (is_deferred_symbol(name))
         return UDYNLINK_SYM_DEFERRED;
     if (!strcmp(name, "printf"))
-        return (uint32_t)(uintptr_t)&printf;
+        return (uintptr_t)&printf;
     else if (!strcmp(name, "_write"))
-        return (uint32_t)(uintptr_t)&_write;
+        return (uintptr_t)&_write;
     else if (!strcmp(name, "puts"))
-        return (uint32_t)(uintptr_t)&puts;
+        return (uintptr_t)&puts;
     else
         return test_resolve_symbol(name);
 }

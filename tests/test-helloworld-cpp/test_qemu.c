@@ -6,7 +6,7 @@
 int run_test_func2(const udynlink_module_t *p_mod, int a, int b, int c) {
     udynlink_sym_t sym;
 
-    uint32_t* mod_base = (uint32_t*)0x20000000; //see asm_template.tmpl
+    uintptr_t* mod_base = (uintptr_t*)0x20000000; //see asm_template.tmpl
     *mod_base = p_mod->ram_base;
 
     // Run test

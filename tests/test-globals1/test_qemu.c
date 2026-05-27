@@ -19,7 +19,7 @@ int test_qemu(void) {
         if (!run_test_func(&mod))
             goto exit;
         // Check the expected value of the global variable
-        uint32_t v = *(int*)udynlink_get_symbol_value(&mod, "g");
+        int v = *(int*)udynlink_get_symbol_value(&mod, "g");
         if (v != EXPECTED_G_VAL) {
             printf("Unexpected value %d for variable 'g', expected %d\n", v, EXPECTED_G_VAL);
             goto exit;

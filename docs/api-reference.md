@@ -96,7 +96,7 @@ typedef struct _udynlink_module_t {
     const udynlink_module_header_t *p_header;  // Pointer to module header
     union {
         void     *p_ram;      // Pointer to module RAM area
-        uint32_t  ram_base;   // Same address as an integer
+        uintptr_t  ram_base;   // Same address as an integer
     };
     uint8_t  info;           // Load mode and RAM ownership flags
     uint8_t  num_deps;       // Number of successfully resolved dependencies
@@ -125,7 +125,7 @@ Describes a single symbol entry from a module's symbol table.
 ```c
 typedef struct {
     const char *name;   // Symbol name (NULL for internal symbols)
-    uint32_t    val;    // Symbol value (offset within its section)
+    uintptr_t    val;    // Symbol value (offset within its section)
     uint8_t     type;   // UDYNLINK_SYM_TYPE_* constant
     uint8_t     location; // UDYNLINK_SYM_LOCATION_* constant
 } udynlink_sym_t;
@@ -148,7 +148,7 @@ Streaming I/O callback structure used by `udynlink_load_module_from_stream`.
 
 ```c
 typedef int32_t (*udynlink_read_cb_t)(void *pv_ctx, void *buf,
-                                      uint32_t num_bytes, uint32_t offset);
+                                      size_t num_bytes, size_t offset);
 
 typedef int32_t (*udynlink_get_size_cb_t)(void *pv_ctx);
 
@@ -182,9 +182,9 @@ typedef struct {
     const uint32_t *bloom;
     const uint32_t *buckets;
     const uint32_t *hash_values;
-    const uint32_t *sym_addrs;
+    const uintptr_t *sym_addrs;
     const char     *strtab;
-    const uint32_t *strtab_offsets;
+    const size_t *strtab_offsets;
 } udynlink_hash_table_t;
 ```
 
@@ -343,7 +343,7 @@ Bits [15:7] — Reserved
 udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod,
                                       const void *base_addr,
                                       void *load_addr,
-                                      uint32_t load_size,
+                                      size_t load_size,
                                       udynlink_load_mode_t load_mode);
 ```
 
@@ -356,7 +356,7 @@ Loads a module from a memory-mapped image.
 | `p_mod` | `udynlink_module_t *` | Pointer to a module handle structure allocated by the caller. Must not be `NULL`. **Must be zero-initialized before the first call** (e.g. `memset(p_mod, 0, sizeof(*p_mod))`), or the error-path cleanup may attempt to free garbage pointers. |
 | `base_addr` | `const void *` | Start address of the module binary image in memory (flash or RAM). |
 | `load_addr` | `void *` | RAM address where the module should be loaded, or `NULL` to request automatic allocation via `udynlink_external_malloc`. |
-| `load_size` | `uint32_t` | If `load_addr` is not `NULL`, the size of the pre-allocated memory region. Ignored when `load_addr` is `NULL`. |
+| `load_size` | `size_t` | If `load_addr` is not `NULL`, the size of the pre-allocated memory region. Ignored when `load_addr` is `NULL`. |
 | `load_mode` | `udynlink_load_mode_t` | How much of the module to copy to RAM. See [`udynlink_load_mode_t`](#udynlink_load_mode_t). |
 
 **Return value:**
@@ -390,8 +390,8 @@ Loads a module from a memory-mapped image.
 
 ```c
 udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
-    const udynlink_io_t *p_io, void *load_addr, uint32_t load_size,
-    udynlink_load_mode_t load_mode, void *work_buf, uint32_t work_buf_size);
+    const udynlink_io_t *p_io, void *load_addr, size_t load_size,
+    udynlink_load_mode_t load_mode, void *work_buf, size_t work_buf_size);
 ```
 
 Loads a module from a stream (e.g., SD card, serial flash).
@@ -403,10 +403,10 @@ Loads a module from a stream (e.g., SD card, serial flash).
 | `p_mod` | `udynlink_module_t *` | Pointer to caller-allocated module handle. Must not be `NULL`. **Must be zero-initialized before the first call** (e.g. `memset(p_mod, 0, sizeof(*p_mod))`), or the error-path cleanup may attempt to free garbage pointers. |
 | `p_io` | `const udynlink_io_t *` | Streaming callbacks and context. See [`udynlink_io_t`](#udynlink_io_t). |
 | `load_addr` | `void *` | RAM address for loading, or `NULL` for automatic allocation. |
-| `load_size` | `uint32_t` | Size of pre-allocated RAM if `load_addr` is not `NULL`. |
+| `load_size` | `size_t` | Size of pre-allocated RAM if `load_addr` is not `NULL`. |
 | `load_mode` | `udynlink_load_mode_t` | Must be `COPY_ALL` or `COPY_TEXT_DATA`. `XIP` is **not** supported and returns `UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED`. |
 | `work_buf` | `void *` | Caller-provided scratch buffer used for partial reads. |
-| `work_buf_size` | `uint32_t` | Size of `work_buf`. Must be at least `64` bytes. |
+| `work_buf_size` | `size_t` | Size of `work_buf`. Must be at least `64` bytes. |
 
 **Return value:**
 
@@ -464,7 +464,7 @@ Unloads a module, freeing its RAM and clearing its handle.
 ### `udynlink_get_ram_size`
 
 ```c
-uint32_t udynlink_get_ram_size(const udynlink_module_t *p_mod);
+size_t udynlink_get_ram_size(const udynlink_module_t *p_mod);
 ```
 
 Returns the total RAM space currently used by the loaded module.
@@ -522,7 +522,7 @@ Returns the name of a module given only its base address, **without** loading it
 ### `udynlink_get_image_size`
 
 ```c
-uint32_t udynlink_get_image_size(const void *base_addr);
+size_t udynlink_get_image_size(const void *base_addr);
 ```
 
 Calculates the total module image size (header + metadata + code + data), not the RAM size.
@@ -589,8 +589,8 @@ Searches a module's symbol table for a symbol by name.
 ### `udynlink_get_symbol_value`
 
 ```c
-uint32_t udynlink_get_symbol_value(const udynlink_module_t *p_mod,
-                                   const char *name);
+uintptr_t udynlink_get_symbol_value(const udynlink_module_t *p_mod,
+                                    const char *name);
 ```
 
 Looks up a symbol and returns its absolute value.
@@ -613,8 +613,8 @@ Looks up a symbol and returns its absolute value.
 ### `udynlink_get_ram_requirements`
 
 ```c
-uint32_t udynlink_get_ram_requirements(const void *base_addr,
-                                       udynlink_load_mode_t mode);
+size_t udynlink_get_ram_requirements(const void *base_addr,
+                                     udynlink_load_mode_t mode);
 ```
 
 Computes the RAM needed to load a module from a memory-mapped image, **before** actually loading it.
@@ -633,8 +633,8 @@ Computes the RAM needed to load a module from a memory-mapped image, **before** 
 ### `udynlink_get_ram_requirements_stream`
 
 ```c
-uint32_t udynlink_get_ram_requirements_stream(const udynlink_io_t *p_io,
-                                              udynlink_load_mode_t mode);
+size_t udynlink_get_ram_requirements_stream(const udynlink_io_t *p_io,
+                                            udynlink_load_mode_t mode);
 ```
 
 Computes the RAM needed to load a module from a streaming source.
@@ -655,7 +655,7 @@ Computes the RAM needed to load a module from a streaming source.
 ### `udynlink_get_stream_metadata_size`
 
 ```c
-uint32_t udynlink_get_stream_metadata_size(const udynlink_io_t *p_io);
+size_t udynlink_get_stream_metadata_size(const udynlink_io_t *p_io);
 ```
 
 Returns the size of module metadata (everything before the code section) for a streaming load.
@@ -840,7 +840,7 @@ Debug/logging output function.
 ### `udynlink_external_resolve_symbol`
 
 ```c
-uint32_t udynlink_external_resolve_symbol(const char *name);
+uintptr_t udynlink_external_resolve_symbol(const char *name);
 ```
 
 Resolves an external symbol name to an address.
@@ -860,7 +860,7 @@ Resolves an external symbol name to an address.
 ### `udynlink_external_resolve_critical_symbol`
 
 ```c
-uint32_t udynlink_external_resolve_critical_symbol(const char *name);
+uintptr_t udynlink_external_resolve_critical_symbol(const char *name);
 ```
 
 Resolves critical host symbols before falling back to dependency modules.

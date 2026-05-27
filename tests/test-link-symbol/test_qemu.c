@@ -14,10 +14,10 @@ static void mock_service(void) {
 }
 
 // Override weak test_resolve_symbol to provide my_service
-uint32_t test_resolve_symbol(const char *name);
-uint32_t test_resolve_symbol(const char *name) {
+uintptr_t test_resolve_symbol(const char *name);
+uintptr_t test_resolve_symbol(const char *name) {
     if (!strcmp(name, "my_service"))
-        return (uint32_t)(uintptr_t)&real_service;
+        return (uintptr_t)&real_service;
     return 0;
 }
 
@@ -35,7 +35,7 @@ static int test_link_symbol_single(udynlink_load_mode_t mode) {
 
     // Call test function (should call real_service)
     {
-        uint32_t *mod_base = (uint32_t *)UDYNLINK_LOT_BASE_ADDR;
+        uintptr_t *mod_base = (uintptr_t *)UDYNLINK_LOT_BASE_ADDR;
         *mod_base = mod.ram_base;
         udynlink_sym_t sym;
         if (udynlink_lookup_symbol(&mod, "test", &sym) == NULL) {
@@ -53,7 +53,7 @@ static int test_link_symbol_single(udynlink_load_mode_t mode) {
     }
 
     // Patch my_service to mock_service
-    if (udynlink_link_symbol(&mod, "my_service", (uint32_t)(uintptr_t)&mock_service) != UDYNLINK_OK) {
+    if (udynlink_link_symbol(&mod, "my_service", (uintptr_t)&mock_service) != UDYNLINK_OK) {
         printf("link_symbol failed\n");
         ok = 0;
         goto cleanup;
@@ -61,7 +61,7 @@ static int test_link_symbol_single(udynlink_load_mode_t mode) {
 
     // Call test function again (should call mock_service)
     {
-        uint32_t *mod_base = (uint32_t *)UDYNLINK_LOT_BASE_ADDR;
+        uintptr_t *mod_base = (uintptr_t *)UDYNLINK_LOT_BASE_ADDR;
         *mod_base = mod.ram_base;
         udynlink_sym_t sym;
         if (udynlink_lookup_symbol(&mod, "test", &sym) == NULL) {

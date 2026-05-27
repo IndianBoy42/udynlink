@@ -27,7 +27,7 @@ static int test_dep_single(udynlink_load_mode_t mode) {
     }
 
     {
-        uint32_t *mod_base = (uint32_t *)UDYNLINK_LOT_BASE_ADDR;
+        uintptr_t *mod_base = (uintptr_t *)UDYNLINK_LOT_BASE_ADDR;
         *mod_base = mod_consumer.ram_base;
         ok = run_test_func(&mod_consumer);
     }

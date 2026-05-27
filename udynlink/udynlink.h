@@ -19,6 +19,7 @@
 #define __UDYNLINK_H__
 
 #include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -106,7 +107,7 @@ typedef enum {
  * resolve callback returns this value the loader writes 0 to the relocation slot
  * and continues loading instead of failing.
  */
-#define UDYNLINK_SYM_DEFERRED                 ((uint32_t)1)
+#define UDYNLINK_SYM_DEFERRED                 ((uintptr_t)1)
 
 /**
  * @brief Runtime module handle.
@@ -120,8 +121,8 @@ typedef struct _udynlink_module_t {
     union {
         /** Pointer to the module's RAM region (LOT, data, bss, optional code). */
         void *p_ram;
-        /** Same address as an unsigned 32-bit integer. */
-        uint32_t ram_base;
+        /** Same address as an unsigned integer. */
+        uintptr_t ram_base;
     };
     /** Bitmask storing the load mode and RAM ownership flags. */
     uint8_t info;
@@ -144,7 +145,7 @@ typedef struct {
     /** Symbol name, or "(N/A)" for local symbols. */
     const char *name;
     /** Symbol value (offset or absolute address, depending on load phase). */
-    uint32_t val;
+    uintptr_t val;
     /** Symbol type (see ::UDYNLINK_SYM_TYPE_INTERNAL et al.). */
     uint8_t type;
     /** Memory location (code or data, see ::UDYNLINK_SYM_LOCATION_CODE). */
@@ -320,7 +321,7 @@ typedef enum {
  *
  * @return Number of bytes actually read, or -1 on error.
  */
-typedef int32_t (*udynlink_read_cb_t)(void *pv_ctx, void *buf, uint32_t num_bytes, uint32_t offset);
+typedef int32_t (*udynlink_read_cb_t)(void *pv_ctx, void *buf, size_t num_bytes, size_t offset);
 
 /**
  * @brief Streaming size query callback.
@@ -385,7 +386,7 @@ typedef struct {
  *       calls from multiple interrupt levels will corrupt internal state.
  *       The host must provide synchronization around load/unload.
  */
-udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base_addr, void *load_addr, uint32_t load_size, udynlink_load_mode_t load_mode);
+udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base_addr, void *load_addr, size_t load_size, udynlink_load_mode_t load_mode);
 
 /**
  * @brief Unload a previously loaded module.
@@ -433,7 +434,7 @@ const char *udynlink_error_msg(udynlink_error_t* err);
  *
  * @return Required RAM size in bytes.
  */
-uint32_t udynlink_get_ram_size(const udynlink_module_t *p_mod);
+size_t udynlink_get_ram_size(const udynlink_module_t *p_mod);
 
 /**
  * @brief Return the name of a loaded module.
@@ -475,7 +476,7 @@ const char *udynlink_get_module_name_from_image(const void *base_addr);
  *         small.  Returns 0 if the image is invalid or has no
  *         dependencies.
  */
-uint32_t udynlink_get_module_deps(const void *base_addr, const char **deps, uint32_t max_deps);
+size_t udynlink_get_module_deps(const void *base_addr, const char **deps, size_t max_deps);
 
 /**
  * @brief Look up a symbol in a module.
@@ -501,7 +502,7 @@ udynlink_sym_t *udynlink_lookup_symbol(const udynlink_module_t *p_mod, const cha
  *
  * @return The symbol's relocated value if found, 0 otherwise.
  */
-uint32_t udynlink_get_symbol_value(const udynlink_module_t *p_mod, const char *name);
+uintptr_t udynlink_get_symbol_value(const udynlink_module_t *p_mod, const char *name);
 
 /**
  * @brief Set the loader debug verbosity.
@@ -518,7 +519,7 @@ void udynlink_set_debug_level(udynlink_debug_level_t level);
  * @return Total size in bytes (header + code + data), or 0 if the
  *         signature is invalid.
  */
-uint32_t udynlink_get_image_size(const void *base_addr);
+size_t udynlink_get_image_size(const void *base_addr);
 
 /**
  * @brief Get the pointer to the code (.text) memory.
@@ -555,8 +556,8 @@ uint8_t *udynlink_get_text_pointer(const udynlink_module_t *p_mod);
  *       synchronization around load/unload.
  */
 udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
-    const udynlink_io_t *p_io, void *load_addr, uint32_t load_size,
-    udynlink_load_mode_t load_mode, void *work_buf, uint32_t work_buf_size);
+    const udynlink_io_t *p_io, void *load_addr, size_t load_size,
+    udynlink_load_mode_t load_mode, void *work_buf, size_t work_buf_size);
 
 /**
  * @brief Return the RAM required to load a module from memory.
@@ -566,7 +567,7 @@ udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
  *
  * @return Required RAM size in bytes.
  */
-uint32_t udynlink_get_ram_requirements(const void *base_addr, udynlink_load_mode_t mode);
+size_t udynlink_get_ram_requirements(const void *base_addr, udynlink_load_mode_t mode);
 
 /**
  * @brief Return the RAM required to load a module from a stream.
@@ -578,7 +579,7 @@ uint32_t udynlink_get_ram_requirements(const void *base_addr, udynlink_load_mode
  *
  * @return Required RAM size in bytes, or 0 on I/O error.
  */
-uint32_t udynlink_get_ram_requirements_stream(const udynlink_io_t *p_io, udynlink_load_mode_t mode);
+size_t udynlink_get_ram_requirements_stream(const udynlink_io_t *p_io, udynlink_load_mode_t mode);
 
 /**
  * @brief Return the size of module metadata (everything before the code section).
@@ -593,7 +594,7 @@ uint32_t udynlink_get_ram_requirements_stream(const udynlink_io_t *p_io, udynlin
  *
  * @return Metadata size in bytes (byte offset to code section), or 0 on I/O error.
  */
-uint32_t udynlink_get_stream_metadata_size(const udynlink_io_t *p_io);
+size_t udynlink_get_stream_metadata_size(const udynlink_io_t *p_io);
 
 /**
  * @brief Link a dependency between two already-loaded modules.
@@ -626,7 +627,7 @@ udynlink_error_t udynlink_link_dependency(udynlink_module_t *a, udynlink_module_
  * @return ::UDYNLINK_OK if at least one slot was patched,
  *         ::UDYNLINK_ERR_LOAD_CANT_RESOLVE if the symbol is not found.
  */
-udynlink_error_t udynlink_link_symbol(udynlink_module_t *p_mod, const char *sym_name, uint32_t sym_addr);
+udynlink_error_t udynlink_link_symbol(udynlink_module_t *p_mod, const char *sym_name, uintptr_t sym_addr);
 
 /**
  * @brief Check whether all declared dependencies of a module are linked.

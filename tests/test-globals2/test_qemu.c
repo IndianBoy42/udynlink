@@ -11,9 +11,9 @@
 
 int ext_i = INITIAL_EXT_I;
 
-uint32_t test_resolve_symbol(const char *name) {
+uintptr_t test_resolve_symbol(const char *name) {
     if (!strcmp(name, "ext_i"))
-        return (uint32_t)&ext_i;
+        return (uintptr_t)&ext_i;
     else
         return 0;
 }
@@ -35,7 +35,7 @@ int test_qemu(void) {
             goto exit;
         run_test_func(&mod); // no need to check the result here
         // Check the expected value of the global variable
-        uint32_t v = *(int*)udynlink_lookup_symbol(&mod, "g", &sym)->val;
+        int v = *(int*)udynlink_lookup_symbol(&mod, "g", &sym)->val;
         if (v != EXPECTED_G_VAL) {
             printf("Unexpected value %d for variable 'g', expected %d\n", v, EXPECTED_G_VAL);
             goto exit;

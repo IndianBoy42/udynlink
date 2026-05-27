@@ -119,7 +119,7 @@ void udynlink_external_vprintf(const char *s, va_list va);
  *       Hosts that load modules without external symbols do not need
  *       to override it.
  */
-uint32_t udynlink_external_resolve_symbol(const char *name);
+uintptr_t udynlink_external_resolve_symbol(const char *name);
 
 /**
  * @brief Resolve a foreign symbol (critical / host-only tier).
@@ -138,7 +138,7 @@ uint32_t udynlink_external_resolve_symbol(const char *name);
  * @note A weak default returning 0 is provided.  Hosts that do not
  *       need the critical-symbol tier do not need to override it.
  */
-uint32_t udynlink_external_resolve_critical_symbol(const char *name);
+uintptr_t udynlink_external_resolve_critical_symbol(const char *name);
 
 /**
  * @brief Look up a loaded module by name.

@@ -35,7 +35,7 @@ static int test_optional_dep_single(udynlink_load_mode_t mode) {
 
     // Call consumer test in degraded mode
     {
-        uint32_t *mod_base = (uint32_t *)UDYNLINK_LOT_BASE_ADDR;
+        uintptr_t *mod_base = (uintptr_t *)UDYNLINK_LOT_BASE_ADDR;
         *mod_base = consumer.ram_base;
         udynlink_sym_t sym;
         if (udynlink_lookup_symbol(&consumer, "test", &sym) == NULL) {
@@ -80,7 +80,7 @@ static int test_optional_dep_single(udynlink_load_mode_t mode) {
 
     // Call consumer test again (should now use logging)
     {
-        uint32_t *mod_base = (uint32_t *)UDYNLINK_LOT_BASE_ADDR;
+        uintptr_t *mod_base = (uintptr_t *)UDYNLINK_LOT_BASE_ADDR;
         *mod_base = consumer.ram_base;
         udynlink_sym_t sym;
         if (udynlink_lookup_symbol(&consumer, "test", &sym) == NULL) {

@@ -97,7 +97,7 @@ static int test_circular_link_single(udynlink_load_mode_t mode) {
 
     // Call test functions
     {
-        uint32_t *mod_base = (uint32_t *)UDYNLINK_LOT_BASE_ADDR;
+        uintptr_t *mod_base = (uintptr_t *)UDYNLINK_LOT_BASE_ADDR;
 
         *mod_base = mod_a.ram_base;
         udynlink_sym_t sym;

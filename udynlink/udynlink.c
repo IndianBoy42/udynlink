@@ -11,13 +11,13 @@ int udynlink_external_is_module_loading(const char *module_name) {
 }
 
 __attribute__((weak))
-uint32_t udynlink_external_resolve_critical_symbol(const char *name) {
+uintptr_t udynlink_external_resolve_critical_symbol(const char *name) {
     (void)name;
     return 0;
 }
 
 __attribute__((weak))
-uint32_t udynlink_external_resolve_symbol(const char *name) {
+uintptr_t udynlink_external_resolve_symbol(const char *name) {
     (void)name;
     return 0;
 }
@@ -108,13 +108,13 @@ static void udynlink_debug(const char *func, int line, udynlink_debug_level_t le
 
 // Returns the offset of code from the given module header address
 // The code comes after the header, the relocations and the symbol table.
-static uint32_t get_header_size(const udynlink_module_header_t *p_header) {
+static size_t get_header_size(const udynlink_module_header_t *p_header) {
     if (p_header->udynlink_version < UDYNLINK_MAKE_VERSION(2, 0))
         return 32;
     return sizeof(udynlink_module_header_t);
 }
 
-static uint32_t get_deps_strtab_offset(const udynlink_module_header_t *p_header) {
+static size_t get_deps_strtab_offset(const udynlink_module_header_t *p_header) {
     return get_header_size(p_header) + p_header->num_rels * 2 * sizeof(uint32_t) + p_header->symt_size;
 }
 
@@ -124,8 +124,8 @@ static const char *get_deps_strtab(const udynlink_module_header_t *p_header) {
     return (const char *)p_header + get_deps_strtab_offset(p_header);
 }
 
-static uint32_t get_code_offset_from_header(const udynlink_module_header_t *p_header) {
-    uint32_t res = get_deps_strtab_offset(p_header);
+static size_t get_code_offset_from_header(const udynlink_module_header_t *p_header) {
+    size_t res = get_deps_strtab_offset(p_header);
     if (p_header->udynlink_version >= UDYNLINK_MAKE_VERSION(2, 0)) {
         res += p_header->deps_strtab_size;
         res = (res + 3) & ~3U;
@@ -183,8 +183,9 @@ static void mark_module_free(udynlink_module_t *p_mod) {
 
 // Return the entry with the specified index in the given symbol table
 // Returns "p_sym" if OK, NULL if index is out of range or an error occured
-static udynlink_sym_t *get_sym_at(const udynlink_module_header_t *p_header, uint32_t index, udynlink_sym_t *p_sym) {
-    uint32_t name_off, info;
+static udynlink_sym_t *get_sym_at(const udynlink_module_header_t *p_header, size_t index, udynlink_sym_t *p_sym) {
+    uint32_t name_off;
+    uint32_t info;
     const uint32_t *p_symt = get_sym_table_pointer(p_header);
 
     if (index >= *p_symt) { // first word in the symbol table is the number of entries
@@ -214,27 +215,27 @@ static udynlink_sym_t *get_sym_at(const udynlink_module_header_t *p_header, uint
 // Offset the given symbol relative to the required base address (.code or .data), based on the symbol location
 // The function returns p_sym after it applies the offset to p_sym->val.
 static udynlink_sym_t *offset_sym(const udynlink_module_t *p_mod, udynlink_sym_t *p_sym) {
-    uint32_t prev_val = p_sym->val;
+    uintptr_t prev_val = p_sym->val;
 
     // Weak symbols are initially offset like internal/exported symbols so the
     // module's own definition is the default.  If the host provides an override
     // the loader patches the LOT/data entry afterwards.
     if ((p_sym->type == UDYNLINK_SYM_TYPE_INTERNAL) || (p_sym->type == UDYNLINK_SYM_TYPE_EXPORTED) || (p_sym->type == UDYNLINK_SYM_TYPE_WEAK)) {
         if (p_sym->location == UDYNLINK_SYM_LOCATION_CODE) {
-            p_sym->val += (uint32_t)(uintptr_t)get_code_pointer(p_mod);
+            p_sym->val += (uintptr_t)get_code_pointer(p_mod);
         } else {
-            p_sym->val += (uint32_t)(uintptr_t)get_data_pointer(p_mod);
+            p_sym->val += (uintptr_t)get_data_pointer(p_mod);
         }
     }
-    UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Symbol %s relocated relative to %s, orig value is %08X, new value is %08X\n", p_sym->name, p_sym->location == UDYNLINK_SYM_LOCATION_CODE ? "code" : "data", prev_val, p_sym->val);
+    UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Symbol %s relocated relative to %s, orig value is %08X, new value is %08X\n", p_sym->name, p_sym->location == UDYNLINK_SYM_LOCATION_CODE ? "code" : "data", (uint32_t)prev_val, (uint32_t)p_sym->val);
     return p_sym;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // Helpers - various (continued)
 
-static uint32_t get_ram_size_for_header(const udynlink_module_header_t *p_header, udynlink_load_mode_t load_mode) {
-    uint32_t tot_size = p_header->num_lot * sizeof(uint32_t) + p_header->data_size + p_header->bss_size;
+static size_t get_ram_size_for_header(const udynlink_module_header_t *p_header, udynlink_load_mode_t load_mode) {
+    size_t tot_size = p_header->num_lot * sizeof(uint32_t) + p_header->data_size + p_header->bss_size;
     if (load_mode == UDYNLINK_LOAD_MODE_COPY_TEXT_DATA) {
         tot_size += p_header->code_size;
     } else if (load_mode == UDYNLINK_LOAD_MODE_COPY_ALL) {
@@ -247,15 +248,15 @@ static uint32_t get_ram_size_for_header(const udynlink_module_header_t *p_header
 // Streaming I/O helpers
 
 static int32_t stream_read_exact(const udynlink_io_t *p_io, void *dest,
-                                 uint32_t offset, uint32_t len,
-                                 void *work_buf, uint32_t work_buf_size) {
+                                 size_t offset, size_t len,
+                                 void *work_buf, size_t work_buf_size) {
     uint8_t *d = (uint8_t *)dest;
-    uint32_t pos = 0;
+    size_t pos = 0;
     while (pos < len) {
-        uint32_t chunk = len - pos;
+        size_t chunk = len - pos;
         if (chunk > work_buf_size) chunk = work_buf_size;
         int32_t n = p_io->read(p_io->pv_ctx, work_buf, chunk, offset + pos);
-        if (n < 0 || (uint32_t)n != chunk) return -1;
+        if (n < 0 || (size_t)n != chunk) return -1;
         memcpy(d + pos, work_buf, chunk);
         pos += chunk;
     }
@@ -263,12 +264,12 @@ static int32_t stream_read_exact(const udynlink_io_t *p_io, void *dest,
 }
 
 static int32_t stream_read_string(const udynlink_io_t *p_io, char *dest,
-                                  uint32_t offset, uint32_t max_len,
-                                  void *work_buf, uint32_t work_buf_size) {
-    uint32_t total_read = 0;
-    uint32_t cur_offset = offset;
+                                  size_t offset, size_t max_len,
+                                  void *work_buf, size_t work_buf_size) {
+    size_t total_read = 0;
+    size_t cur_offset = offset;
     while (total_read + 1 < max_len) {
-        uint32_t chunk = work_buf_size;
+        size_t chunk = work_buf_size;
         if (chunk > max_len - total_read - 1) chunk = max_len - total_read - 1;
         int32_t n = p_io->read(p_io->pv_ctx, work_buf, chunk, cur_offset);
         if (n <= 0) return -1;
@@ -277,8 +278,8 @@ static int32_t stream_read_string(const udynlink_io_t *p_io, char *dest,
             dest[total_read++] = (char)src[i];
             if (src[i] == '\0') return (int32_t)total_read;
         }
-        cur_offset += (uint32_t)n;
-        if ((uint32_t)n < chunk) return -1;
+        cur_offset += (size_t)n;
+        if ((size_t)n < chunk) return -1;
     }
     dest[total_read] = '\0';
     return -1;
@@ -287,7 +288,7 @@ static int32_t stream_read_string(const udynlink_io_t *p_io, char *dest,
 ////////////////////////////////////////////////////////////////////////////////
 // Public interface
 
-udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base_addr, void *load_addr, uint32_t load_size, udynlink_load_mode_t load_mode) {
+udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base_addr, void *load_addr, size_t load_size, udynlink_load_mode_t load_mode) {
     void *ram_addr = NULL;
     udynlink_error_t res = UDYNLINK_OK;
     const udynlink_module_header_t *p_header = (const udynlink_module_header_t*)base_addr;
@@ -393,7 +394,7 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
     }
 
     // Allocate RAM or check given RAM region, as needed
-    uint32_t ram_size = udynlink_get_ram_size(p_mod);
+    size_t ram_size = udynlink_get_ram_size(p_mod);
     if (ram_size > 0) { // is any RAM needed at all?
         if (load_addr == NULL) { // RAM must be allocated
             UDYNLINK_LOAD_CLR_FOREIGN_RAM(p_mod);
@@ -447,7 +448,7 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
     uint32_t *p_data = (uint32_t*)get_data_pointer(p_mod);
     UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "LOT base: %p, .data starts at %p, .code starts at %p\n", p_lot, p_data, get_code_pointer(p_mod));
     // Read and apply each (lot_offset, symt_offset) pair in turn
-    for (uint32_t i = 0; i < p_header->num_rels; i ++) {
+    for (size_t i = 0; i < p_header->num_rels; i ++) {
         uint32_t lot_offset = *p_rels ++;
         uint32_t symt_offset = *p_rels ++;
 
@@ -488,7 +489,7 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
                 UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Applying weak relocation for symbol at index %u, name=%s at lot_offset=%u\n", symt_offset, sym.name, lot_offset);
                 *p_rel_location = offset_sym(p_mod, &sym)->val;
                 {
-                    uint32_t sym_addr = udynlink_external_resolve_critical_symbol(sym.name);
+                    uintptr_t sym_addr = udynlink_external_resolve_critical_symbol(sym.name);
                     if (sym_addr == UDYNLINK_SYM_DEFERRED) {
                         // Keep module's own default, defer override
                         break;
@@ -509,7 +510,7 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
                         }
                     }
                     if (sym_addr > 0) {
-                        *p_rel_location = sym_addr;
+                        *p_rel_location = (uint32_t)sym_addr;
                     }
                 }
                 break;
@@ -517,7 +518,7 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
             case UDYNLINK_SYM_TYPE_EXTERN:
                 UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Applying extern relocation for symbol at index %u, name=%s at lot_offset=%u\n", symt_offset, sym.name, lot_offset);
                 {
-                    uint32_t sym_addr = udynlink_external_resolve_critical_symbol(sym.name);
+                    uintptr_t sym_addr = udynlink_external_resolve_critical_symbol(sym.name);
                     if (sym_addr == UDYNLINK_SYM_DEFERRED) {
                         *p_rel_location = 0;
                         break;
@@ -539,7 +540,7 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
                         }
                     }
                     if (sym_addr > 0) {
-                        *p_rel_location = sym_addr;
+                        *p_rel_location = (uint32_t)sym_addr;
                     } else {
                         UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, "Unable to resolve relocation for extern symbol '%s'\n", sym.name);
                         res = UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL;
@@ -575,10 +576,10 @@ void udynlink_cpp_init(udynlink_module_t *p_mod){
     udynlink_sym_t __init_array= {};
     if(udynlink_lookup_symbol(p_mod, "__init_array", &__init_array) != NULL)
     {
-        uint32_t* mod_base = (uint32_t*)UDYNLINK_LOT_BASE_ADDR;
+        uintptr_t* mod_base = (uintptr_t*)UDYNLINK_LOT_BASE_ADDR;
         *mod_base = p_mod->ram_base;
         typedef void (*void_func)(void);
-        void_func f = (void_func)(uintptr_t)__init_array.val;
+        void_func f = (void_func)__init_array.val;
         f();
     }   
 }
@@ -611,12 +612,12 @@ const char *udynlink_error_msg(udynlink_error_t* err) {
     return error_codes[(int)(intptr_t)err];
 }
 
-uint32_t udynlink_get_ram_size(const udynlink_module_t *p_mod) {
+size_t udynlink_get_ram_size(const udynlink_module_t *p_mod) {
     const udynlink_module_header_t *p_header = p_mod->p_header;
     udynlink_load_mode_t load_mode = UDYNLINK_LOAD_GET_MODE(p_mod);
 
     // RAM is always needed for relocations, .data and .bss section
-    uint32_t tot_size = p_header->num_lot * sizeof(uint32_t) + p_header->data_size + p_header->bss_size;
+    size_t tot_size = p_header->num_lot * sizeof(uint32_t) + p_header->data_size + p_header->bss_size;
     // Depending on the copy mode, more RAM might be needed:
     // - if only code is copied, add size of the code
     // - if everything is copied, add the size of the header (including the symbol table and the relocations) and the code
@@ -653,7 +654,7 @@ const char *udynlink_get_module_name_from_image(const void *base_addr) {
     }
 }
 
-uint32_t udynlink_get_module_deps(const void *base_addr, const char **deps, uint32_t max_deps) {
+size_t udynlink_get_module_deps(const void *base_addr, const char **deps, size_t max_deps) {
     const udynlink_module_header_t *p_header = (const udynlink_module_header_t*)base_addr;
 
     if (p_header->sign != UDYNLINK_MODULE_SIGN)
@@ -663,7 +664,7 @@ uint32_t udynlink_get_module_deps(const void *base_addr, const char **deps, uint
     if (dep_str == NULL)
         return 0;
 
-    uint32_t count = 0;
+    size_t count = 0;
     for (uint16_t d = 0; d < p_header->num_deps; d++) {
         if (*dep_str == '\0')
             break;
@@ -676,7 +677,7 @@ uint32_t udynlink_get_module_deps(const void *base_addr, const char **deps, uint
 }
 
 udynlink_sym_t *udynlink_lookup_symbol(const udynlink_module_t *p_mod, const char *name, udynlink_sym_t *p_sym) {
-    uint32_t idx;
+    size_t idx;
 
     if (p_mod != NULL) { // but consider only the given one if not NULL
         idx = 0;
@@ -688,7 +689,7 @@ udynlink_sym_t *udynlink_lookup_symbol(const udynlink_module_t *p_mod, const cha
                     // host/dependency override so external callers see the
                     // correct address.  The three-tier resolution is identical
                     // to the load-time path above.
-                    uint32_t sym_addr = udynlink_external_resolve_critical_symbol(name);
+                    uintptr_t sym_addr = udynlink_external_resolve_critical_symbol(name);
                     if (sym_addr == 0) {
                         for (uint8_t d = 0; d < p_mod->num_deps; d++) {
                             udynlink_sym_t dep_sym;
@@ -711,7 +712,7 @@ udynlink_sym_t *udynlink_lookup_symbol(const udynlink_module_t *p_mod, const cha
     return NULL;
 }
 
-uint32_t udynlink_get_symbol_value(const udynlink_module_t *p_mod, const char *name) {
+uintptr_t udynlink_get_symbol_value(const udynlink_module_t *p_mod, const char *name) {
     udynlink_sym_t sym;
 
     if (udynlink_lookup_symbol(p_mod, name, &sym) == NULL) {
@@ -724,14 +725,14 @@ void udynlink_set_debug_level(udynlink_debug_level_t level) {
     debug_level = level;
 }
 
-uint32_t udynlink_get_image_size(const void *base_addr)
+size_t udynlink_get_image_size(const void *base_addr)
 {
     if (memcmp(base_addr, "UDLM", 4))
         return 0;
 
     const udynlink_module_header_t *p_header = (const udynlink_module_header_t *)base_addr;
 
-    uint32_t tot_size = 0;
+    size_t tot_size = 0;
     tot_size += get_code_offset_from_header(p_header);
     tot_size += p_header->code_size;
     tot_size += p_header->data_size;
@@ -747,8 +748,8 @@ uint8_t *udynlink_get_text_pointer(const udynlink_module_t *p_mod) {
 // Streaming I/O public interface
 
 udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
-    const udynlink_io_t *p_io, void *load_addr, uint32_t load_size,
-    udynlink_load_mode_t load_mode, void *work_buf, uint32_t work_buf_size) {
+    const udynlink_io_t *p_io, void *load_addr, size_t load_size,
+    udynlink_load_mode_t load_mode, void *work_buf, size_t work_buf_size) {
 
     void *ram_addr = NULL;
     udynlink_error_t res = UDYNLINK_OK;
@@ -760,7 +761,7 @@ udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
         return UDYNLINK_ERR_LOAD_INVALID_MODE;
 
     int32_t n = p_io->read(p_io->pv_ctx, &header, sizeof(header), 0);
-    if (n < 0 || (uint32_t)n != sizeof(header))
+    if (n < 0 || (size_t)n != sizeof(header))
         return UDYNLINK_ERR_LOAD_IO_ERROR;
 
     if (header.sign != UDYNLINK_MODULE_SIGN)
@@ -804,8 +805,8 @@ udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
             res = UDYNLINK_ERR_LOAD_MISSING_DEP;
             goto exit;
         }
-        uint32_t strtab_offset = get_deps_strtab_offset(&header);
-        uint32_t str_pos = 0;
+        size_t strtab_offset = get_deps_strtab_offset(&header);
+        size_t str_pos = 0;
         for (uint16_t d = 0; d < header.num_deps; d++) {
             char dep_name[64];
             int32_t nr = stream_read_string(p_io, dep_name, strtab_offset + str_pos,
@@ -835,16 +836,16 @@ udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
             }
             if (dep_mod == UDYNLINK_DEP_DEFERRED) {
                 // Skip: don't add to deps[], don't increment num_deps, don't increment refcount
-                str_pos += (uint32_t)nr;
+                str_pos += (size_t)nr;
                 continue;
             }
             p_mod->deps[p_mod->num_deps++] = dep_mod;
             dep_mod->dep_refcount++;
-            str_pos += (uint32_t)nr;
+            str_pos += (size_t)nr;
         }
     }
 
-    uint32_t ram_size = get_ram_size_for_header(&header, load_mode);
+    size_t ram_size = get_ram_size_for_header(&header, load_mode);
     if (load_mode == UDYNLINK_LOAD_MODE_COPY_TEXT_DATA)
         ram_size += get_code_offset_from_header(&header);
 
@@ -866,12 +867,12 @@ udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
     }
 
     {
-        uint32_t code_offset = get_code_offset_from_header(&header);
+        size_t code_offset = get_code_offset_from_header(&header);
 
         if (load_mode == UDYNLINK_LOAD_MODE_COPY_ALL) {
             p_mod->p_ram = ram_addr;
             uint8_t *p_temp8 = (uint8_t *)ram_addr + header.num_lot * sizeof(uint32_t);
-            uint32_t copy_size = code_offset + header.code_size + header.data_size;
+            size_t copy_size = code_offset + header.code_size + header.data_size;
             if (stream_read_exact(p_io, p_temp8, 0, copy_size, work_buf, work_buf_size) < 0) {
                 res = UDYNLINK_ERR_LOAD_IO_ERROR;
                 goto exit;
@@ -879,7 +880,7 @@ udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
             p_mod->p_header = (const udynlink_module_header_t *)p_temp8;
         } else {
             uint8_t *p_temp8 = (uint8_t *)ram_addr + header.num_lot * sizeof(uint32_t);
-            uint32_t code_offset_local = get_code_offset_from_header(&header);
+            size_t code_offset_local = get_code_offset_from_header(&header);
             if (stream_read_exact(p_io, p_temp8, 0, code_offset_local,
                                   work_buf, work_buf_size) < 0) {
                 res = UDYNLINK_ERR_LOAD_IO_ERROR;
@@ -903,11 +904,11 @@ udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
     {
         uint32_t *p_lot = (uint32_t *)p_mod->p_ram;
         uint32_t *p_data = (uint32_t *)get_data_pointer(p_mod);
-        uint32_t hdr_size = get_header_size(&header);
-        uint32_t relocs_offset = hdr_size;
-        uint32_t symt_base = hdr_size + header.num_rels * 2 * sizeof(uint32_t);
+        size_t hdr_size = get_header_size(&header);
+        size_t relocs_offset = hdr_size;
+        size_t symt_base = hdr_size + header.num_rels * 2 * sizeof(uint32_t);
 
-        for (uint32_t i = 0; i < header.num_rels; i++) {
+        for (size_t i = 0; i < header.num_rels; i++) {
             uint32_t rel_pair[2];
             if (stream_read_exact(p_io, rel_pair,
                                   relocs_offset + i * sizeof(rel_pair),
@@ -926,12 +927,12 @@ udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
 
             if (symt_off & (1u << 30)) {
                 uint32_t *p = p_data + (lot_offset - header.num_lot);
-                *p = ((uint32_t)(uintptr_t)get_code_pointer(p_mod) + (uint32_t)*p);
+                *p = ((uint32_t)(uintptr_t)get_code_pointer(p_mod) + *p);
                 continue;
             }
 
             uint32_t sym_count;
-            if (stream_read_exact(p_io, &sym_count, symt_base, sizeof(uint32_t),
+            if (stream_read_exact(p_io, &sym_count, symt_base, sizeof(sym_count),
                                   work_buf, work_buf_size) < 0) {
                 res = UDYNLINK_ERR_LOAD_IO_ERROR;
                 goto exit;
@@ -941,7 +942,7 @@ udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
                 goto exit;
             }
 
-            uint32_t sym_entry_offset = symt_base + sizeof(uint32_t) + symt_off * 2 * sizeof(uint32_t);
+            size_t sym_entry_offset = symt_base + sizeof(uint32_t) + symt_off * 2 * sizeof(uint32_t);
             uint32_t sym_entry[2];
             if (stream_read_exact(p_io, sym_entry, sym_entry_offset,
                                   sizeof(sym_entry), work_buf, work_buf_size) < 0) {
@@ -966,26 +967,26 @@ udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
 
             if (sym_type == UDYNLINK_SYM_TYPE_INTERNAL || sym_type == UDYNLINK_SYM_TYPE_EXPORTED) {
                 if (sym_location == UDYNLINK_SYM_LOCATION_CODE)
-                    sym_val += (uint32_t)(uintptr_t)get_code_pointer(p_mod);
+                    sym_val += (uintptr_t)get_code_pointer(p_mod);
                 else
-                    sym_val += (uint32_t)(uintptr_t)get_data_pointer(p_mod);
-                *p_rel_location = sym_val;
+                    sym_val += (uintptr_t)get_data_pointer(p_mod);
+                *p_rel_location = (uint32_t)sym_val;
             } else if (sym_type == UDYNLINK_SYM_TYPE_WEAK) {
                 // Same semantics as the in-memory loader: default to the
                 // module's own address, then optionally override via host.
                 if (sym_location == UDYNLINK_SYM_LOCATION_CODE)
-                    sym_val += (uint32_t)(uintptr_t)get_code_pointer(p_mod);
+                    sym_val += (uintptr_t)get_code_pointer(p_mod);
                 else
-                    sym_val += (uint32_t)(uintptr_t)get_data_pointer(p_mod);
-                *p_rel_location = sym_val;
+                    sym_val += (uintptr_t)get_data_pointer(p_mod);
+                *p_rel_location = (uint32_t)sym_val;
                 char sym_name[64];
-                uint32_t name_stream_offset = symt_base + (name_off & UDYNLINK_SYM_OFFSET_MASK);
+                size_t name_stream_offset = symt_base + (name_off & UDYNLINK_SYM_OFFSET_MASK);
                 if (stream_read_string(p_io, sym_name, name_stream_offset,
                                        sizeof(sym_name), work_buf, work_buf_size) < 0) {
                     res = UDYNLINK_ERR_LOAD_IO_ERROR;
                     goto exit;
                 }
-                uint32_t sym_addr = udynlink_external_resolve_critical_symbol(sym_name);
+                uintptr_t sym_addr = udynlink_external_resolve_critical_symbol(sym_name);
                 if (sym_addr == UDYNLINK_SYM_DEFERRED) {
                     // Keep module's own default, defer override
                     continue;
@@ -1006,18 +1007,18 @@ udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
                     }
                 }
                 if (sym_addr > 0) {
-                    *p_rel_location = sym_addr;
+                    *p_rel_location = (uint32_t)sym_addr;
                 }
             } else {
                 char sym_name[64];
-                uint32_t name_stream_offset = symt_base + (name_off & UDYNLINK_SYM_OFFSET_MASK);
+                size_t name_stream_offset = symt_base + (name_off & UDYNLINK_SYM_OFFSET_MASK);
                 if (stream_read_string(p_io, sym_name, name_stream_offset,
                                        sizeof(sym_name), work_buf, work_buf_size) < 0) {
                     res = UDYNLINK_ERR_LOAD_IO_ERROR;
                     goto exit;
                 }
 
-                uint32_t sym_addr = udynlink_external_resolve_critical_symbol(sym_name);
+                uintptr_t sym_addr = udynlink_external_resolve_critical_symbol(sym_name);
                 if (sym_addr == UDYNLINK_SYM_DEFERRED) {
                     *p_rel_location = 0;
                     continue;
@@ -1039,7 +1040,7 @@ udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
                     }
                 }
                 if (sym_addr > 0) {
-                    *p_rel_location = sym_addr;
+                    *p_rel_location = (uint32_t)sym_addr;
                 } else {
                     UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, "Unable to resolve extern symbol '%s'\n", sym_name);
                     res = UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL;
@@ -1064,26 +1065,26 @@ exit:
     return res;
 }
 
-uint32_t udynlink_get_ram_requirements(const void *base_addr, udynlink_load_mode_t mode) {
+size_t udynlink_get_ram_requirements(const void *base_addr, udynlink_load_mode_t mode) {
     const udynlink_module_header_t *p_header = (const udynlink_module_header_t *)base_addr;
     return get_ram_size_for_header(p_header, mode);
 }
 
-uint32_t udynlink_get_ram_requirements_stream(const udynlink_io_t *p_io, udynlink_load_mode_t mode) {
+size_t udynlink_get_ram_requirements_stream(const udynlink_io_t *p_io, udynlink_load_mode_t mode) {
     udynlink_module_header_t header;
     int32_t n = p_io->read(p_io->pv_ctx, &header, sizeof(header), 0);
-    if (n < 0 || (uint32_t)n != sizeof(header)) return 0;
+    if (n < 0 || (size_t)n != sizeof(header)) return 0;
     if (header.sign != UDYNLINK_MODULE_SIGN) return 0;
-    uint32_t ram_size = get_ram_size_for_header(&header, mode);
+    size_t ram_size = get_ram_size_for_header(&header, mode);
     if (mode == UDYNLINK_LOAD_MODE_COPY_TEXT_DATA)
         ram_size += get_code_offset_from_header(&header);
     return ram_size;
 }
 
-uint32_t udynlink_get_stream_metadata_size(const udynlink_io_t *p_io) {
+size_t udynlink_get_stream_metadata_size(const udynlink_io_t *p_io) {
     udynlink_module_header_t header;
     int32_t n = p_io->read(p_io->pv_ctx, &header, sizeof(header), 0);
-    if (n < 0 || (uint32_t)n != sizeof(header)) return 0;
+    if (n < 0 || (size_t)n != sizeof(header)) return 0;
     if (header.sign != UDYNLINK_MODULE_SIGN) return 0;
     return get_code_offset_from_header(&header);
 }
@@ -1096,7 +1097,7 @@ static void apply_extern_relocations(udynlink_module_t *p_mod) {
     uint32_t *p_lot = (uint32_t *)p_mod->p_ram;
     uint32_t *p_data = (uint32_t *)get_data_pointer(p_mod);
 
-    for (uint32_t i = 0; i < p_header->num_rels; i++) {
+    for (size_t i = 0; i < p_header->num_rels; i++) {
         uint32_t lot_offset = *p_rels++;
         uint32_t symt_offset = *p_rels++;
 
@@ -1110,7 +1111,7 @@ static void apply_extern_relocations(udynlink_module_t *p_mod) {
         uint32_t *p_rel_location = (lot_offset < p_header->num_lot) ?
             p_lot + lot_offset : p_data + lot_offset - p_header->num_lot;
 
-        uint32_t sym_addr = udynlink_external_resolve_critical_symbol(sym.name);
+        uintptr_t sym_addr = udynlink_external_resolve_critical_symbol(sym.name);
         if (sym_addr == UDYNLINK_SYM_DEFERRED) {
             *p_rel_location = 0;
             continue;
@@ -1132,7 +1133,7 @@ static void apply_extern_relocations(udynlink_module_t *p_mod) {
             }
         }
         if (sym_addr > 0) {
-            *p_rel_location = sym_addr;
+            *p_rel_location = (uint32_t)sym_addr;
         } else {
             *p_rel_location = 0; // unresolved after re-resolution
         }
@@ -1188,7 +1189,7 @@ udynlink_error_t udynlink_link_dependency(udynlink_module_t *a, udynlink_module_
     return UDYNLINK_OK;
 }
 
-udynlink_error_t udynlink_link_symbol(udynlink_module_t *p_mod, const char *sym_name, uint32_t sym_addr) {
+udynlink_error_t udynlink_link_symbol(udynlink_module_t *p_mod, const char *sym_name, uintptr_t sym_addr) {
     if (!p_mod || !sym_name || !p_mod->p_header) return UDYNLINK_ERR_INVALID_MODULE;
 
     const udynlink_module_header_t *p_header = p_mod->p_header;
@@ -1197,7 +1198,7 @@ udynlink_error_t udynlink_link_symbol(udynlink_module_t *p_mod, const char *sym_
     uint32_t *p_data = (uint32_t *)get_data_pointer(p_mod);
     int found = 0;
 
-    for (uint32_t i = 0; i < p_header->num_rels; i++) {
+    for (size_t i = 0; i < p_header->num_rels; i++) {
         uint32_t lot_offset = *p_rels++;
         uint32_t symt_offset = *p_rels++;
 
@@ -1210,7 +1211,7 @@ udynlink_error_t udynlink_link_symbol(udynlink_module_t *p_mod, const char *sym_
 
         uint32_t *p_rel_location = (lot_offset < p_header->num_lot) ?
             p_lot + lot_offset : p_data + lot_offset - p_header->num_lot;
-        *p_rel_location = sym_addr;
+        *p_rel_location = (uint32_t)sym_addr;
         found = 1;
     }
 

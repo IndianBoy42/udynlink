@@ -66,7 +66,7 @@ int check_weak_symbols(const udynlink_module_t *p_mod, const char *slist[]) {
 int run_test_func(const udynlink_module_t *p_mod) {
     udynlink_sym_t sym;
 
-    uint32_t* mod_base = (uint32_t*)UDYNLINK_LOT_BASE_ADDR;
+    uintptr_t* mod_base = (uintptr_t*)UDYNLINK_LOT_BASE_ADDR;
     *mod_base = p_mod->ram_base;
 
     // Run test
@@ -78,7 +78,7 @@ int run_test_func(const udynlink_module_t *p_mod) {
     return p_func();
 }
 
-udynlink_error_t test_load_module(udynlink_module_t *p_mod, const void *base_addr, void *load_addr, uint32_t load_size, udynlink_load_mode_t load_mode) {
+udynlink_error_t test_load_module(udynlink_module_t *p_mod, const void *base_addr, void *load_addr, size_t load_size, udynlink_load_mode_t load_mode) {
     udynlink_test_register_loading(base_addr);
     udynlink_error_t err = udynlink_load_module(p_mod, base_addr, load_addr, load_size, load_mode);
     if (err == UDYNLINK_OK) {
