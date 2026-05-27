@@ -26,6 +26,12 @@ SECTIONS
     *(.rodata*)
   } > RAM
 
+  .ARM.exidx : {
+    __exidx_start = .;
+    *(.ARM.exidx* .gnu.linkonce.armexidx.*)
+    __exidx_end = .;
+  } > RAM
+
   .data : {
     _sdata = .;
     *(.data*)

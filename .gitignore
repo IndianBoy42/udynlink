@@ -11,6 +11,8 @@
 *.pyc
 temp/*
 *.txt
+!CMakeLists.txt
+!**/CMakeLists.txt
 tests/build*/
 build*/
 CMakeCache.txt
