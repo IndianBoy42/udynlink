@@ -286,6 +286,91 @@ And implement `wasm_rt_grow_memory` using `udynlink_external_realloc` (or malloc
 
 ---
 
+---
+
+## 8. Full Roadmap: Wasm Feature Support for Cortex-M
+
+### Design Philosophy: udynlink Is Just a Linker
+
+The core `wasm-rt-udynlink` runtime must stay **lean, flexible, and unopinionated**. It is not a full WebAssembly runtime — it is a thin adapter that lets wasm2c-generated C code link against the user's existing firmware.
+
+**Core principle:** The runtime defines the interface; the user's firmware provides the implementation via hooks and callbacks. The user controls:
+- How memory is allocated (static buffer, heap, pool, etc.)
+- What happens on trap (halt, reset, log, or return an error code)
+- How host functions are resolved (symbol table, hardcoded, dynamic)
+- Whether features like threads or exceptions are supported (compile-time flags)
+
+This mirrors udynlink's existing model: `udynlink_external_malloc`, `udynlink_external_resolve_symbol`, etc. are user-provided callbacks.
+
+### Runtime Hook Interface
+
+The user provides these callbacks (declared weak so default no-op/fatal stubs exist):
+
+| Hook | Signature | Default | Purpose |
+|------|-----------|---------|---------|
+| `wasm_rt_malloc` | `void* (size_t)` | `udynlink_external_malloc` | Allocate linear memory, tables, etc. |
+| `wasm_rt_free` | `void (void*)` | `udynlink_external_free` | Free linear memory, tables |
+| `wasm_rt_realloc` | `void* (void*, size_t)` | `malloc+memcpy+free` | Memory grow |
+| `wasm_rt_trap_handler` | `void (wasm_rt_trap_t)` | Infinite loop | Trap policy: user decides |
+| `wasm_rt_resolve_import` | `void* (const char* module, const char* name)` | `udynlink_external_resolve_symbol` | Resolve imported functions |
+| `wasm_rt_vprintf` | `int (const char* fmt, va_list)` | `udynlink_external_vprintf` | Debug output |
+| `wasm_rt_get_time_ms` | `uint32_t (void)` | `0` | Optional: for `clock_time_get` |
+| `wasm_rt_sleep_ms` | `void (uint32_t)` | No-op | Optional: yield/sleep |
+| `wasm_rt_memory_protection_check` | `void (wasm_rt_memory_t*, u64 addr, u64 n)` | No-op | Optional: guard pages / MPU |
+
+### WebAssembly Feature Priority Matrix
+
+| # | Feature | Priority | Rationale | Implementation Strategy |
+|---|---------|----------|-----------|------------------------|
+| 1 | **Core MVP** | ✅ **DONE** | Foundation | Already working |
+| 2 | **Bulk memory** (`memory.copy`, `memory.fill`, `memory.init`, `data.drop`) | **HIGH** | Rust/Zig emit this by default. Critical for data-heavy modules. | wasm2c generates `memcpy`/`memset` calls. Already works if host provides them. Just need to verify dead-code stripping doesn't remove them. |
+| 3 | **Sign-extension** (`i32.extend8_s`, etc.) | **HIGH** | Very common in modern toolchains. Trivial C code. | wasm2c already generates plain C. Just pass `--enable-sign-extension` or rely on default. No runtime work needed. |
+| 4 | **Mutable globals** | **HIGH** | Already in MVP by default. Used for module state. | Already supported. wasm2c puts globals in the instance struct. |
+| 5 | **Non-trapping float-to-int** | **MEDIUM** | Common in modern toolchains. Avoids trap branches. | wasm2c generates C with saturating conversions. No runtime needed. |
+| 6 | **Multi-value** | **MEDIUM** | Enables functions returning multiple values (e.g., `(i32, i32)`). Rust uses this. | wasm2c generates struct returns. C ABI handles it. No runtime needed. |
+| 7 | **Tail-call** | **MEDIUM** | Functional languages (Lisp/Scheme→Wasm) use this. Prevents stack exhaustion. | wasm2c generates `goto` or regular calls with `-fno-optimize-sibling-calls`. May need to relax that flag for true tail calls. |
+| 8 | **Custom page sizes** | **MEDIUM** | Allows memory smaller than 64KiB. Useful on memory-constrained MCUs (e.g., 4KiB heap). | Replace `WASM_DEFAULT_PAGE_SIZE` at compile time. Runtime already uses `page_size` field. |
+| 9 | **Multi-memory** | **LOW** | Separates stack, heap, data into distinct memories. Could be useful for MPU isolation. | Requires multiple `wasm_rt_memory_t` instances in the instance struct. Runtime already supports this. |
+| 10 | **Extended const** | **LOW** | Better constant expressions in global initializers. | Already supported by wasm2c. No runtime work. |
+| 11 | **SIMD** (`v128`) | **NOT APPLICABLE** | Cortex-M has no vector units (except M55/M85 Helium, which is niche). | **Skip.** Even if supported, the performance gain on 32-bit scalar MCUs is minimal vs. code size cost. |
+| 12 | **Threads / atomics** | **NOT APPLICABLE** | Bare-metal Cortex-M has no OS threads. Only interrupt contexts. Atomic ops can be done with `cpsid`/`cpsie` but the wasm thread model doesn't map. | **Skip.** If needed later, implement via single-threaded fake atomics (all sequentially consistent). |
+| 13 | **Exceptions** (`try`/`catch`/`throw`) | **NOT APPLICABLE** | Requires heavy runtime (`setjmp`-like unwinding) and is rarely used in embedded Rust/Zig. | **Skip.** The `panic=abort` model (trap on panic) is the embedded default. |
+| 14 | **Memory64** (`i64` addresses) | **NOT APPLICABLE** | 64-bit pointers on a 32-bit MCU is wasteful and unnecessary. | **Skip.** Cortex-M address space is 32-bit. |
+| 15 | **Reference types / GC** | **NOT APPLICABLE** | Managed references and garbage collection are irrelevant for bare-metal C/Rust firmware. | **Skip.** |
+| 16 | **Function references** | **LOW** | Typed function references. Improves type safety of indirect calls. | wasm2c supports it. May add minor table size overhead. Low priority. |
+| 17 | **Wide arithmetic** (`i64.*_wide`) | **LOW** | 128-bit arithmetic for crypto. Niche on Cortex-M. | Only if user specifically needs it. |
+
+### Runtime Feature Flags (Compile-Time)
+
+The user controls what runtime support is compiled into the module via `-D` flags passed through `mkwasm2c-module`:
+
+```bash
+mkwasm2c-module --enable-bulk-memory --enable-custom-page-sizes=4096 \
+    --trap-handler=my_trap --malloc=my_malloc \
+    input.wasm -o output.bin
+```
+
+| Flag | Effect |
+|------|--------|
+| `-DUDYNLINK_WASM_TRAP_HANDLER=my_handler` | Override `wasm_rt_trap` behavior |
+| `-DUDYNLINK_WASM_MALLOC=my_malloc` | Override memory allocator |
+| `-DUDYNLINK_WASM_CUSTOM_PAGE_SIZE=N` | Set wasm page size (default 65536) |
+| `-DUDYNLINK_WASM_ENABLE_BULK_MEMORY` | Ensure `memcpy`/`memset` are preserved from `--gc-sections` |
+| `-DUDYNLINK_WASM_ENABLE_MULTI_MEMORY` | Reserve space for multiple `wasm_rt_memory_t` structs |
+| `-DUDYNLINK_WASM_NO_MPU_CHECKS` | Disable optional `memory_protection_check` hook |
+
+### Estimated Timeline
+
+| Phase | Features | Effort | Est. Time |
+|-------|----------|--------|-----------|
+| **Phase 2** | Toolchain script (`mkwasm2c-module`); `fac`, `hello` tests; static + dynamic memory modes; bulk memory validation | Medium | 1–2 sessions |
+| **Phase 2.5** | Dynamic memory (`memory.grow`); `wasm_rt_realloc` hook; `memory_grow` test | Small | 1 session |
+| **Phase 3** | Multi-value, tail-call, custom page sizes, non-trapping float-to-int tests | Medium | 1 session |
+| **Phase 4** | Multi-memory support; MPU isolation hooks; advanced test cases | Large | 2 sessions |
+| **Phase 5** | Documentation (`docs/wasm2c-integration.md`); CI integration; Justfile targets | Small | 1 session |
+
+---
+
 *Plan created: 2026-05-28*  
 *Phase 1 completed: 2026-05-28*  
 *Status: Ready for Phase 2*
