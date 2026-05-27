@@ -198,6 +198,39 @@ def process(output, args):
     print_list([s for s in sym_map if sym_map[s] == "weak"],   "Weak     :", args)
     print_list([s for s in sym_map if sym_map[s] == "local"],   "Locals   :", args)
 
+    # Detect and omit empty init-array sentinel symbols from the symbol table.
+    # These four symbols are emitted by the linker script even for C modules
+    # with no constructors.  When they all have size 0 and identical addresses
+    # (start == end) they serve no purpose and waste ~100 bytes of symbol table.
+    # We keep them in sym_map so relocation processing doesn't crash, but skip
+    # them when building slist_all unless they are actually referenced by a
+    # relocation (e.g. in a C++ module that uses cpp_init_fini.c).
+    init_array_names = [
+        "__init_array_start",
+        "__init_array_end",
+        "__preinit_array_start",
+        "__preinit_array_end",
+    ]
+    empty_init_array_syms = set()
+    init_syms = {n: syms.get(n) for n in init_array_names}
+    if all(init_syms[n] for n in init_array_names):
+        # All four exist. Check criteria for "empty array".
+        all_empty = True
+        common_value = None
+        for n in init_array_names:
+            d = init_syms[n]
+            if d["bind"] != "STB_GLOBAL" or d["type"] != "STT_NOTYPE" or d["size"] != 0:
+                all_empty = False
+                break
+            if common_value is None:
+                common_value = d["value"]
+            elif d["value"] != common_value:
+                all_empty = False
+                break
+        if all_empty:
+            empty_init_array_syms.update(init_array_names)
+            debug("Detected empty init-array sentinels; will omit from symbol table unless referenced by relocations", args)
+
     # Process relocations
     set_debug_col('yellow')
     debug("%s Examining relocations %s" % ('-' * 10, '-' * 10), args)
@@ -296,7 +329,7 @@ def process(output, args):
     debug("%s Building image %s" % ('-' * 10, '-' * 10), args)
     img = bytearray("UDLM".encode('ascii'))  # Signature (4b)
     # The first entry in the symbol table is always the module name
-    slist_all = [s for s in sym_map if (s in reloc_name_to_idx) or sym_map[s] == "external" or sym_map[s] == "exported" or sym_map[s] == "weak"]
+    slist_all = [s for s in sym_map if ((s in reloc_name_to_idx) or sym_map[s] == "external" or sym_map[s] == "exported" or sym_map[s] == "weak") and not (s in empty_init_array_syms and s not in reloc_name_to_idx)]
     img += struct.pack("<H", args.mod_version_val)    # Module ABI version (2b)
     img += struct.pack("<H", args.udynlink_version_val)  # Loader ABI version (2b)
     img += struct.pack("<H", args.arch_tag_val)        # Architecture tag (2b)
