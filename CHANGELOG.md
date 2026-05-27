@@ -9,12 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`udynlink_module_image_t`** — non-contiguous module image descriptor with per-section pointers (`p_header`, `p_relocations`, `p_symtab`, `p_deps_strtab`, `p_code`, `p_data`). Decouples the relocation engine from source layout so users can load from decompressed, encrypted, or scattered buffers without copying everything into one contiguous blob first.
+- **`udynlink_module_image_t`** — non-contiguous module image descriptor with per-section pointers (`p_header`, `p_relocations`, `p_symtab`, `p_code`, `p_data`). Decouples the relocation engine from source layout so users can load from decompressed, encrypted, or scattered buffers without copying everything into one contiguous blob first.
 - **`udynlink_load_module_image()`** — high-level API that loads from a `udynlink_module_image_t`, copying sections into RAM according to the load mode and then applying relocations through the shared canonical path.
 - **`udynlink_image_from_memory()` / `udynlink_image_from_module()`** — builders that populate an image descriptor from a contiguous UDLM buffer or from an already-loaded module handle.
-- **Low-level loading primitives** — `udynlink_validate_header()`, `udynlink_compute_ram_size()`, `udynlink_get_image_metadata_size()`, `udynlink_image_get_module_name()`, `udynlink_image_get_deps()`, and `udynlink_load_apply_relocations()`. These let advanced users implement custom loading pipelines (e.g., read header from SD card, validate, allocate RAM, copy sections chunk by chunk, then apply relocations).
-- **`resolve_symbol_tiered()`** — extracted static helper for three-tier symbol resolution (critical host → dependencies → fallback host). Used uniformly by load-time relocation, post-link re-resolution (`apply_extern_relocations`), and runtime weak override (`udynlink_lookup_symbol`).
+- **Low-level loading primitives** — `udynlink_validate_header()`, `udynlink_compute_ram_size()`, `udynlink_get_image_metadata_size()`, `udynlink_image_get_module_name()`, and `udynlink_load_apply_relocations()`. These let advanced users implement custom loading pipelines (e.g., read header from SD card, validate, allocate RAM, copy sections chunk by chunk, then apply relocations).
 - **`user_ctx` field on `udynlink_module_t`** — an opaque `void *` pointer that the loader never touches, provided for the host to associate arbitrary state (filesystem path, language runtime handle, reference counter, etc.) with a module handle.
+
+## [0.2.0] - 2026-05-27
+
+### Changed
+
+- **ABI v3.0** — Removed built-in dependency system (`--depends`, dep tracking, 3-tier resolution) and `UDYNLINK_LOT_BASE_ADDR`. Host now manages `r9` directly via `UDYNLINK_PREPARE_CALL()`. Prologue templates simplified to save/restore caller `r9`. Symbol resolution is single-tier via `udynlink_external_resolve_symbol()` only. Module header back to 32 bytes; loader ABI version is `3.0` (`0x0300`).
 
 ## [0.1.0] - 2026-05-26
 

@@ -1,9 +1,9 @@
 # Repository Atlas: udynlink
 
 ## Project Responsibility
-A micro dynamic linker for ARM Cortex-M MCUs that compiles C/C++ code into position-independent binary modules and loads them at runtime from RAM or flash (XIP). Supports partial firmware updates, RAM-resident code execution, modular C/C++ plugin loading, inter-module symbol dependencies, hash-based O(1) symbol resolution, and dependency tracking with safe unload.
+A micro dynamic linker for ARM Cortex-M MCUs that compiles C/C++ code into position-independent binary modules and loads them at runtime from RAM or flash (XIP). Supports partial firmware updates, RAM-resident code execution, modular C/C++ plugin loading, hash-based O(1) symbol resolution, and low-level linking primitives.
 
-This repository is the **eh2k fork** of the original udynlink project. It adds C++ support, `--gc-sections` dead code elimination, `--public-symbols` selective exporting, `R_ARM_TARGET1` relocation support, hash-based symbol resolution, module dependency tracking, and GitHub Actions CI.
+This repository is the **eh2k fork** of the original udynlink project. It adds C++ support, `--gc-sections` dead code elimination, `--public-symbols` selective exporting, `R_ARM_TARGET1` relocation support, hash-based symbol resolution, and GitHub Actions CI.
 
 ## System Entry Points
 - `udynlink/udynlink.h`: Public C API for host firmware integration.
@@ -21,13 +21,13 @@ This repository is the **eh2k fork** of the original udynlink project. It adds C
 
 ## Key Design Notes
 - **Position Independence**: Relies on GCC ARM Embedded flags (`-fPIE`, `-msingle-pic-base`) and an `r9`-relative LOT (Linker Offset Table) instead of a traditional GOT.
-- **External Symbol Resolution**: Host must provide `udynlink_external_resolve_symbol` to bind foreign symbols at load time, enabling inter-module dependencies.
+- **External Symbol Resolution**: Host must provide `udynlink_external_resolve_symbol` to bind foreign symbols at load time.
 - **Load Modes**: Three modes supported (`COPY_ALL`, `COPY_TEXT_DATA`, `XIP`) trade RAM usage vs. execution flexibility.
 - **Module Identity**: Signature `UDLM` + module name symbol enforce uniqueness at load time.
-- **C++ Support**: The eh2k fork adds `-fno-exceptions -fno-rtti -fno-use-cxa-atexit` compilation, `__init_array` constructor invocation via `udynlink_cpp_init()`, and a `cpp_init_fini.c` runtime helper.
-- **Fixed LOT Base**: The original `udynlink_get_lot_base(pc)` function pointer at address `0x1c` was replaced by a fixed memory location at `0x20000000` (RAM base). The host must write `p_mod->ram_base` to `*(uint32_t*)0x20000000` before calling any module function.
+- **C++ Support**: The eh2k fork adds `-fno-exceptions -fno-rtti -fno-use-cxa-atexit` compilation, `__init_array` constructor invocation via `udynlink_cpp_init()`, and a `cpp_init_fini.c` runtime helper. The host must prepare `r9` via `UDYNLINK_PREPARE_CALL()` before calling `udynlink_cpp_init()`.
 - **Dead Code Elimination**: `--gc-sections` is used during linking, with `KEEP(*(.text_nogc))` and `KEEP(*(.init_array))` preserving prologues and constructors.
 - **Selective Exporting**: `--public-symbols` allows restricting which global functions are wrapped/exported, reducing binary size and attack surface.
+- **Host-Managed r9**: ABI v3.0 removed `UDYNLINK_LOT_BASE_ADDR`. The host sets `r9` directly via `UDYNLINK_PREPARE_CALL(p_mod)` before every module call. The assembly prologue only saves/restores the caller's `r9`.
 
 ### Hash-Based Symbol Resolution (O(1))
 - New files: `udynlink/udynlink_hash.h` (hash table struct + lookup declaration + ~60-line GNU hash + bloom filter lookup implementation)
@@ -36,19 +36,10 @@ This repository is the **eh2k fork** of the original udynlink project. It adds C
 - Lookup function: `udynlink_resolve_hashed_symbol()` — O(1) amortized, replaces the O(N) strcmp resolution chain
 - No changes to existing `udynlink.h` / `udynlink.c` / `udynlink_externals.h` for this feature; it is an optional additive capability
 
-### Module Dependency Tracking
-- Modified files: `udynlink/udynlink.h` (header struct grew from 32 to 36 bytes, module struct extended, new error codes, ABI version bump to 2.0), `udynlink/udynlink.c` (dependency validation, 3-tier extern symbol resolution, safe unload), `udynlink/udynlink_externals.h` (2 new callbacks)
-- New test: `tests/test-deps/` with provider + consumer modules
-- UDLM header now 36 bytes with `num_deps` and `deps_strtab_size` fields; binary layout: [Header 36B] [Relocs] [Symtab] [Deps strtab] [Code] [Data]
-- `mkmodule --depends mod_a,mod_b` declares module dependencies at build time
-- Three-tier symbol resolution: critical host symbols → loaded dependency modules → fallback host symbols
-- Safe unload: modules with active dependents (tracked via `dep_refcount`) cannot be unloaded until all dependents are removed
-- v1.0 backward compatibility: `get_header_size()` returns 32 for v1.0, 36 for v2.0+
-
 ### Non-Contiguous Image Loading
 - New API: `udynlink_load_module_image()` loads modules from a `udynlink_module_image_t` descriptor with per-section pointers, enabling loading from SD card, SPI flash, decompressed buffers, or any non-contiguous source
 - `udynlink_image_from_memory()` and `udynlink_image_from_module()` build the descriptor from a contiguous UDLM buffer or an already-loaded module handle
-- Low-level primitives for custom pipelines: `udynlink_validate_header()`, `udynlink_compute_ram_size()`, `udynlink_get_image_metadata_size()`, `udynlink_image_get_module_name()`, `udynlink_image_get_deps()`, and `udynlink_load_apply_relocations()`
+- Low-level primitives for custom pipelines: `udynlink_validate_header()`, `udynlink_compute_ram_size()`, `udynlink_get_image_metadata_size()`, `udynlink_image_get_module_name()`, and `udynlink_load_apply_relocations()`
 - The relocation engine is fully decoupled from source layout: `udynlink_load_apply_relocations()` takes raw pointers to the header, relocation table, and symbol table, then patches the module's RAM
 - Both `udynlink_load_module()` (contiguous memory) and `udynlink_load_module_image()` (non-contiguous descriptor) share a single canonical relocation path via the same internal helpers
 - Query functions: `udynlink_get_ram_requirements()` (wrapper around `udynlink_compute_ram_size()`)

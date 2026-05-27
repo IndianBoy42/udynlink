@@ -2,7 +2,7 @@
 
 # udynlink — Micro Dynamic Linker for ARM Cortex-M
 
-`udynlink` compiles C/C++ code into position-independent binary modules that can be loaded and executed at runtime on ARM Cortex-M MCUs. Modules can run from RAM or flash (execute in place), resolve symbols from the host firmware and from each other, and be loaded from contiguous memory or non-contiguous image sources.
+`udynlink` compiles C/C++ code into position-independent binary modules that can be loaded and executed at runtime on ARM Cortex-M MCUs. Modules can run from RAM or flash (execute in place), resolve symbols from the host firmware, and be loaded from contiguous memory or non-contiguous image sources.
 
 **Use cases:** RAM-resident bootloaders, runtime firmware patching, plugin/module systems, scripting language loaders, LGPL-compliant dynamic loading.
 
@@ -12,7 +12,7 @@
 |-------|----------|-------------|
 | [How It Works](docs/how-it-works.md) | Everyone | Technical deep-dive: PIC model, LOT/r9 mechanism, relocations, binary format |
 | [Integrating as a Host](docs/integrating-as-host.md) | Firmware developers | Adding udynlink to your project, implementing callbacks, symbol tables, lifecycle |
-| [Writing Modules](docs/writing-modules.md) | Module authors | Creating loadable modules, consuming host symbols, dependencies, C++ support |
+| [Writing Modules](docs/writing-modules.md) | Module authors | Creating loadable modules, consuming host symbols, C++ support |
 | [API Reference](docs/api-reference.md) | Everyone | Complete reference for all public functions, structs, macros, and callbacks |
 | [Examples](docs/examples.md) | Everyone | Working code examples for every major feature and use case |
 | [Testing Guide](docs/testing.md) | Contributors | Running tests, adding test cases, adding QEMU platforms, debugging |
@@ -49,11 +49,9 @@ uint32_t udynlink_external_resolve_symbol(const char *name) {
     if (!strcmp(name, "printf")) return (uint32_t)(uintptr_t)&printf;
     return 0;
 }
-uint32_t udynlink_external_resolve_critical_symbol(const char *name) { return 0; }
 int udynlink_external_is_pointer_in_ram(const void *p) {
     return (uintptr_t)p >= 0x20000000 && (uintptr_t)p < 0x20040000;
 }
-udynlink_module_t *udynlink_external_get_module_handle(const char *name) { return NULL; }
 ```
 
 **4. Load and call a module**
@@ -63,8 +61,8 @@ udynlink_module_t mod;
 if (udynlink_load_module(&mod, module_data, NULL, 0, UDYNLINK_LOAD_MODE_COPY_ALL) != UDYNLINK_OK)
     return;  // handle error
 
-// Critical: set LOT base before calling any module function
-*(uint32_t *)UDYNLINK_LOT_BASE_ADDR = mod.ram_base;
+// Prepare r9 for this module before calling any module function
+UDYNLINK_PREPARE_CALL(&mod);
 
 void (*hello)(int) = (void (*)(int))udynlink_get_symbol_value(&mod, "hello");
 hello(42);
@@ -103,14 +101,13 @@ This produces `mod_hello.bin` and `mod_hello_module_data.h`.
 
 **3. The host loads and calls your module** (see Quick Start: Host above)
 
-For the complete guide covering dependencies, C++ modules, data handling, and the full `mkmodule` reference, see [Writing Modules](docs/writing-modules.md).
+For the complete guide covering C++ modules, data handling, and the full `mkmodule` reference, see [Writing Modules](docs/writing-modules.md).
 
 ## Status
 
-- All 25 integration tests pass on 6 QEMU platforms (Cortex-M0/M3/M4/M4F/M7/M33)
+- All 20 integration tests pass on 6 QEMU platforms (Cortex-M0/M3/M4/M4F/M7/M33)
 - C and C++ modules supported (no exceptions, no RTTI)
 - ABI versioning and architecture tag validation at load time
-- Module dependency tracking with safe unload
 - Non-contiguous image loading for SD card, SPI flash, and custom pipelines
 - Low-level relocation primitives for building custom loading pipelines
 - Fine-grained planning APIs (`udynlink_validate_header`, `udynlink_compute_ram_size`) for pre-allocation
@@ -133,8 +130,7 @@ Produces `build/libudynlink.a`. Downstream projects can use `add_subdirectory()`
 ```bash
 cd scripts
 python3 mkmodule --target cortex-m4 source.c
-python3 mkmodule --target cortex-m33 --depends mod_a,mod_b source.cpp
-python3 mkmodule --target cortex-m7 --public-symbols init,start,stop source.c
+python3 mkmodule --target cortex-m33 --public-symbols init,start,stop source.c
 ```
 
 Supported targets: `cortex-m0`, `cortex-m0plus`, `cortex-m3`, `cortex-m4`, `cortex-m4f`, `cortex-m7`, `cortex-m33`, `cortex-m55`, `cortex-m85`.
@@ -162,12 +158,12 @@ Each test validates all three load modes (COPY_ALL, COPY_TEXT_DATA, XIP) at both
 
 | Platform | QEMU Machine | CPU | Status | Notes |
 |----------|-------------|-----|--------|-------|
-| `stm32f429_discovery` | STM32F429I-Discovery | cortex-m4 | All 25 tests pass | Legacy xPack QEMU, fast baseline |
-| `mps2_an386` | mps2-an386 | cortex-m4 | All 25 tests pass | Mainline QEMU |
-| `mps2_an385` | mps2-an385 | cortex-m3 | All 25 tests pass | Mainline QEMU |
-| `mps2_an500` | mps2-an500 | cortex-m7 | All 25 tests pass | Mainline QEMU |
-| `mps2_an505` | mps2-an505 | cortex-m33 | All 25 tests pass | Mainline QEMU, secure boot alias |
-| `olimex_stm32_h405` | olimex-stm32-h405 | cortex-m4f | All 25 tests pass | Hard-float M4F |
+| `stm32f429_discovery` | STM32F429I-Discovery | cortex-m4 | All 40 tests pass | Legacy xPack QEMU, fast baseline |
+| `mps2_an386` | mps2-an386 | cortex-m4 | All 40 tests pass | Mainline QEMU |
+| `mps2_an385` | mps2-an385 | cortex-m3 | All 40 tests pass | Mainline QEMU |
+| `mps2_an500` | mps2-an500 | cortex-m7 | All 40 tests pass | Mainline QEMU |
+| `mps2_an505` | mps2-an505 | cortex-m33 | All 40 tests pass | Mainline QEMU, secure boot alias |
+| `olimex_stm32_h405` | olimex-stm32-h405 | cortex-m4f | All 40 tests pass | Hard-float M4F |
 | `microbit` | microbit | cortex-m0 | Builds, `-kernel` broken | Needs raw binary loader |
 | `stm32f103_bluepill` | NUCLEO-F103RB | cortex-m3 | Partial | Flash-RAM call quirk (legacy QEMU) |
 | `stm32f051_discovery` | STM32F0-Discovery | cortex-m0 | Partial | Same quirk |

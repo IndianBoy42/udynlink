@@ -15,7 +15,7 @@ For deep work on a specific folder, also read that folder's `codemap.md`.
 
 This repo is based on the **eh2k fork** which adds: C++ support (`__init_array`), `--gc-sections` dead code elimination, `--public-symbols` selective exporting, `R_ARM_ABS32`/`R_ARM_TARGET1` data relocations, fixed LOT base at `0x20000000`, multiple module instances, and GitHub Actions CI.
 
-Recent expansion adds: compile-time target configuration (`UDYNLINK_LOT_BASE_ADDR`), ABI versioning with `mod_version`/`udynlink_version`/`arch_tag`, architecture tag validation at load time, a Python target database (`scripts/targets.py`) supporting Cortex-M0/M0+/M3/M4/M4F/M7/M33/M55/M85, and per-target assembly prologue templates.
+Recent expansion adds: ABI versioning with `mod_version`/`udynlink_version`/`arch_tag`, architecture tag validation at load time, a Python target database (`scripts/targets.py`) supporting Cortex-M0/M0+/M3/M4/M4F/M7/M33/M55/M85, and per-target assembly prologue templates.
 
 ## Documentation Structure
 
@@ -23,9 +23,9 @@ All user-facing documentation lives under `docs/` and is summarized in `docs/REA
 
 | Guide | Description |
 |-------|-------------|
-| `docs/how-it-works.md` | Technical deep-dive: PIC model, LOT/r9 mechanism, relocations, binary format, ABI versioning, deferred dependencies |
-| `docs/integrating-as-host.md` | Adding udynlink to your firmware, implementing callbacks, symbol tables, lifecycle, thread safety, circular/optional deps |
-| `docs/writing-modules.md` | Creating loadable C/C++ modules, consuming symbols, dependencies, mkmodule reference, optional dep detection |
+| `docs/how-it-works.md` | Technical deep-dive: PIC model, LOT/r9 mechanism, relocations, binary format, ABI versioning |
+| `docs/integrating-as-host.md` | Adding udynlink to your firmware, implementing callbacks, symbol tables, lifecycle, thread safety |
+| `docs/writing-modules.md` | Creating loadable C/C++ modules, consuming symbols, mkmodule reference |
 | `docs/api-reference.md` | Complete reference for all public functions, structs, macros, and callbacks |
 | `docs/examples.md` | Working code examples for every major feature |
 | `docs/testing.md` | Running tests, adding test cases and platforms, debugging |
@@ -74,15 +74,13 @@ python3 mkmodule --gen-c-header --header-path /some/path source1.c [source2.c ..
 
 Additional flags:
 - `--public-symbols func1,func2` — only export named symbols (reduces image size)
-- `--depends mod_a,mod_b` — declare module dependencies by name; the loader enforces that all named dependencies are already loaded before loading this module
 - `-O <level>` — optimization level (`0`, `s`, `2`, `3`, `z`; default: `s`)
 - `--bin-name <path>` — custom output binary name
 - `--build-flags=<flags>` — prepend extra compiler flags
 - `--mcpu <cpu>` — target CPU (default: `cortex-m4`)
 - `--target <name>` — target from the target database (default: `cortex-m4`). Supported: `cortex-m0`, `cortex-m0plus`, `cortex-m3`, `cortex-m4`, `cortex-m4f`, `cortex-m7`, `cortex-m33`, `cortex-m55`, `cortex-m85`
 - `--mod-version <ver>` — module ABI version (default: `1.0`)
-- `--udynlink-version <ver>` — loader ABI version (default: `2.0`)
-- `--lot-base <addr>` — LOT base address (default: `0x20000000`)
+- `--udynlink-version <ver>` — loader ABI version (default: `3.0`)
 
 For C++ sources (`.cpp`/`.cxx`), the toolchain automatically adds `-fno-exceptions -fno-rtti -fno-use-cxa-atexit` and compiles `cpp_init_fini.c` for `__init_array` support.
 
@@ -105,7 +103,7 @@ just test-f429-single test-globals1   # Single test on STM32F429
 ```
 
 Each test is executed **twice**: once with `-O0` and once with `-Os`.
-The full suite of 25 tests per platform completes in ~30 seconds (mainline QEMU).
+The full suite of 20 tests per platform completes in ~30 seconds (mainline QEMU).
 
 ### Run a single test manually (advanced)
 The test driver orchestrates several steps:
@@ -117,8 +115,8 @@ The test driver orchestrates several steps:
    cmake --build tests/build --target test1.elf
    ```
 4. Runs QEMU with the freshly compiled `test1.elf`
-   - Default: `qemu-system-gnuarmeclipse -board STM32F429I-Discovery -image test1.elf -nographic`
-   - Override via env vars: `UDYNLINK_QEMU_BIN`, `UDYNLINK_QEMU_MACHINE`, `UDYNLINK_QEMU_CPU`, `UDYNLINK_QEMU_EXTRA_FLAGS`
+    - Default: `qemu-system-gnuarmeclipse -board STM32F429I-Discovery -image test1.elf -nographic`
+    - Override via env vars: `UDYNLINK_QEMU_BIN`, `UDYNLINK_QEMU_MACHINE`, `UDYNLINK_QEMU_CPU`, `UDYNLINK_QEMU_EXTRA_FLAGS`
 5. Checks output for `*** TEST OK ***` and regex matches from `test_data.py`
 
 ### Build a loadable module
@@ -129,15 +127,13 @@ python3 mkmodule --gen-c-header --header-path /some/path source1.c [source2.c ..
 
 Additional flags:
 - `--public-symbols func1,func2` — only export named symbols (reduces image size)
-- `--depends mod_a,mod_b` — declare module dependencies by name; the loader enforces that all named dependencies are already loaded before loading this module
 - `-O <level>` — optimization level (`0`, `s`, `2`, `3`, `z`; default: `s`)
 - `--bin-name <path>` — custom output binary name
 - `--build-flags=<flags>` — prepend extra compiler flags
 - `--mcpu <cpu>` — target CPU (default: `cortex-m4`)
 - `--target <name>` — target from the target database (default: `cortex-m4`). Supported: `cortex-m0`, `cortex-m0plus`, `cortex-m3`, `cortex-m4`, `cortex-m4f`, `cortex-m7`, `cortex-m33`, `cortex-m55`, `cortex-m85`
 - `--mod-version <ver>` — module ABI version (default: `1.0`)
-- `--udynlink-version <ver>` — loader ABI version (default: `2.0`)
-- `--lot-base <addr>` — LOT base address (default: `0x20000000`)
+- `--udynlink-version <ver>` — loader ABI version (default: `3.0`)
 
 For C++ sources (`.cpp`/`.cxx`), the toolchain automatically adds `-fno-exceptions -fno-rtti -fno-use-cxa-atexit` and compiles `cpp_init_fini.c` for `__init_array` support.
 
@@ -183,15 +179,15 @@ The platform is selected via `-DUDYNLINK_PLATFORM=<name>` (default: `stm32f429_d
 
 ## New Headers
 
-- `udynlink/udynlink_call.h` — C convenience layer for host-call ergonomics (Phase 1). Provides `udynlink_func_t`, `udynlink_resolve_func()`, `UDYNLINK_CALL`, and `UDYNLINK_CALL_MODULE_FUNC`.
+- `udynlink/udynlink_call.h` — C convenience layer for host-call ergonomics. Provides `udynlink_func_t`, `udynlink_resolve_func()`, `UDYNLINK_CALL`, and `UDYNLINK_CALL_MODULE_FUNC`. These macros save and restore the host's `r9` around module calls.
 
 ## Architecture & Key Constraints
 
 ### Position-Independent Code Model
 - Modules are compiled with `-fPIE -msingle-pic-base -mno-pic-data-is-text-relative -ffunction-sections -fdata-sections`
 - Data access uses `r9` as a base register pointing to the **LOT** (Linker Offset Table)
-- Exported functions get an assembly prologue (generated from `scripts/asm_template_*.tmpl`) that loads `r9` from a **fixed memory address** (default `0x20000000`, configurable via `UDYNLINK_LOT_BASE_ADDR`)
-- **Host must write `p_mod->ram_base` to `*(uint32_t*)UDYNLINK_LOT_BASE_ADDR` before calling any module function** (this is the LOT base)
+- Exported functions get an assembly prologue (generated from `scripts/asm_template_*.tmpl`) that saves the caller's `r9`, loads `r9` with the module's LOT base (`p_mod->ram_base`), and restores the original `r9` on return
+- **Host must use `UDYNLINK_PREPARE_CALL(p_mod)` before calling any module function** (or use the `UDYNLINK_CALL` macro which handles this automatically)
 - The `--no-prologue` flag skips the assembly wrapper and sets `UDYNLINK_ARCH_FLAG_NO_PROLOGUE` in the module header. The host must use `UDYNLINK_PREPARE_CALL()` to set `r9` directly for such modules.
 
 ### Host Firmware Integration
@@ -201,18 +197,10 @@ The host MCU firmware must implement the functions in `udynlink/udynlink_externa
 - `udynlink_external_resolve_symbol` (bind foreign symbols at load time)
 - `udynlink_external_is_pointer_in_ram`
 
-Without these, the linker will not link. `udynlink_external_resolve_symbol` is the hook that lets modules call into the host firmware or into other loaded modules.
-
-### Three-Tier Symbol Resolution (ABI 2.0+)
-With module dependency tracking, symbol resolution follows a three-tier search order at load time:
-1. **Critical host symbols** — resolved first via `udynlink_external_resolve_symbol` (e.g., core firmware services)
-2. **Dependency modules** — if the symbol is not found in the host, the loader searches already-loaded modules that were declared via `mkmodule --depends mod_a,mod_b`
-3. **Fallback host symbols** — if still unresolved, a second callback (`udynlink_external_resolve_symbol_fallback`) provides a final chance for the host to supply the symbol
-
-This allows modules to depend on symbols exported by other modules without the host firmware needing to re-export them.
+Without these, the linker will not link. `udynlink_external_resolve_symbol` is the hook that lets modules call into the host firmware.
 
 ### Weak Symbol Support
-`__attribute__((weak))` symbols defined in a module are classified as `UDYNLINK_SYM_TYPE_WEAK`.  At load time the loader applies the module's own address as the default, then attempts host/dependency override via the same three-tier resolution used for extern symbols.  If no override is found, the module's definition remains — the load does **not** fail.
+`__attribute__((weak))` symbols defined in a module are classified as `UDYNLINK_SYM_TYPE_WEAK`. At load time the loader applies the module's own address as the default, then attempts host override via `udynlink_external_resolve_symbol()`. If no override is found, the module's definition remains — the load does **not** fail.
 
 **Important limitation:** direct internal calls (`bl`) are PC-relative and resolved at link time.  The generated prologue wrapper unconditionally branches to the module's renamed local implementation, so **internal callers always use the module's own weak definition**.  Host override is only effective for:
 - **Data weak symbols** — LOT/data relocations are patched at load time
@@ -223,16 +211,16 @@ Undefined weak symbols (`STB_WEAK` + `SHN_UNDEF`) are treated as `external` and 
 
 ### C++ Module Support
 - Call `udynlink_cpp_init(p_mod)` after loading a C++ module to run global constructors via `__init_array`
-- The host must set `*(uint32_t*)UDYNLINK_LOT_BASE_ADDR = p_mod->ram_base` before calling `udynlink_cpp_init`
+- The host must set `r9` to the module's LOT base (`p_mod->ram_base`) before calling `udynlink_cpp_init`, using `UDYNLINK_PREPARE_CALL(p_mod)` or `UDYNLINK_CALL`
 
 ### Module Image Format
-Binary modules start with the signature `UDLM`, followed by a 36-byte header (32 bytes in ABI v1.0), relocation table, symbol table, dependency string table (deps strtab), `.text`, and `.data`. The loader (`udynlink_load_module`) validates the signature, checks ABI version and architecture tag compatibility, applies relocations, and resolves extern symbols.
+Binary modules start with the signature `UDLM`, followed by a 32-byte header, relocation table, symbol table, `.text`, and `.data`. The loader (`udynlink_load_module`) validates the signature, checks ABI version and architecture tag compatibility, applies relocations, and resolves extern symbols.
 
-Binary layout (ABI v2.0+): [Header 36B] [Relocs] [Symtab] [Deps strtab] [Code] [Data]
+Binary layout: [Header 32B] [Relocs] [Symtab] [Code] [Data]
 
 Relocation types handled: `R_ARM_GOT_BREL` (LOT), `R_ARM_ABS32` and `R_ARM_TARGET1` (data), `R_ARM_THM_CALL`/`R_ARM_THM_JUMP24` (ignored, PC-relative).
 
-The header contains `mod_version`, `udynlink_version`, `arch_tag`, `num_deps`, and `deps_strtab_size` fields for runtime compatibility checking. `arch_tag` encodes the core family, FPU presence, and float ABI. The deps strtab is padded to 4-byte boundary to ensure code section alignment.
+The header contains `mod_version`, `udynlink_version`, and `arch_tag` fields for runtime compatibility checking. `arch_tag` encodes the core family, FPU presence, and float ABI.
 
 ### Three Load Modes
 All tests validate all three modes by default:
@@ -247,12 +235,12 @@ Unlike the original, the eh2k fork allows **multiple instances of the same modul
 
 | Platform | QEMU Machine | QEMU Binary | CPU | Status | Notes |
 |----------|--------------|-------------|-----|--------|-------|
-| `stm32f429_discovery` | STM32F429I-Discovery | `qemu-system-gnuarmeclipse` | cortex-m4 | ✅ **48/50 pass (2 skipped)** | Fast, legacy xPack fork; `test-strip-init-array` skipped due to semihosting heap corruption |
-| `mps2_an386` | mps2-an386 | `qemu-system-arm` (9.2.4+) | cortex-m4 | ✅ **All 38 tests pass** | Mainline QEMU, ~0.5s/test |
-| `olimex_stm32_h405` | olimex-stm32-h405 | `qemu-system-arm` | cortex-m4f | ✅ **All 38 tests pass** | Hard-float M4F on mainline QEMU |
-| `mps2_an385` | mps2-an385 | `qemu-system-arm` | cortex-m3 | ✅ **All 38 tests pass** | Mainline QEMU |
-| `mps2_an500` | mps2-an500 | `qemu-system-arm` | cortex-m7 | ✅ **All 38 tests pass** | Mainline QEMU |
-| `mps2_an505` | mps2-an505 | `qemu-system-arm` | cortex-m33 | ✅ **All 38 tests pass** | Mainline QEMU, secure boot (see notes) |
+| `stm32f429_discovery` | STM32F429I-Discovery | `qemu-system-gnuarmeclipse` | cortex-m4 | ✅ **All 40 tests pass** | Fast, legacy xPack fork |
+| `mps2_an386` | mps2-an386 | `qemu-system-arm` (9.2.4+) | cortex-m4 | ✅ **All 40 tests pass** | Mainline QEMU, ~0.5s/test |
+| `olimex_stm32_h405` | olimex-stm32-h405 | `qemu-system-arm` | cortex-m4f | ✅ **All 40 tests pass** | Hard-float M4F on mainline QEMU |
+| `mps2_an385` | mps2-an385 | `qemu-system-arm` | cortex-m3 | ✅ **All 40 tests pass** | Mainline QEMU |
+| `mps2_an500` | mps2-an500 | `qemu-system-arm` | cortex-m7 | ✅ **All 40 tests pass** | Mainline QEMU |
+| `mps2_an505` | mps2-an505 | `qemu-system-arm` | cortex-m33 | ✅ **All 40 tests pass** | Mainline QEMU, secure boot (see notes) |
 | `microbit` | microbit | `qemu-system-arm` | cortex-m0 | ⚠️ **Builds, `-kernel` broken** | QEMU microbit machine does not support ELF `-kernel` at 0x00000000 |
 | `stm32f103_bluepill` | NUCLEO-F103RB | `qemu-system-gnuarmeclipse` | cortex-m3 | ⚠️ **Boots, internal calls OK** | Flash→RAM host calls hang (QEMU quirk) |
 | `stm32f051_discovery` | STM32F0-Discovery | `qemu-system-gnuarmeclipse` | cortex-m0 | ⚠️ **Boots, internal calls OK** | Same Flash→RAM quirk as M3 |
@@ -271,7 +259,6 @@ QEMU's `microbit` machine does not properly load ELF files via `-kernel` at `0x0
 ## Known Issues (Carried Forward)
 
 - **No thread safety** — `module_table` is a bare static array with no locking. Cortex-M targets often use interrupts; concurrent load/unload from different interrupt levels will corrupt state. (OUT OF SCOPE)
-- **Cross-module function calls do not switch the LOT base** — When module A calls a function resolved from dependency module B, B's assembly prologue loads `r9` from the single global word `UDYNLINK_LOT_BASE_ADDR`. Unless the host manually rewrote that word to B's `ram_base` before the call, B executes with `r9` pointing to A's LOT. This is safe only for pure leaf functions that never access global data. The existing QEMU tests (`test-deps`, `test-circular-deps-link`, `test-optional-dep`) all use trivial leaf functions and therefore pass without exposing the bug. Module-to-module direct calls via `--depends` are considered **experimental and dangerous** for real-world code. (DOCUMENTED LIMITATION)
 - **M3/M0 QEMU hosts have Flash→RAM call quirk** — Modules calling host functions (e.g. `printf`) hang under `qemu-system-gnuarmeclipse` for STM32F103/STM32F051 boards, but work correctly on STM32F429. This is a known `qemu-system-gnuarmeclipse` emulation bug; mainline QEMU (`qemu-system-arm`) does **not** exhibit this issue.
 - **F429 semihosting heap corruption** — `qemu-system-gnuarmeclipse` 2.8.0 corrupts heap-allocated guest RAM at low addresses (0x20000400–0x20000600 range) during semihosting `SYS_WRITE0` calls. This causes `test-strip-init-array` to fail on the F429 platform. All other platforms (MPS2, H405, etc.) using mainline `qemu-system-arm` are unaffected. The test is skipped on `stm32f429_discovery` via `skip_platforms` in `test_data.py`.
 - **xPack QEMU 9.2.4 discontinued `qemu-system-gnuarmeclipse`** — Latest xPack releases only include `qemu-system-arm` (mainline). STM32F429 fast testing requires an older xPack release or the `xpack-dev-tools/qemu-arm` project.
@@ -296,13 +283,13 @@ The `.gitignore` and test harness generate these artifacts; do not commit them:
 | 1 | ~~Remove `#include <stdio.h>` from `udynlink.c`~~ | ~~High~~ | Done |
 | 2 | ~~Fix `UDYNLINK_MAKE_VERSION` / `UDYNLINK_GET_MAJOR_VERSION` macros~~ | ~~High~~ | Done |
 | 3 | ~~Uncomment and implement version fields in module header~~ | ~~Medium~~ | Done |
-| 4 | ~~Make LOT base address configurable (not hardcoded `0x20000000`)~~ | ~~Medium~~ | Done |
-| 5 | ~~Add thread safety for module table~~ | ~~Medium~~ | Done. `dep_refcount` tracking partially addresses concurrent unload concerns. Full interrupt-disable around load/unload is still TODO. |
+| 4 | ~~Make LOT base address configurable (not hardcoded `0x20000000`)~~ | ~~Medium~~ | Removed in v3.0. Host now manages `r9` directly via `UDYNLINK_PREPARE_CALL`. |
+| 5 | ~~Add thread safety for module table~~ | ~~Medium~~ | Done. Full interrupt-disable around load/unload is still TODO. |
 | 6 | ~~Fix typos in `udynlink.h`~~ | ~~Low~~ | Done |
-| 7 | ~~Guard module unload against dependents~~ | ~~Medium~~ | Done. `dep_refcount` tracking prevents unloading a module with active dependents |
+| 7 | ~~Guard module unload against dependents~~ | ~~Medium~~ | Removed in v3.0 along with the built-in dependency system. |
 | 8 | ~~Migrate from `qemu-system-gnuarmeclipse` to mainstream QEMU~~ | ~~Medium~~ | **Partially done**. MPS2-AN386/AN385/AN500/AN505, microbit, and olimex-h405 all work on mainline QEMU. STM32F429 remains on legacy fork for speed. |
 | 9 | ~~Replace Eclipse-generated makefiles with CMake or Makefile~~ | ~~Low~~ | Done |
 | 10 | ~~Add Cortex-M0+/M3/M7/M33/M55/M85 support~~ | ~~Low~~ | Done. Toolchain supports all 9 targets. QEMU hosts created for M0, M3, M4/M4F, M7, M33. M55/M85 hosts need upstream QEMU board support. |
 | 11 | Add unit tests for Python toolchain | Low | Only integration tests via QEMU currently exist |
 | 12 | Add Justfile for convenient command running | Low | Done. See `just --list` for available commands. |
-| 13 | ~~Add circular dependency support (sentinel + link_dependency)~~ | ~~Medium~~ | Done. `UDYNLINK_DEP_DEFERRED` and `UDYNLINK_SYM_DEFERRED` sentinels, `udynlink_link_incremental()`, `udynlink_relink_all()`, `udynlink_link_symbol()`, query helpers, and 4 new integration tests. |
+| 13 | ~~Add circular dependency support (sentinel + link_dependency)~~ | ~~Medium~~ | Removed in v3.0. Low-level linking primitives (`UDYNLINK_SYM_DEFERRED`, `udynlink_link_symbol()`, etc.) are retained for advanced use cases. |

@@ -8,7 +8,6 @@ This guide is for module authors who want to write C or C++ code that can be loa
 - [Quick Start: Hello World Module](#quick-start-hello-world-module)
 - [Module Code Structure](#module-code-structure)
 - [Consuming Host Symbols](#consuming-host-symbols)
-- [Module Dependencies (Inter-Module Symbols)](#module-dependencies-inter-module-symbols)
 - [C++ Modules](#c-modules)
 - [Data and Variables in Modules](#data-and-variables-in-modules)
 - [Target Selection and Cross-Compilation](#target-selection-and-cross-compilation)
@@ -33,7 +32,6 @@ Your module runs in the host's address space and uses the host's memory allocato
 - Call host-provided functions (`printf`, `malloc`, sensor drivers, etc.)
 - Maintain global and static state
 - Use C++ classes, templates, and namespaces
-- Call functions exported by other loaded modules (with dependency tracking)
 
 ### What Modules Cannot Do
 
@@ -84,8 +82,8 @@ void load_and_run(void) {
         return;
     }
 
-    // Before calling ANY module function, set the LOT base address
-    *(uint32_t *)UDYNLINK_LOT_BASE_ADDR = mod.ram_base;
+    // Before calling ANY module function, prepare the call context
+    UDYNLINK_PREPARE_CALL(&mod);
 
     // Look up the exported function
     udynlink_sym_t sym;
@@ -224,133 +222,23 @@ Typical symbols a host firmware provides:
 - `memcpy`, `memset`, `strlen` — standard string/memory operations
 - Custom hardware abstractions: `sensor_read`, `adc_sample`, `pwm_set`, `spi_transfer`
 
-## Module Dependencies (Inter-Module Symbols)
+## C++ Modules
 
-Modules can consume symbols from other modules that are already loaded. This lets you build layered systems without the host firmware re-exporting every intermediate symbol.
+### Supported Features
 
-### Declaring Dependencies
+- Classes and objects
+- Constructors and destructors
+- Templates
+- Namespaces
+- Function overloading (for internal use; exported symbols need `extern "C"`)
 
-Tell `mkmodule` which modules your code needs:
+### Unsupported Features
 
-```bash
-python3 mkmodule --depends mod_provider consumer.c
-```
+The toolchain automatically adds these flags for `.cpp` and `.cxx` files:
 
-This records `mod_provider` in the module header. The loader will refuse to load `consumer` unless `mod_provider` (or another module with the same name) is already loaded.
-
-### At Runtime
-
-Dependencies must be loaded **before** the dependent module:
-
-```c
-udynlink_module_t provider, consumer;
-
-// Load provider first
-udynlink_load_module(&provider, provider_bin, NULL, 0, UDYNLINK_LOAD_MODE_COPY_ALL);
-
-// Then load consumer (succeeds because "mod_provider" is already loaded)
-udynlink_load_module(&consumer, consumer_bin, NULL, 0, UDYNLINK_LOAD_MODE_COPY_ALL);
-```
-
-### Consuming Symbols from Dependencies
-
-Inside `consumer.c`, simply use the function name. The loader resolves it through the dependency chain:
-
-```c
-// consumer.c
-#include <stdio.h>
-
-// Defined in mod_provider, not in this file or the host.
-extern int provider_add(int a, int b);
-
-int test(void) {
-    int result = provider_add(3, 4);
-    printf("provider_add(3,4) = %d\n", result);
-    return result == 7;
-}
-```
-
-The loader resolves `provider_add` by searching:
-1. Host critical symbols (`udynlink_external_resolve_critical_symbol`)
-2. Already-loaded dependency modules (`udynlink_external_get_module_handle`)
-3. Host fallback symbols (`udynlink_external_resolve_symbol`)
-
-### Safe Unload
-
-The loader tracks how many modules depend on each loaded module via `dep_refcount`. You cannot unload a dependency that still has active dependents:
-
-```c
-udynlink_unload_module(&consumer);   // OK
-udynlink_unload_module(&provider);   // OK — no more dependents
-```
-
-If you try to unload `provider` while `consumer` is still loaded, the call returns `UDYNLINK_ERR_MODULE_HAS_DEPENDENTS`.
-
-> ⚠️ **CRITICAL — Cross-Module Calls and the LOT Base**
->
-> When the consumer calls `provider_add`, the compiler generates an indirect call through the LOT. The LOT slot contains the **provider's exported wrapper address**. When execution reaches that wrapper, it loads `r9` from the global `UDYNLINK_LOT_BASE_ADDR` word. If the host last wrote the **consumer's** base there, the provider function runs with `r9` pointing to the **consumer's LOT**.
->
-> **This is safe only when the provider function is a pure leaf** — no global variables, no calls to its own exported functions, no callbacks back into the consumer. The existing test suite uses only trivial leaf functions (`return a + b;`, `return 123;`) and therefore passes without exposing the bug.
->
-> **For production use, do not rely on direct module-to-module function calls via `--depends` unless every called dependency function is provably stateless.** Prefer host-mediated dispatch where the host sets the correct LOT base before calling the target module.
-
-### Optional Dependencies
-
-A module can declare an optional dependency and detect at runtime whether it is linked. If the host returns `UDYNLINK_DEP_DEFERRED` during load (or the dependency is never loaded), the extern symbol's LOT slot contains `0`. The module can check for this:
-
-```c
-extern void log_printf(const char *fmt, ...);
-
-void module_init(void) {
-    if (log_printf != NULL) {
-        log_printf("module initialized\n");
-    } else {
-        // Degraded mode: no logging
-    }
-}
-```
-
-Build with `--depends logging` even though `logging` may not be loaded. The host controls whether the dependency is required or optional by returning `NULL` (fail) or `UDYNLINK_DEP_DEFERRED` (skip) from `udynlink_external_get_module_handle()`.
-
-**Caveat:** If the host provides a fallback stub for `log_printf`, the LOT slot is non-zero and the module cannot detect absence using this pattern alone.
-
-### Example: Provider and Consumer
-
-**`provider.c`** — exports math utilities:
-
-```c
-int provider_add(int a, int b) {
-    return a + b;
-}
-
-int provider_mul(int a, int b) {
-    return a * b;
-}
-```
-
-**`consumer.c`** — uses them:
-
-```c
-#include <stdio.h>
-
-extern int provider_add(int a, int b);
-
-int compute(int x) {
-    return provider_add(x, x);
-}
-
-int test(void) {
-    printf("dep ok\n");
-    return 1;
-}
-```
-
-**Build:**
-
-```bash
-python3 mkmodule provider.c
-python3 mkmodule --depends provider consumer.c
-```
+- `-fno-exceptions` — no `try`/`catch`/`throw`
+- `-fno-rtti` — no `typeid` or `dynamic_cast`
+- `-fno-use-cxa-atexit` — no static object destruction at exit
 
 ## C++ Modules
 
@@ -372,12 +260,12 @@ The toolchain automatically adds these flags for `.cpp` and `.cxx` files:
 
 ### Global Constructors
 
-If your module has global C++ objects with constructors, the host **must** call `udynlink_cpp_init()` after loading the module. The function sets the LOT base internally before invoking `__init_array`; you must set it again before calling any other module function:
+If your module has global C++ objects with constructors, the host **must** call `udynlink_cpp_init()` after loading the module. The function sets the call context internally before invoking `__init_array`; you should still use `UDYNLINK_PREPARE_CALL()` before calling any other module function:
 
 ```c
 udynlink_load_module(&mod, hello_cpp_bin, NULL, 0, UDYNLINK_LOAD_MODE_COPY_ALL);
-udynlink_cpp_init(&mod);   // Run __init_array (sets LOT base internally)
-*(uint32_t *)UDYNLINK_LOT_BASE_ADDR = mod.ram_base; // Re-set before other calls
+udynlink_cpp_init(&mod);   // Run __init_array (sets context internally)
+UDYNLINK_PREPARE_CALL(&mod); // Prepare before other calls
 ```
 
 The toolchain automatically compiles `cpp_init_fini.c` and links it into C++ modules. This file walks `__init_array` and `__preinit_array` to invoke all global constructors.
@@ -418,7 +306,7 @@ python3 mkmodule --gen-c-header mod_hello_cpp.cpp
 udynlink_module_t mod;
 udynlink_load_module(&mod, mod_hello_cpp_module_data, NULL, 0,
                      UDYNLINK_LOAD_MODE_COPY_ALL);
-*(uint32_t *)UDYNLINK_LOT_BASE_ADDR = mod.ram_base;
+UDYNLINK_PREPARE_CALL(&mod);
 udynlink_cpp_init(&mod);
 
 // Now safe to call exported functions
@@ -573,14 +461,12 @@ Source files are compiled with:
 | `--target <name>` | Target from the database. Default: `cortex-m4`. |
 | `--mcpu <cpu>` | Raw GCC `-mcpu` flag. Overrides the target's default. |
 | `--public-symbols func1,func2` | Comma-separated list of symbols to export and wrap. If omitted, all global symbols are exported. |
-| `--depends mod_a,mod_b` | Comma-separated list of dependency module names. The loader will enforce that these modules are already loaded. Circular dependencies are rejected by default but can be loaded via deferred dependency support (see [Host Guide](integrating-as-host.md#deferred-dependencies-and-symbols)). |
 | `-O <level>` | Optimization level: `0`, `s` (default, size), `2`, `3`, `z`. |
 | `--bin-name <path>` | Custom output path for the `.bin` file. Default is derived from the first source file. |
 | `--gen-c-header` | Generate a C header file containing the binary as a `static const unsigned char` array. |
 | `--header-path <dir>` | Directory where the generated C header is written. Default: current directory. |
 | `--mod-version <ver>` | Module ABI version in `major.minor` format. Default: `1.0`. |
-| `--udynlink-version <ver>` | Minimum loader ABI version required. Default: `2.0`. |
-| `--lot-base <addr>` | LOT base address written into the assembly prologue. Default: `0x20000000`. |
+| `--udynlink-version <ver>` | Minimum loader ABI version required. Default: `3.0`. |
 | `--build-flags <flags>` | Extra compiler flags prepended to the compile command. |
 | `--module-name <name>` | Explicit module name. Default is derived from the first source file name. |
 | `--disasm` | Show disassembly of `.text` after linking. |
@@ -590,6 +476,7 @@ Source files are compiled with:
 | `--stop-after-link` | Stop after linking to `.elf`. |
 | `--no-verbose` | Do not print executed commands. |
 | `--no-debug` | Do not print debug output. |
+| `--no-prologue` | Skip the assembly prologue/wrapper on exported functions. The host must use `UDYNLINK_PREPARE_CALL()` to set `r9` before every call. |
 
 ### Environment Variables
 
@@ -709,7 +596,7 @@ int init(void) {
 
 ### Service Pattern
 
-A module provides services consumed by other modules via the dependency system:
+A module provides services consumed by the host or other modules via explicit symbol registration:
 
 ```c
 // math_service.c
@@ -717,10 +604,7 @@ int svc_add(int a, int b) { return a + b; }
 int svc_sub(int a, int b) { return a - b; }
 ```
 
-```bash
-python3 mkmodule math_service.c
-python3 mkmodule --depends math_service client.c
-```
+The host loads the module, looks up the service functions, and passes them to consumers as function pointers. Alternatively, consumers can resolve service symbols at load time via the host's `udynlink_external_resolve_symbol()` callback.
 
 ## Common Pitfalls and Troubleshooting
 
@@ -737,7 +621,7 @@ python3 mkmodule --depends math_service client.c
 
 ### Crashes After Loading
 
-- **Forgot to set the LOT base address.** Before calling any module function, the host must write `mod.ram_base` to `*(uint32_t *)UDYNLINK_LOT_BASE_ADDR`.
+- **Forgot to prepare the call context.** Before calling any module function, the host must call `UDYNLINK_PREPARE_CALL(&mod)` (or manually set `r9` to `mod.ram_base`).
 - **Tried to call a function before `udynlink_load_module` returned.** Only call functions after a successful load.
 
 ### Module Works at `-O0` but Not `-Os`
@@ -749,15 +633,11 @@ python3 mkmodule --depends math_service client.c
 ### C++ Constructors Not Running
 
 - The host forgot to call `udynlink_cpp_init(&mod)` after loading.
-- The LOT base address must be set **before** calling `udynlink_cpp_init`.
+- The call context must be prepared with `UDYNLINK_PREPARE_CALL(&mod)` **before** calling `udynlink_cpp_init`, because constructors may touch module data.
 
 ### Taking the Address of an Exported Function
 
 Inside a module, `&my_exported_func` gives you the address of the **wrapper prologue**, not the raw function body. This is usually fine for callbacks, but if you need the raw address (for example, to compute a checksum over the function body), you cannot obtain it from within the module.
-
-### Unloading a Module That Has Dependents
-
-`udynlink_unload_module` returns `UDYNLINK_ERR_MODULE_HAS_DEPENDENTS` if another loaded module still declares this one as a dependency. Unload dependents first, then dependencies.
 
 ---
 

@@ -6,8 +6,8 @@
 - [Host with Symbol Table](#host-with-symbol-table)
 - [Host with Hash-Based Resolution](#host-with-hash-based-resolution)
 - [XIP (Execute In Place) from Flash](#xip-execute-in-place-from-flash)
-- [Inter-Module Dependencies](#inter-module-dependencies)
 - [C++ Module with Constructors](#c-module-with-constructors)
+- [Hot-Patching Symbols with `udynlink_link_symbol`](#hot-patching-symbols-with-udynlink_link_symbol)
 - [Loading from Non-Contiguous Sources](#loading-from-non-contiguous-sources)
 - [Multiple Module Instances](#multiple-module-instances)
 - [Embedding Modules in Firmware](#embedding-modules-in-firmware)
@@ -85,16 +85,6 @@ uint32_t udynlink_external_resolve_symbol(const char *name) {
     return 0;
 }
 
-uint32_t udynlink_external_resolve_critical_symbol(const char *name) {
-    (void)name;
-    return 0;
-}
-
-struct _udynlink_module_t *udynlink_external_get_module_handle(const char *module_name) {
-    (void)module_name;
-    return NULL;   /* no dependency tracking in this minimal host */
-}
-
 /* -------------------------------------------------------------------------- */
 /*  Main application                                                          */
 /* -------------------------------------------------------------------------- */
@@ -114,9 +104,8 @@ int main(void) {
         return 1;
     }
 
-    /* Before calling any module function, set the LOT base register */
-    uint32_t *lot_base = (uint32_t *)UDYNLINK_LOT_BASE_ADDR;
-    *lot_base = mod.ram_base;
+    /* Before calling any module function, prepare the call context */
+    UDYNLINK_PREPARE_CALL(&mod);
 
     /* Look up and call the "test" function */
     udynlink_sym_t sym;
@@ -138,8 +127,8 @@ int main(void) {
 
 ### Key points
 
-- `*(uint32_t *)UDYNLINK_LOT_BASE_ADDR = mod.ram_base` is **mandatory** before every cross-module call. The module's assembly prologue reads this fixed address to set `r9`.
-- Every host must implement all seven functions in `udynlink_externals.h`, even if some are stubs.
+- `UDYNLINK_PREPARE_CALL(&mod)` is **mandatory** before every module call. It sets `r9` (the LOT base register) to the module's `ram_base`.
+- Every host must implement the four functions in `udynlink_externals.h`, even if some are stubs.
 
 See also [How It Works](how-it-works.md) and [Host Guide](integrating-as-host.md).
 
@@ -195,11 +184,6 @@ uint32_t udynlink_external_resolve_symbol(const char *name) {
     return 0;   /* not found */
 }
 
-uint32_t udynlink_external_resolve_critical_symbol(const char *name) {
-    (void)name;
-    return 0;   /* defer to linear table */
-}
-
 /* -------------------------------------------------------------------------- */
 /*  Other required externals (malloc, free, vprintf, is_pointer_in_ram)     */
 /* -------------------------------------------------------------------------- */
@@ -209,9 +193,6 @@ void udynlink_external_free(void *p) { free(p); }
 void udynlink_external_vprintf(const char *s, va_list va) { vprintf(s, va); }
 int udynlink_external_is_pointer_in_ram(const void *p) {
     return ((uintptr_t)p >= 0x20000000 && (uintptr_t)p < 0x20010000);
-}
-struct _udynlink_module_t *udynlink_external_get_module_handle(const char *name) {
-    (void)name; return NULL;
 }
 ```
 
@@ -264,11 +245,6 @@ uint32_t udynlink_external_resolve_symbol(const char *name) {
     return (addr != NULL) ? (uint32_t)(uintptr_t)addr : 0;
 }
 
-uint32_t udynlink_external_resolve_critical_symbol(const char *name) {
-    (void)name;
-    return 0;   /* all symbols go through the hash table */
-}
-
 /* -------------------------------------------------------------------------- */
 /*  Other required externals                                                  */
 /* -------------------------------------------------------------------------- */
@@ -278,9 +254,6 @@ void udynlink_external_free(void *p) { free(p); }
 void udynlink_external_vprintf(const char *s, va_list va) { vprintf(s, va); }
 int udynlink_external_is_pointer_in_ram(const void *p) {
     return ((uintptr_t)p >= 0x20000000 && (uintptr_t)p < 0x20010000);
-}
-struct _udynlink_module_t *udynlink_external_get_module_handle(const char *name) {
-    (void)name; return NULL;
 }
 ```
 
@@ -353,14 +326,6 @@ uint32_t udynlink_external_resolve_symbol(const char *name) {
     return 0;
 }
 
-uint32_t udynlink_external_resolve_critical_symbol(const char *name) {
-    (void)name; return 0;
-}
-
-struct _udynlink_module_t *udynlink_external_get_module_handle(const char *name) {
-    (void)name; return NULL;
-}
-
 int main(void) {
     udynlink_module_t mod;
 
@@ -377,8 +342,7 @@ int main(void) {
     printf("Module loaded. RAM used: %u bytes\n", udynlink_get_ram_size(&mod));
 
     /* Call an exported function */
-    uint32_t *lot_base = (uint32_t *)UDYNLINK_LOT_BASE_ADDR;
-    *lot_base = mod.ram_base;
+    UDYNLINK_PREPARE_CALL(&mod);
 
     udynlink_sym_t sym;
     if (udynlink_lookup_symbol(&mod, "read_sensor", &sym)) {
@@ -403,388 +367,6 @@ For a module with 1 KiB code, 256 bytes `.data`, 64 bytes `.bss`, and 16 LOT ent
 | `XIP` | 16*4 + 256 + 64 = **384 bytes** |
 
 XIP saves **1008 bytes** in this example because the 1 KiB code section stays in flash.
-
----
-
-## Inter-Module Dependencies
-
-A module can declare dependencies on other modules. The loader enforces that all dependencies are loaded first, and it resolves `extern` symbols by searching dependency modules before falling back to the host.
-
-> ⚠️ **Warning:** The consumer module (`mod_consumer`) in this example calls `provider_add` and `provider_mul` from `mod_provider`. Because `provider_add` and `provider_mul` are pure leaf functions that do not access global data, this happens to work. If the provider functions accessed their own global variables or called their own exported functions, they would execute with the wrong `r9` (the consumer's LOT base) and hard-fault. See [Cross-Module Calls and the LOT Base](integrating-as-host.md#cross-module-calls-and-the-lot-base).
-
-### Provider module (`mod_provider.c`)
-
-```c
-/* Exports utility functions for other modules */
-int provider_add(int a, int b) {
-    return a + b;
-}
-
-int provider_mul(int a, int b) {
-    return a * b;
-}
-```
-
-Compile **without** `--depends` because this is the root provider:
-
-```bash
-python3 mkmodule --gen-c-header --header-path ../host_firmware \
-    ../modules/mod_provider.c
-```
-
-### Consumer module (`mod_consumer.c`)
-
-```c
-/* Calls functions from mod_provider */
-extern int provider_add(int a, int b);
-extern int provider_mul(int a, int b);
-
-int test(void) {
-    return (provider_add(2, 3) == 5 && provider_mul(4, 5) == 20);
-}
-```
-
-Compile **with** `--depends provider`:
-
-```bash
-python3 mkmodule --gen-c-header --header-path ../host_firmware \
-    --depends provider \
-    ../modules/mod_consumer.c
-```
-
-The module name used in `--depends` must match the module's own name entry (derived from the first source file name or `--module-name`).
-
-### Host code loading both modules
-
-```c
-#include <stdint.h>
-#include <string.h>
-#include <stdio.h>
-#include <stdarg.h>
-
-#include "udynlink.h"
-#include "mod_provider_module_data.h"
-#include "mod_consumer_module_data.h"
-
-/* -------------------------------------------------------------------------- */
-/*  Minimal externals                                                         */
-/* -------------------------------------------------------------------------- */
-
-#define MAX_MODULES 8
-static udynlink_module_t *g_modules[MAX_MODULES];
-static int g_module_count = 0;
-
-void *udynlink_external_malloc(size_t size) { return malloc(size); }
-void udynlink_external_free(void *p) { free(p); }
-void udynlink_external_vprintf(const char *s, va_list va) { vprintf(s, va); }
-int udynlink_external_is_pointer_in_ram(const void *p) {
-    return ((uintptr_t)p >= 0x20000000 && (uintptr_t)p < 0x20010000);
-}
-
-uint32_t udynlink_external_resolve_symbol(const char *name) {
-    if (!strcmp(name, "printf")) return (uint32_t)(uintptr_t)&printf;
-    return 0;
-}
-
-uint32_t udynlink_external_resolve_critical_symbol(const char *name) {
-    (void)name; return 0;
-}
-
-/* The loader uses this to verify that declared dependencies are loaded */
-struct _udynlink_module_t *udynlink_external_get_module_handle(const char *module_name) {
-    for (int i = 0; i < g_module_count; i++) {
-        if (g_modules[i] == NULL) continue;
-        const char *name = udynlink_get_module_name(g_modules[i]);
-        if (name && !strcmp(name, module_name))
-            return g_modules[i];
-    }
-    return NULL;
-}
-
-static void register_module(udynlink_module_t *p_mod) {
-    if (g_module_count < MAX_MODULES)
-        g_modules[g_module_count++] = p_mod;
-}
-
-static void unregister_module(udynlink_module_t *p_mod) {
-    for (int i = 0; i < g_module_count; i++) {
-        if (g_modules[i] == p_mod) {
-            g_modules[i] = g_modules[--g_module_count];
-            return;
-        }
-    }
-}
-
-/* -------------------------------------------------------------------------- */
-/*  Main application                                                          */
-/* -------------------------------------------------------------------------- */
-
-int main(void) {
-    udynlink_module_t mod_provider;
-    udynlink_module_t mod_consumer;
-    udynlink_error_t err;
-
-    /* 1. Load the provider FIRST */
-    memset(&mod_provider, 0, sizeof(mod_provider));
-    err = udynlink_load_module(&mod_provider, mod_provider_module_data,
-                               NULL, 0, UDYNLINK_LOAD_MODE_COPY_ALL);
-    if (err != UDYNLINK_OK) {
-        printf("Provider load failed: %s\n", udynlink_error_msg(&err));
-        return 1;
-    }
-    register_module(&mod_provider);
-
-    /* 2. Load the consumer (dependencies are validated automatically) */
-    memset(&mod_consumer, 0, sizeof(mod_consumer));
-    err = udynlink_load_module(&mod_consumer, mod_consumer_module_data,
-                               NULL, 0, UDYNLINK_LOAD_MODE_COPY_ALL);
-    if (err != UDYNLINK_OK) {
-        printf("Consumer load failed: %s\n", udynlink_error_msg(&err));
-        udynlink_unload_module(&mod_provider);
-        return 1;
-    }
-    register_module(&mod_consumer);
-
-    /* 3. Call the consumer */
-    uint32_t *lot_base = (uint32_t *)UDYNLINK_LOT_BASE_ADDR;
-    *lot_base = mod_consumer.ram_base;
-
-    udynlink_sym_t sym;
-    if (udynlink_lookup_symbol(&mod_consumer, "test", &sym)) {
-        int (*test_fn)(void) = (int (*)(void))(uintptr_t)sym.val;
-        printf("Consumer test: %d\n", test_fn());
-    }
-
-    /* 4. Unload in REVERSE order: consumer first, then provider */
-    unregister_module(&mod_consumer);
-    udynlink_unload_module(&mod_consumer);
-
-    unregister_module(&mod_provider);
-    udynlink_unload_module(&mod_provider);
-
-    return 0;
-}
-```
-
-### Unload order rules
-
-- A module with `dep_refcount > 0` cannot be unloaded (`UDYNLINK_ERR_MODULE_HAS_DEPENDENTS`).
-- Always unload **consumers** before **providers**.
-- If you try to unload `mod_provider` while `mod_consumer` is still loaded, the loader will reject it.
-
----
-
-## Circular Dependencies via Deferred Loading
-
-When two modules mutually depend on each other, normal loading fails because each requires the other to already be loaded. Use deferred loading to break the cycle.
-
-### Module A (`mod_a.c`)
-
-```c
-extern int mod_b_get_value(void);
-
-int mod_a_get_value(void) {
-    return 1;
-}
-
-int test(void) {
-    return 42 + mod_b_get_value();
-}
-```
-
-Build with `--depends mod_b`.
-
-### Module B (`mod_b.c`)
-
-```c
-extern int mod_a_get_value(void);
-
-int mod_b_get_value(void) {
-    return 2;
-}
-
-int test(void) {
-    return 10 + mod_a_get_value();
-}
-```
-
-Build with `--depends mod_a`.
-
-### Host code
-
-```c
-#include <stdint.h>
-#include <string.h>
-#include <stdio.h>
-#include <stdarg.h>
-
-#include "udynlink.h"
-#include "mod_a_module_data.h"
-#include "mod_b_module_data.h"
-
-#define MAX_MODULES 8
-static udynlink_module_t *g_modules[MAX_MODULES];
-static int g_module_count = 0;
-
-static const char *g_loading_names[MAX_MODULES];
-static int g_loading_count = 0;
-
-void *udynlink_external_malloc(size_t size) { return malloc(size); }
-void udynlink_external_free(void *p) { free(p); }
-void udynlink_external_vprintf(const char *s, va_list va) { vprintf(s, va); }
-int udynlink_external_is_pointer_in_ram(const void *p) {
-    return ((uintptr_t)p >= 0x20000000 && (uintptr_t)p < 0x20010000);
-}
-
-uint32_t udynlink_external_resolve_symbol(const char *name) {
-    (void)name; return 0;
-}
-
-uint32_t udynlink_external_resolve_critical_symbol(const char *name) {
-    (void)name; return 0;
-}
-
-udynlink_module_t *udynlink_external_get_module_handle(const char *name) {
-    for (int i = 0; i < g_module_count; i++) {
-        if (g_modules[i] == NULL) continue;
-        const char *mod_name = udynlink_get_module_name(g_modules[i]);
-        if (mod_name && !strcmp(mod_name, name))
-            return g_modules[i];
-    }
-    for (int i = 0; i < g_loading_count; i++) {
-        if (g_loading_names[i] && !strcmp(g_loading_names[i], name))
-            return UDYNLINK_DEP_DEFERRED;
-    }
-    return NULL;
-}
-
-static void register_module(udynlink_module_t *p_mod) {
-    if (g_module_count < MAX_MODULES)
-        g_modules[g_module_count++] = p_mod;
-}
-
-int main(void) {
-    udynlink_module_t mod_a, mod_b;
-    udynlink_error_t err;
-
-    // Pre-register both as "loading"
-    g_loading_names[0] = "mod_a";
-    g_loading_names[1] = "mod_b";
-    g_loading_count = 2;
-
-    // Load A (B is deferred)
-    memset(&mod_a, 0, sizeof(mod_a));
-    err = udynlink_load_module(&mod_a, mod_a_module_data, NULL, 0,
-                               UDYNLINK_LOAD_MODE_COPY_ALL);
-    if (err != UDYNLINK_OK) {
-        printf("A load failed: %s\n", udynlink_error_msg(&err));
-        return 1;
-    }
-    register_module(&mod_a);
-
-    // Load B (A is already loaded)
-    memset(&mod_b, 0, sizeof(mod_b));
-    err = udynlink_load_module(&mod_b, mod_b_module_data, NULL, 0,
-                               UDYNLINK_LOAD_MODE_COPY_ALL);
-    if (err != UDYNLINK_OK) {
-        printf("B load failed: %s\n", udynlink_error_msg(&err));
-        return 1;
-    }
-    register_module(&mod_b);
-
-    // Link the deferred direction: manually add B to A's deps, then resolve
-    mod_a.deps[mod_a.num_deps++] = &mod_b;
-    mod_b.dep_refcount++;
-    udynlink_link_incremental(&mod_a);
-
-    // Verify both are fully linked
-    printf("A fully linked: %d\n", udynlink_is_module_fully_linked(&mod_a));
-    printf("B fully linked: %d\n", udynlink_is_module_fully_linked(&mod_b));
-
-    // Call test functions
-    uint32_t *lot_base = (uint32_t *)UDYNLINK_LOT_BASE_ADDR;
-    udynlink_sym_t sym;
-
-    *lot_base = mod_a.ram_base;
-    udynlink_lookup_symbol(&mod_a, "test", &sym);
-    printf("A test: %d\n", ((int (*)(void))sym.val)());  // 44
-
-    *lot_base = mod_b.ram_base;
-    udynlink_lookup_symbol(&mod_b, "test", &sym);
-    printf("B test: %d\n", ((int (*)(void))sym.val)());  // 11
-
-    return 0;
-}
-```
-
-### Key points
-
-- `UDYNLINK_DEP_DEFERRED` breaks the cycle by allowing the loader to skip a dependency.
-- The host manually appends dependency pointers to `deps[]` and then calls `udynlink_link_incremental()` to resolve deferred symbols.
-- Circular modules remain un-unloadable (`dep_refcount >= 1` for all members).
-
-> ⚠️ **Warning:** This example uses trivial leaf functions (`mod_a_get_value` and `mod_b_get_value` return constants). It appears to work because neither function accesses global data. In real-world circular dependencies where each module uses its own global variables, direct cross-module calls will fail because the callee's wrapper prologue loads `r9` from the caller's LOT base. See [Cross-Module Calls and the LOT Base](integrating-as-host.md#cross-module-calls-and-the-lot-base).
-
----
-
-## Optional Dependencies
-
-A module can declare an optional dependency. If the dependency is not available, the module degrades gracefully.
-
-### Optional provider (`mod_logging.c`)
-
-```c
-int log_get_value(void) {
-    return 123;
-}
-```
-
-### Consumer (`mod_consumer.c`)
-
-```c
-extern int log_get_value(void);
-
-int test(void) {
-    if (log_get_value != NULL) {
-        return log_get_value();
-    }
-    return 0;
-}
-```
-
-Build with `--depends mod_logging`.
-
-### Host code
-
-```c
-udynlink_module_t consumer, logging;
-
-// Mark logging as "loading" so it returns DEFERRED
-udynlink_test_add_loading_name("mod_logging");
-
-// Load consumer (logging is deferred)
-udynlink_load_module(&consumer, mod_consumer_module_data, NULL, 0,
-                     UDYNLINK_LOAD_MODE_COPY_ALL);
-host_register_module(&consumer);
-
-// Consumer works in degraded mode
-udynlink_sym_t sym;
-udynlink_lookup_symbol(&consumer, "test", &sym);
-printf("Degraded: %d\n", ((int (*)(void))sym.val)());  // 0
-
-// Later, load logging for real
-udynlink_load_module(&logging, mod_logging_module_data, NULL, 0,
-                     UDYNLINK_LOAD_MODE_COPY_ALL);
-host_register_module(&logging);
-
-// Link the optional dependency: manually add logging to consumer's deps
-consumer.deps[consumer.num_deps++] = &logging;
-logging.dep_refcount++;
-udynlink_link_incremental(&consumer);
-
-// Now consumer resolves logging's symbol
-printf("Linked: %d\n", ((int (*)(void))sym.val)());  // 123
-```
 
 ---
 
@@ -840,8 +422,7 @@ int main(void) {
     }
 
     // Call test (uses real_service)
-    uint32_t *lot_base = (uint32_t *)UDYNLINK_LOT_BASE_ADDR;
-    *lot_base = mod.ram_base;
+    UDYNLINK_PREPARE_CALL(&mod);
 
     udynlink_sym_t sym;
     udynlink_lookup_symbol(&mod, "test", &sym);
@@ -861,7 +442,7 @@ int main(void) {
 ### Key points
 
 - `udynlink_link_symbol()` patches relocation slots directly.
-- It does not update `deps`, `dep_refcount`, or the symbol table.
+- It does not update the symbol table.
 - Useful for testing, A/B switching, and dynamic plugin updates.
 
 ---
@@ -924,14 +505,6 @@ uint32_t udynlink_external_resolve_symbol(const char *name) {
     return 0;
 }
 
-uint32_t udynlink_external_resolve_critical_symbol(const char *name) {
-    (void)name; return 0;
-}
-
-struct _udynlink_module_t *udynlink_external_get_module_handle(const char *name) {
-    (void)name; return NULL;
-}
-
 int main(void) {
     udynlink_module_t mod;
 
@@ -942,16 +515,15 @@ int main(void) {
         return 1;
     }
 
-    /* CRITICAL: Set LOT base BEFORE calling udynlink_cpp_init, because
+    /* CRITICAL: Prepare call context BEFORE calling udynlink_cpp_init, because
        constructors may touch module data through the LOT. */
-    uint32_t *lot_base = (uint32_t *)UDYNLINK_LOT_BASE_ADDR;
-    *lot_base = mod.ram_base;
+    UDYNLINK_PREPARE_CALL(&mod);
 
     /* Run global constructors */
     udynlink_cpp_init(&mod);
 
     /* Now safe to call regular module functions */
-    *lot_base = mod.ram_base;   /* re-set in case another module ran */
+    UDYNLINK_PREPARE_CALL(&mod);
 
     udynlink_sym_t sym;
     if (udynlink_lookup_symbol(&mod, "test", &sym)) {
@@ -968,9 +540,9 @@ int main(void) {
 
 1. Host calls `udynlink_load_module`.
 2. Loader copies sections, applies relocations, resolves externals.
-3. Host writes `ram_base` to `UDYNLINK_LOT_BASE_ADDR`.
+3. Host calls `UDYNLINK_PREPARE_CALL(&mod)`.
 4. Host calls `udynlink_cpp_init(&mod)`.
-5. `udynlink_cpp_init` looks up `__init_array`, sets LOT base again internally, and calls the constructor table function.
+5. `udynlink_cpp_init` looks up `__init_array`, sets call context again internally, and calls the constructor table function.
 6. All global `static` C++ objects are now initialized.
 7. Host may call regular exported functions.
 
@@ -1024,7 +596,7 @@ If you decompress a module from flash into separate buffers (one for metadata, o
 
 ```c
 // After decompression, you have three separate buffers:
-uint8_t *meta_buf;     // header + relocs + symtab + deps_strtab
+uint8_t *meta_buf;     // header + relocs + symtab
 size_t   meta_size;
 uint8_t *code_buf;     // .text section
 size_t   code_size;
@@ -1038,11 +610,6 @@ udynlink_module_image_t image = {
     .p_relocations = (const uint32_t *)(meta_buf + sizeof(udynlink_module_header_t)),
     .p_symtab      = (const uint32_t *)(meta_buf + sizeof(udynlink_module_header_t)
                                         + hdr->num_rels * 2 * sizeof(uint32_t)),
-    .p_deps_strtab = (hdr->num_deps > 0)
-                     ? (const char *)(meta_buf + sizeof(udynlink_module_header_t)
-                                      + hdr->num_rels * 2 * sizeof(uint32_t)
-                                      + hdr->symt_size)
-                     : NULL,
     .p_code = code_buf,
     .p_data = data_buf,
 };
@@ -1167,12 +734,6 @@ int udynlink_external_is_pointer_in_ram(const void *p) {
 uint32_t udynlink_external_resolve_symbol(const char *name) {
     (void)name; return 0;
 }
-uint32_t udynlink_external_resolve_critical_symbol(const char *name) {
-    (void)name; return 0;
-}
-struct _udynlink_module_t *udynlink_external_get_module_handle(const char *name) {
-    (void)name; return NULL;
-}
 
 int main(void) {
     udynlink_module_t mod_a;
@@ -1197,10 +758,8 @@ int main(void) {
         return 1;
     }
 
-    uint32_t *lot_base = (uint32_t *)UDYNLINK_LOT_BASE_ADDR;
-
     /* Call increment() on instance A */
-    *lot_base = mod_a.ram_base;
+    UDYNLINK_PREPARE_CALL(&mod_a);
     udynlink_sym_t sym;
     udynlink_lookup_symbol(&mod_a, "increment", &sym);
     int (*inc)(void) = (int (*)(void))(uintptr_t)sym.val;
@@ -1208,14 +767,14 @@ int main(void) {
     printf("A increment: %d\n", inc());   /* 2 */
 
     /* Call increment() on instance B */
-    *lot_base = mod_b.ram_base;
+    UDYNLINK_PREPARE_CALL(&mod_b);
     udynlink_lookup_symbol(&mod_b, "increment", &sym);
     inc = (int (*)(void))(uintptr_t)sym.val;
     printf("B increment: %d\n", inc());   /* 1 (independent state) */
     printf("B increment: %d\n", inc());   /* 2 */
 
     /* Verify A's state is untouched */
-    *lot_base = mod_a.ram_base;
+    UDYNLINK_PREPARE_CALL(&mod_a);
     udynlink_lookup_symbol(&mod_a, "get_count", &sym);
     int (*get)(void) = (int (*)(void))(uintptr_t)sym.val;
     printf("A count: %d\n", get());       /* 2 */
@@ -1228,7 +787,7 @@ int main(void) {
 
 ### Critical rule
 
-**Always re-write `UDYNLINK_LOT_BASE_ADDR` before switching to another module instance.** The LOT base is global state; if you forget to update it, the new instance will use the old instance's data pointers.
+**Always call `UDYNLINK_PREPARE_CALL()` before switching to another module instance.** The call context is per-invocation state; if you forget to update it, the new instance will use the old instance's data pointers.
 
 ---
 
@@ -1343,12 +902,6 @@ uint32_t udynlink_external_resolve_symbol(const char *name) {
     if (!strcmp(name, "printf")) return (uint32_t)(uintptr_t)&printf;
     return 0;
 }
-uint32_t udynlink_external_resolve_critical_symbol(const char *name) {
-    (void)name; return 0;
-}
-struct _udynlink_module_t *udynlink_external_get_module_handle(const char *name) {
-    (void)name; return NULL;
-}
 
 int main(void) {
     /* Query RAM needed before loading */
@@ -1380,8 +933,7 @@ int main(void) {
            pool_offset, udynlink_get_ram_size(&mod));
 
     /* Use module ... */
-    uint32_t *lot_base = (uint32_t *)UDYNLINK_LOT_BASE_ADDR;
-    *lot_base = mod.ram_base;
+    UDYNLINK_PREPARE_CALL(&mod);
 
     udynlink_sym_t sym;
     if (udynlink_lookup_symbol(&mod, "test", &sym)) {

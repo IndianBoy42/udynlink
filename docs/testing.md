@@ -39,7 +39,7 @@ The test driver (`test_driver.py`) runs each test directory **twice**:
 - once with `-O 3`
 - once with `-Os` (default `mkmodule` optimization)
 
-Because the harness internally exercises all three load modes, **each test runs 6 times by default** (3 load modes x 2 optimization levels). See [Module Guide](writing-modules.md) for how compiler flags affect generated code. As of the latest release, the full test suite contains 38 test cases.
+Because the harness internally exercises all three load modes, **each test runs 6 times by default** (3 load modes x 2 optimization levels). See [Module Guide](writing-modules.md) for how compiler flags affect generated code. The test suite contains 20 test directories; each directory is compiled and run twice (O3 and Os), yielding 40 top-level test runs on platforms where all tests are enabled.
 
 ## How to Run Tests
 
@@ -133,12 +133,12 @@ If you need the legacy binary manually, use an older xPack release (7.2.5-1) fro
 
 | Platform | QEMU Machine | QEMU Binary | CPU | Status | Notes |
 |----------|--------------|-------------|-----|--------|-------|
-| `stm32f429_discovery` | STM32F429I-Discovery | `qemu-system-gnuarmeclipse` | cortex-m4 | Passing | Fast baseline, legacy xPack fork (38 tests) |
-| `mps2_an386` | mps2-an386 | `qemu-system-arm` (9.2.4+) | cortex-m4 | Passing | Mainline QEMU, ~0.5 s per test (38 tests) |
-| `olimex_stm32_h405` | olimex-stm32-h405 | `qemu-system-arm` | cortex-m4f | Passing | Hard-float M4F on mainline QEMU (38 tests) |
-| `mps2_an385` | mps2-an385 | `qemu-system-arm` | cortex-m3 | Passing | Mainline QEMU (38 tests) |
-| `mps2_an500` | mps2-an500 | `qemu-system-arm` | cortex-m7 | Passing | Mainline QEMU (38 tests) |
-| `mps2_an505` | mps2-an505 | `qemu-system-arm` | cortex-m33 | Passing | Mainline QEMU, secure boot (see below) (38 tests) |
+| `stm32f429_discovery` | STM32F429I-Discovery | `qemu-system-gnuarmeclipse` | cortex-m4 | Passing | Fast baseline, legacy xPack fork (38/40 pass; `test-strip-init-array` skipped) |
+| `mps2_an386` | mps2-an386 | `qemu-system-arm` (9.2.4+) | cortex-m4 | Passing | Mainline QEMU, ~0.5 s per test (40 pass) |
+| `olimex_stm32_h405` | olimex-stm32-h405 | `qemu-system-arm` | cortex-m4f | Passing | Hard-float M4F on mainline QEMU (40 pass) |
+| `mps2_an385` | mps2-an385 | `qemu-system-arm` | cortex-m3 | Passing | Mainline QEMU (40 pass) |
+| `mps2_an500` | mps2-an500 | `qemu-system-arm` | cortex-m7 | Passing | Mainline QEMU (40 pass) |
+| `mps2_an505` | mps2-an505 | `qemu-system-arm` | cortex-m33 | Passing | Mainline QEMU, secure boot (see below) (40 pass) |
 | `microbit` | microbit | `qemu-system-arm` | cortex-m0 | Broken | QEMU microbit machine does not support ELF `-kernel` at 0x00000000 |
 | `stm32f103_bluepill` | NUCLEO-F103RB | `qemu-system-gnuarmeclipse` | cortex-m3 | Partial | Boots, internal calls OK; Flash-to-RAM host calls hang (QEMU quirk) |
 | `stm32f051_discovery` | STM32F0-Discovery | `qemu-system-gnuarmeclipse` | cortex-m0 | Partial | Boots, internal calls OK; same Flash-to-RAM quirk as M3 |
@@ -187,7 +187,7 @@ test_data = {
 ```
 
 - `desc` — human-readable description printed during the run.
-- `modules` — list of module build commands. Each inner list is a set of source files passed to `mkmodule` in a single invocation. Extra flags (e.g. `--depends mod_provider`) can be appended after the source files.
+- `modules` — list of module build commands. Each inner list is a set of source files passed to `mkmodule` in a single invocation.
 - `required` — list of regexes that must appear in the QEMU output. By default each regex must match once per load mode (3 times total). You can override this with `total_loads`.
 
 ### Step 4: Write `test_qemu.c`
@@ -237,7 +237,7 @@ The following helpers are available from `tests/qemu_host/src/test_utils.h`:
 |--------|---------|
 | `check_exported_symbols(p_mod, slist)` | Verify every name in the NULL-terminated array is present and typed `UDYNLINK_SYM_TYPE_EXPORTED`. |
 | `check_extern_symbols(p_mod, slist)` | Verify every name is present and typed `UDYNLINK_SYM_TYPE_EXTERN`. |
-| `run_test_func(p_mod)` | Set `*(uint32_t*)UDYNLINK_LOT_BASE_ADDR = p_mod->ram_base`, look up the symbol `test`, and call it. |
+| `run_test_func(p_mod)` | Set `r9` to `p_mod->ram_base` via `UDYNLINK_PREPARE_CALL()`, look up the symbol `test`, and call it. |
 | `CHECK_RAM_SIZE(p, s)` | Macro that fails the test (via `goto exit`) if `data_size + bss_size < s`. |
 | `test_load_module(...)` | Wrapper around `udynlink_load_module` that also registers the module in the global test table. |
 | `test_unload_module(...)` | Wrapper around `udynlink_unload_module` that unregisters the module first. |
@@ -250,25 +250,9 @@ If a test directory does not contain `test_data.py`, the driver falls back to au
 
 ### Multi-Module Tests
 
-Tests that load more than one module (e.g. dependency chains) must use `test_load_module()` and `test_unload_module()` instead of calling the raw loader API. These wrappers maintain a global module table (`g_modules[]` in `main.c`) so that the loader can resolve symbols across modules.
+Tests that load more than one module must use `test_load_module()` and `test_unload_module()` instead of calling the raw loader API. These wrappers maintain a global module table (`g_modules[]` in `main.c`) and can be used together with `test_resolve_symbol()` (a weak symbol in the test host) to implement custom cross-module symbol resolution.
 
 `UDYNLINK_MAX_MODULES` defaults to 8 in the test host firmware. You can override it at CMake time if your test loads more modules.
-
-Example from `tests/test-deps/test_qemu.c`:
-
-```c
-if (test_load_module(&mod_provider, mod_provider_module_data, NULL, 0, mode))
-    return 0;
-if (test_load_module(&mod_consumer, mod_consumer_module_data, NULL, 0, mode)) {
-    test_unload_module(&mod_provider);
-    return 0;
-}
-/* ... run consumer which resolves "provider_add" from provider ... */
-test_unload_module(&mod_consumer);
-test_unload_module(&mod_provider);
-```
-
-See [Host Guide](integrating-as-host.md) for how the three-tier symbol resolution works in production firmware.
 
 ## How to Add a New QEMU Platform
 
@@ -306,7 +290,7 @@ set(UDYNLINK_PLATFORM_COMPILE_OPTIONS
 )
 
 set(UDYNLINK_PLATFORM_DEFINES
-    UDYNLINK_LOT_BASE_ADDR=0x20000000
+    UDYNLINK_HOST_ARCH_TAG=UDYNLINK_ARCH_TAG_CORTEX_M4
 )
 
 set(UDYNLINK_PLATFORM_INCLUDE_DIRS
@@ -337,7 +321,7 @@ set(UDYNLINK_PLATFORM_HAS_CXX FALSE)
 
 - `UDYNLINK_PLATFORM_CFLAGS` — target CPU and ABI flags passed to both C and C++ compilation.
 - `UDYNLINK_PLATFORM_COMPILE_OPTIONS` — generic compile options (optimization, warnings, debug).
-- `UDYNLINK_PLATFORM_DEFINES` — preprocessor definitions. `UDYNLINK_LOT_BASE_ADDR` must match the address the module prologue reads for `r9`.
+- `UDYNLINK_PLATFORM_DEFINES` — preprocessor definitions. `UDYNLINK_HOST_ARCH_TAG` must match the MCU core family and float ABI.
 - `UDYNLINK_PLATFORM_INCLUDE_DIRS` — extra `-I` paths for the platform directory itself.
 - `UDYNLINK_PLATFORM_LINK_OPTIONS` — linker flags, including the linker script path.
 - `UDYNLINK_PLATFORM_LINK_DIRS` — directories searched for `-T` scripts.
@@ -428,7 +412,6 @@ If a test fails, read `output_test_Os.txt` (or `output_test_O3.txt`) to see the 
 | "Can't find '<regex>' in output" | The `required` regex in `test_data.py` does not match the actual QEMU output. Verify the regex and the module's `printf` output. |
 | "Unable to compile module(s)" | Syntax error in module source, missing toolchain, or unsupported `mkmodule` flags. Check `output_build_*.txt`. |
 | "Unable to run QEMU or timeout running" | QEMU binary not found, wrong `-machine` name, or semihosting not enabled (mainline QEMU requires `-semihosting`). |
-| "provider unload failed" / "consumer unload failed" | A dependent module is still loaded when you try to unload the provider. Ensure `test_unload_module` is called in reverse dependency order. |
 
 ## Test Driver Internals
 
