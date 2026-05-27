@@ -741,9 +741,11 @@ uint8_t *udynlink_get_text_pointer(const udynlink_module_t *p_mod) {
 ////////////////////////////////////////////////////////////////////////////////
 // Streaming I/O public interface
 
-udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
+static udynlink_error_t udynlink_load_module_from_stream_impl(
+    udynlink_module_t *p_mod,
     const udynlink_io_t *p_io, void *load_addr, size_t load_size,
-    udynlink_load_mode_t load_mode, void *scratch_buf, size_t scratch_buf_size) {
+    udynlink_load_mode_t load_mode, void *scratch_buf, size_t scratch_buf_size,
+    const udynlink_load_hooks_t *p_hooks) {
 
     _Static_assert(
         UDYNLINK_STREAM_MIN_SCRATCH_BUF_SIZE >= 36 + 64 + 8 + 4 + 8 + 12,
@@ -803,6 +805,14 @@ udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
     UDYNLINK_LOAD_CLR_STREAM_HDR(p_mod);
     p_mod->num_deps = 0;
     p_mod->dep_refcount = 0;
+    p_mod->p_header = header; // temporary: valid only during HEADER_PARSED hook
+
+    if (p_hooks && p_hooks->on_event) {
+        if (p_hooks->on_event(UDYNLINK_HOOK_HEADER_PARSED, p_mod, p_hooks->pv_hook_ctx) != UDYNLINK_OK) {
+            res = UDYNLINK_ERR_LOAD_HOOK_ABORTED;
+            goto exit;
+        }
+    }
 
     if (header->udynlink_version >= UDYNLINK_MAKE_VERSION(2, 0) && header->num_deps > 0) {
         if (header->num_deps > UDYNLINK_MAX_DEPS) {
@@ -866,12 +876,19 @@ udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
             ram_addr = load_addr;
         }
     }
+    p_mod->p_ram = ram_addr;
+
+    if (p_hooks && p_hooks->on_event) {
+        if (p_hooks->on_event(UDYNLINK_HOOK_DEPS_RESOLVED, p_mod, p_hooks->pv_hook_ctx) != UDYNLINK_OK) {
+            res = UDYNLINK_ERR_LOAD_HOOK_ABORTED;
+            goto exit;
+        }
+    }
 
     {
         size_t code_offset = get_code_offset_from_header(header);
 
         if (load_mode == UDYNLINK_LOAD_MODE_COPY_ALL) {
-            p_mod->p_ram = ram_addr;
             uint8_t *p_temp8 = (uint8_t *)ram_addr + header->num_lot * sizeof(uint32_t);
             size_t copy_size = code_offset + header->code_size + header->data_size;
             if (stream_read_exact(p_io, p_temp8, 0, copy_size) < 0) {
@@ -891,13 +908,19 @@ udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
                 res = UDYNLINK_ERR_LOAD_IO_ERROR;
                 goto exit;
             }
-            p_mod->p_ram = ram_addr;
             p_mod->p_header = (const udynlink_module_header_t *)p_temp8;
             UDYNLINK_LOAD_CLR_STREAM_HDR(p_mod);
             UDYNLINK_LOAD_SET_MODE(p_mod, UDYNLINK_LOAD_MODE_COPY_ALL);
         }
 
         memset(get_data_pointer(p_mod) + header->data_size, 0, header->bss_size);
+    }
+
+    if (p_hooks && p_hooks->on_event) {
+        if (p_hooks->on_event(UDYNLINK_HOOK_SECTIONS_LOADED, p_mod, p_hooks->pv_hook_ctx) != UDYNLINK_OK) {
+            res = UDYNLINK_ERR_LOAD_HOOK_ABORTED;
+            goto exit;
+        }
     }
 
     {
@@ -1036,6 +1059,13 @@ udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
         }
     }
 
+    if (p_hooks && p_hooks->on_event) {
+        if (p_hooks->on_event(UDYNLINK_HOOK_RELOCS_APPLIED, p_mod, p_hooks->pv_hook_ctx) != UDYNLINK_OK) {
+            res = UDYNLINK_ERR_LOAD_HOOK_ABORTED;
+            goto exit;
+        }
+    }
+
     UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Done streaming loading module\n");
 
 exit:
@@ -1049,6 +1079,21 @@ exit:
         mark_module_free(p_mod);
     }
     return res;
+}
+
+udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
+    const udynlink_io_t *p_io, void *load_addr, size_t load_size,
+    udynlink_load_mode_t load_mode, void *scratch_buf, size_t scratch_buf_size) {
+    return udynlink_load_module_from_stream_impl(p_mod, p_io, load_addr, load_size,
+        load_mode, scratch_buf, scratch_buf_size, NULL);
+}
+
+udynlink_error_t udynlink_load_module_from_stream_ex(udynlink_module_t *p_mod,
+    const udynlink_io_t *p_io, void *load_addr, size_t load_size,
+    udynlink_load_mode_t load_mode, void *scratch_buf, size_t scratch_buf_size,
+    const udynlink_load_hooks_t *p_hooks) {
+    return udynlink_load_module_from_stream_impl(p_mod, p_io, load_addr, load_size,
+        load_mode, scratch_buf, scratch_buf_size, p_hooks);
 }
 
 size_t udynlink_get_ram_requirements(const void *base_addr, udynlink_load_mode_t mode) {

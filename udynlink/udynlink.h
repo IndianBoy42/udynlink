@@ -205,7 +205,8 @@ _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_MISSING_DEP),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_CIRCULAR_DEP),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_IO_ERROR),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_MODULE_HAS_DEPENDENTS),\
-_UDYNLINK_EXPAND(UDYNLINK_ERR_INVALID_MODULE)
+_UDYNLINK_EXPAND(UDYNLINK_ERR_INVALID_MODULE),\
+_UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_HOOK_ABORTED)
 
 #define _UDYNLINK_EXPAND(x)                   x
 /**
@@ -389,6 +390,60 @@ typedef struct {
 
 /** Minimum scratch-buffer size for udynlink_load_module_from_stream() (132 bytes). */
 #define UDYNLINK_STREAM_MIN_SCRATCH_BUF_SIZE 132
+
+////////////////////////////////////////////////////////////////////////////////
+// Streaming load lifecycle hooks
+
+/**
+ * @brief Lifecycle stages at which a streaming load hook may be invoked.
+ *
+ * Hooks are only called by udynlink_load_module_from_stream_ex().  The
+ * memory-mapped loader (udynlink_load_module()) does not invoke hooks.
+ */
+typedef enum {
+    /** Header read and validated; RAM not yet allocated. */
+    UDYNLINK_HOOK_HEADER_PARSED,
+    /** Dependencies verified; RAM allocated but sections not yet copied. */
+    UDYNLINK_HOOK_DEPS_RESOLVED,
+    /** Code and data copied to RAM; BSS zeroed; relocations not yet applied. */
+    UDYNLINK_HOOK_SECTIONS_LOADED,
+    /** All relocations processed; module is fully loaded. */
+    UDYNLINK_HOOK_RELOCS_APPLIED,
+} udynlink_hook_stage_t;
+
+/**
+ * @brief Streaming load lifecycle hook callback.
+ *
+ * Called at each stage of the streaming load process.  Returning any value
+ * other than ::UDYNLINK_OK aborts the load immediately; the loader returns
+ * ::UDYNLINK_ERR_LOAD_HOOK_ABORTED to the caller.
+ *
+ * @param[in] stage      The current load stage.
+ * @param[in] p_mod      Partially populated module handle.  Fields that are
+ *                       valid depend on @p stage; see the stage documentation.
+ * @param[in] pv_hook_ctx User context pointer from udynlink_load_hooks_t.
+ *
+ * @return ::UDYNLINK_OK to continue loading, or any other code to abort.
+ */
+typedef udynlink_error_t (*udynlink_hook_cb_t)(
+    udynlink_hook_stage_t stage,
+    udynlink_module_t *p_mod,
+    void *pv_hook_ctx
+);
+
+/**
+ * @brief Streaming load hooks descriptor.
+ *
+ * Passed to udynlink_load_module_from_stream_ex().  A NULL pointer means
+ * "no hooks" and is fully backward compatible with the original streaming
+ * load function.
+ */
+typedef struct {
+    /** Single callback invoked for all stages (saves struct size on Cortex-M). */
+    udynlink_hook_cb_t  on_event;
+    /** Opaque user context forwarded to the callback. */
+    void               *pv_hook_ctx;
+} udynlink_load_hooks_t;
 
 ////////////////////////////////////////////////////////////////////////////////
 // Public interface
@@ -596,6 +651,29 @@ uint8_t *udynlink_get_text_pointer(const udynlink_module_t *p_mod);
 udynlink_error_t udynlink_load_module_from_stream(udynlink_module_t *p_mod,
     const udynlink_io_t *p_io, void *load_addr, size_t load_size,
     udynlink_load_mode_t load_mode, void *scratch_buf, size_t scratch_buf_size);
+
+/**
+ * @brief Load a module from a streaming I/O source with lifecycle hooks.
+ *
+ * Identical to udynlink_load_module_from_stream() but accepts an optional
+ * hooks descriptor.  When @p p_hooks is non-NULL its @c on_event callback
+ * is invoked at each stage of the load process.
+ *
+ * @param[out] p_mod          Module handle to populate on success.
+ * @param[in]  p_io           Streaming I/O callbacks.
+ * @param[in]  load_addr      RAM address for the module, or NULL to auto-allocate.
+ * @param[in]  load_size      Size of the region at @p load_addr (ignored if NULL).
+ * @param[in]  load_mode      COPY_ALL or COPY_CODE only.
+ * @param[in]  scratch_buf     Caller-provided scratch buffer (minimum 132 bytes).
+ * @param[in]  scratch_buf_size Size of @p scratch_buf.
+ * @param[in]  p_hooks        Optional lifecycle hooks, or NULL for no hooks.
+ *
+ * @return ::UDYNLINK_OK on success, or an error code on failure.
+ */
+udynlink_error_t udynlink_load_module_from_stream_ex(udynlink_module_t *p_mod,
+    const udynlink_io_t *p_io, void *load_addr, size_t load_size,
+    udynlink_load_mode_t load_mode, void *scratch_buf, size_t scratch_buf_size,
+    const udynlink_load_hooks_t *p_hooks);
 
 /**
  * @brief Return the RAM required to load a module from memory.

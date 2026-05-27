@@ -136,7 +136,7 @@ This catches the trivial A→A case with zero host support.
 
 | Subtask | Description | Agent | Deliverable |
 |---------|-------------|-------|-------------|
-| 5.1 | Run `just test-mps2` to verify no regressions | `agent` | All 24 tests pass |
+| 5.1 | Run `just test-mps2` to verify no regressions | `agent` | All 25 tests pass |
 | 5.2 | Run `just test-f429-single test-circular-deps` | `agent` | New test passes |
 
 ---

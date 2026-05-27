@@ -107,11 +107,13 @@ For the complete guide covering dependencies, C++ modules, data handling, and th
 
 ## Status
 
-- All 24 integration tests pass on 6 QEMU platforms (Cortex-M0/M3/M4/M4F/M7/M33)
+- All 25 integration tests pass on 6 QEMU platforms (Cortex-M0/M3/M4/M4F/M7/M33)
 - C and C++ modules supported (no exceptions, no RTTI)
 - ABI versioning and architecture tag validation at load time
 - Module dependency tracking with safe unload
 - Streaming I/O loading (SD card, SPI flash, network)
+- Streaming load lifecycle hooks for verification, progress, and audit
+- Layered I/O wrappers for on-the-fly decompression and ECC without loader changes
 - Hash-based O(1) symbol resolution
 - Requires [GCC ARM Embedded](https://developer.arm.com/tools-and-software/open-source-software/developer-tools/gnu-toolchain) (`arm-none-eabi-gcc`)
 
@@ -160,12 +162,12 @@ Each test validates all three load modes (COPY_ALL, COPY_TEXT_DATA, XIP) at both
 
 | Platform | QEMU Machine | CPU | Status | Notes |
 |----------|-------------|-----|--------|-------|
-| `stm32f429_discovery` | STM32F429I-Discovery | cortex-m4 | All 24 tests pass | Legacy xPack QEMU, fast baseline |
-| `mps2_an386` | mps2-an386 | cortex-m4 | All 24 tests pass | Mainline QEMU |
-| `mps2_an385` | mps2-an385 | cortex-m3 | All 24 tests pass | Mainline QEMU |
-| `mps2_an500` | mps2-an500 | cortex-m7 | All 24 tests pass | Mainline QEMU |
-| `mps2_an505` | mps2-an505 | cortex-m33 | All 24 tests pass | Mainline QEMU, secure boot alias |
-| `olimex_stm32_h405` | olimex-stm32-h405 | cortex-m4f | All 24 tests pass | Hard-float M4F |
+| `stm32f429_discovery` | STM32F429I-Discovery | cortex-m4 | All 25 tests pass | Legacy xPack QEMU, fast baseline |
+| `mps2_an386` | mps2-an386 | cortex-m4 | All 25 tests pass | Mainline QEMU |
+| `mps2_an385` | mps2-an385 | cortex-m3 | All 25 tests pass | Mainline QEMU |
+| `mps2_an500` | mps2-an500 | cortex-m7 | All 25 tests pass | Mainline QEMU |
+| `mps2_an505` | mps2-an505 | cortex-m33 | All 25 tests pass | Mainline QEMU, secure boot alias |
+| `olimex_stm32_h405` | olimex-stm32-h405 | cortex-m4f | All 25 tests pass | Hard-float M4F |
 | `microbit` | microbit | cortex-m0 | Builds, `-kernel` broken | Needs raw binary loader |
 | `stm32f103_bluepill` | NUCLEO-F103RB | cortex-m3 | Partial | Flash-RAM call quirk (legacy QEMU) |
 | `stm32f051_discovery` | STM32F0-Discovery | cortex-m0 | Partial | Same quirk |

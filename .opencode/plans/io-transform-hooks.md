@@ -230,7 +230,7 @@ Task 5 can run in parallel with Task 3 but must be ready before final validation
 | Hook callback crashes in interrupt context | Document that hooks must be re-entrant; user responsibility |
 | Hook modifies `p_mod` state causing loader corruption | Document that `p_mod` fields are read-only during hooks; no enforcement (would add code size) |
 | `HEADER_PARSED` hook sees stack-local header | Document pointer lifetime: valid only during callback, do not store. Header contents are safe to copy. |
-| Existing tests break from refactoring | Task 2 requires all 24 existing tests to pass before proceeding |
+| Existing tests break from refactoring | Task 2 requires all 25 existing tests to pass before proceeding |
 | `UDYNLINK_ERR_LOAD_HOOK_ABORTED` leaks resources | Use existing cleanup path (`goto exit`) — hooks returning error just set `res` and jump to cleanup |
 
 ## Resolved Design Questions

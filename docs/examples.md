@@ -11,6 +11,8 @@
 - [Streaming Load from SD Card](#streaming-load-from-sd-card)
 - [Multiple Module Instances](#multiple-module-instances)
 - [Embedding Modules in Firmware](#embedding-modules-in-firmware)
+- [Streaming Load with Lifecycle Hooks](#streaming-load-with-lifecycle-hooks)
+- [Layered I/O: Decompression Wrapper](#layered-io-decompression-wrapper)
 - [Pre-Computing RAM Requirements](#pre-computing-ram-requirements)
 
 ---
@@ -1246,6 +1248,224 @@ Then include both headers and load whichever module you need at runtime.
 - No external storage (SD card, SPI flash) is available.
 - Modules are small enough to fit in the internal flash budget.
 - Over-the-air updates are performed on the whole firmware image, not individual modules.
+
+---
+
+## Streaming Load with Lifecycle Hooks
+
+This example loads a module from an SD card using `udynlink_load_module_from_stream_ex()` and installs a hook that logs progress and aborts loading if the module name is not on an allowlist.
+
+```c
+#include "udynlink.h"
+#include "ff.h"   /* FatFS */
+
+typedef struct {
+    const char **allowlist;
+    int allowlist_count;
+    int stage_count;
+    const char *last_module_name;
+} hook_ctx_t;
+
+static udynlink_error_t my_load_hook(udynlink_hook_stage_t stage,
+                                      udynlink_module_t *p_mod,
+                                      void *pv_hook_ctx) {
+    hook_ctx_t *ctx = (hook_ctx_t *)pv_hook_ctx;
+    ctx->stage_count++;
+
+    switch (stage) {
+        case UDYNLINK_HOOK_HEADER_PARSED: {
+            const char *name = udynlink_get_module_name(p_mod);
+            ctx->last_module_name = name;
+            printf("[hook] header parsed: %s\n", name ? name : "(unknown)");
+
+            /* Allowlist check */
+            int allowed = 0;
+            for (int i = 0; i < ctx->allowlist_count; i++) {
+                if (name && strcmp(name, ctx->allowlist[i]) == 0) {
+                    allowed = 1;
+                    break;
+                }
+            }
+            if (!allowed) {
+                printf("[hook] abort: module not in allowlist\n");
+                return UDYNLINK_ERR_LOAD_HOOK_ABORTED;
+            }
+            break;
+        }
+        case UDYNLINK_HOOK_DEPS_RESOLVED:
+            printf("[hook] deps resolved: %u\n", p_mod->num_deps);
+            break;
+        case UDYNLINK_HOOK_SECTIONS_LOADED:
+            printf("[hook] sections loaded: %u bytes RAM\n",
+                   (unsigned)udynlink_get_ram_size(p_mod));
+            break;
+        case UDYNLINK_HOOK_RELOCS_APPLIED:
+            printf("[hook] relocs applied: ready\n");
+            break;
+    }
+    return UDYNLINK_OK;
+}
+
+static int32_t sd_read(void *pv, void *buf, uint32_t n, uint32_t off) {
+    FIL *fp = (FIL *)pv;
+    UINT br;
+    if (f_lseek(fp, off) != FR_OK) return -1;
+    if (f_read(fp, buf, n, &br) != FR_OK || br != n) return -1;
+    return (int32_t)n;
+}
+
+static int32_t sd_size(void *pv) {
+    return (int32_t)f_size((FIL *)pv);
+}
+
+int load_with_hooks(const char *path, udynlink_module_t *p_mod) {
+    FIL fp;
+    if (f_open(&fp, path, FA_READ) != FR_OK) return -1;
+
+    const char *allowlist[] = { "mod_hello", "mod_sensor" };
+    hook_ctx_t hook_ctx = {
+        .allowlist = allowlist,
+        .allowlist_count = 2,
+        .stage_count = 0
+    };
+
+    udynlink_load_hooks_t hooks = {
+        .on_event = my_load_hook,
+        .pv_hook_ctx = &hook_ctx
+    };
+
+    udynlink_io_t io = {
+        .read = sd_read,
+        .get_size = sd_size,
+        .pv_ctx = &fp
+    };
+
+    uint8_t scratch[UDYNLINK_STREAM_MIN_SCRATCH_BUF_SIZE];
+    udynlink_error_t err = udynlink_load_module_from_stream_ex(
+        p_mod, &io, NULL, 0,
+        UDYNLINK_LOAD_MODE_COPY_ALL,
+        scratch, sizeof(scratch),
+        &hooks);
+
+    f_close(&fp);
+
+    if (err == UDYNLINK_ERR_LOAD_HOOK_ABORTED) {
+        printf("Load aborted by hook at module '%s'\n",
+               hook_ctx.last_module_name ? hook_ctx.last_module_name : "?");
+    } else if (err != UDYNLINK_OK) {
+        printf("Load failed: %s\n", udynlink_error_msg(&err));
+    }
+
+    return (err == UDYNLINK_OK) ? 0 : -1;
+}
+```
+
+### Key points
+
+- `udynlink_load_module_from_stream_ex()` is a drop-in replacement for `udynlink_load_module_from_stream()` with an extra hooks parameter.
+- A `NULL` hooks pointer is equivalent to the original function — fully backward compatible.
+- The `HEADER_PARSED` hook sees a stack-local `p_header`; do not store this pointer beyond the callback.
+- Hook aborts trigger the normal error cleanup path (free RAM, zero module handle).
+
+---
+
+## Layered I/O: Decompression Wrapper
+
+This example shows how to wrap a raw `udynlink_io_t` (e.g., an SD card file) in a decompression layer that exposes clean UDLM data to the loader. The loader requires random-access offsets, so this pattern uses **page-based compression** (one compressed block per logical page), which is the natural model for embedded flash and SD card storage.
+
+```c
+#include "udynlink.h"
+
+#define COMPRESSED_PAGE_SIZE  256
+#define DECOMPRESSED_PAGE_SIZE 512
+
+typedef struct {
+    udynlink_io_t *p_raw;
+    uint8_t compressed[COMPRESSED_PAGE_SIZE];
+    uint8_t decompressed[DECOMPRESSED_PAGE_SIZE];
+    uint32_t cached_page;
+    int cache_valid;
+} decomp_ctx_t;
+
+/* Stub: replace with your decompressor (heatshrink, miniz, etc.) */
+static int decompress(const uint8_t *in, size_t in_len,
+                       uint8_t *out, size_t out_len) {
+    (void)in_len;
+    memcpy(out, in, out_len < COMPRESSED_PAGE_SIZE ? out_len : COMPRESSED_PAGE_SIZE);
+    return 0;
+}
+
+static int32_t decomp_read(void *pv_ctx, void *buf,
+                            uint32_t num_bytes, uint32_t offset) {
+    decomp_ctx_t *ctx = (decomp_ctx_t *)pv_ctx;
+    uint8_t *dst = (uint8_t *)buf;
+    uint32_t remaining = num_bytes;
+
+    while (remaining > 0) {
+        uint32_t page = offset / DECOMPRESSED_PAGE_SIZE;
+        uint32_t page_off = offset % DECOMPRESSED_PAGE_SIZE;
+        uint32_t chunk = DECOMPRESSED_PAGE_SIZE - page_off;
+        if (chunk > remaining) chunk = remaining;
+
+        if (!ctx->cache_valid || ctx->cached_page != page) {
+            uint32_t phys_off = page * COMPRESSED_PAGE_SIZE;
+            int32_t rc = ctx->p_raw->read(ctx->p_raw->pv_ctx,
+                                            ctx->compressed,
+                                            COMPRESSED_PAGE_SIZE,
+                                            phys_off);
+            if (rc != COMPRESSED_PAGE_SIZE) return -1;
+
+            if (decompress(ctx->compressed, COMPRESSED_PAGE_SIZE,
+                            ctx->decompressed, DECOMPRESSED_PAGE_SIZE) != 0)
+                return -1;
+
+            ctx->cached_page = page;
+            ctx->cache_valid = 1;
+        }
+
+        memcpy(dst, ctx->decompressed + page_off, chunk);
+        dst += chunk;
+        offset += chunk;
+        remaining -= chunk;
+    }
+    return num_bytes;
+}
+
+static int32_t decomp_size(void *pv_ctx) {
+    decomp_ctx_t *ctx = (decomp_ctx_t *)pv_ctx;
+    /* logical_size is the uncompressed module image size */
+    return ctx->logical_size;
+}
+
+/* Usage */
+udynlink_error_t load_compressed(udynlink_module_t *p_mod,
+                                  udynlink_io_t *p_raw_io,
+                                  uint32_t logical_size) {
+    static decomp_ctx_t ctx;
+    ctx.p_raw = p_raw_io;
+    ctx.logical_size = logical_size;
+    ctx.cache_valid = 0;
+
+    udynlink_io_t io = {
+        .read = decomp_read,
+        .get_size = decomp_size,
+        .pv_ctx = &ctx
+    };
+
+    uint8_t scratch[UDYNLINK_STREAM_MIN_SCRATCH_BUF_SIZE];
+    return udynlink_load_module_from_stream(
+        p_mod, &io, NULL, 0,
+        UDYNLINK_LOAD_MODE_COPY_ALL,
+        scratch, sizeof(scratch));
+}
+```
+
+### Key points
+
+- The wrapper translates **logical offsets** (what the loader requests) into **physical offsets** (where the data lives on the raw medium).
+- A one-page cache is usually sufficient because the streaming loader reads metadata sequentially, then processes relocations in order.
+- Global streaming compression (single LZ4 stream from offset 0) does **not** work with this pattern because the loader may request bytes starting at offset 500 without reading offset 0 first. Use per-page compression instead.
+- You can chain wrappers: raw SD → ECC correction → decompression → loader.
 
 ---
 

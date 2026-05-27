@@ -14,6 +14,8 @@ This guide is for firmware developers who want to integrate the udynlink micro d
 - [Hash-Based Symbol Resolution](#hash-based-symbol-resolution)
 - [Module Lifecycle Management](#module-lifecycle-management)
 - [Streaming I/O Loading](#streaming-io-loading)
+- [Streaming Load Lifecycle Hooks](#streaming-load-lifecycle-hooks)
+- [Layered I/O Wrappers](#layered-io-wrappers)
 - [Thread Safety and Concurrency](#thread-safety-and-concurrency)
 - [Error Handling and Diagnostics](#error-handling-and-diagnostics)
 
@@ -1057,6 +1059,342 @@ if (ram_needed == 0) {
 ```
 
 This is useful for pre-allocating a memory pool slot or checking free space before attempting the load.
+
+---
+
+## Streaming Load Lifecycle Hooks
+
+The extended streaming loader `udynlink_load_module_from_stream_ex()` provides lifecycle hooks that are called at four well-defined points during loading. This is useful for:
+
+- **Pre-load verification** — signature checks, module allowlisting, size limits
+- **Progress reporting** — UI updates or logging during slow loads from SD card
+- **Post-load integrity checks** — verify a checksum over the loaded code/data
+- **Post-link auditing** — record which symbols were resolved and from which tier
+
+### Hook stages
+
+| Stage | When | `p_mod` state | Typical use |
+|-------|------|--------------|-------------|
+| `UDYNLINK_HOOK_HEADER_PARSED` | After signature, version, and architecture checks pass | `p_header` points to a **stack-local** copy of the header (valid only during this callback). `p_ram` is NULL. | Allowlisting, size checks, logging |
+| `UDYNLINK_HOOK_DEPS_RESOLVED` | After dependency modules found and `dep_refcount` incremented | `p_header` valid, `p_ram` allocated (or set to `load_addr`), deps resolved, sections NOT loaded | Dependency policy enforcement |
+| `UDYNLINK_HOOK_SECTIONS_LOADED` | After code+data copied to RAM, BSS zeroed, before relocations | Code and data pointers valid, LOT unmapped, relocations NOT applied | Integrity verification, code signing |
+| `UDYNLINK_HOOK_RELOCS_APPLIED` | After all relocations processed, before function returns | Fully loaded and relocated, ready to use | Post-link audit, logging |
+
+### Hook callback signature
+
+```c
+typedef udynlink_error_t (*udynlink_hook_cb_t)(
+    udynlink_hook_stage_t stage,
+    udynlink_module_t *p_mod,
+    void *pv_hook_ctx
+);
+```
+
+Returning any value other than `UDYNLINK_OK` aborts the load with `UDYNLINK_ERR_LOAD_HOOK_ABORTED`. The loader then jumps to the normal error cleanup path, freeing auto-allocated RAM and zeroing the module handle.
+
+### Example: progress logging hook
+
+```c
+#include "udynlink.h"
+
+typedef struct {
+    int stages_reached;
+} load_progress_t;
+
+static udynlink_error_t my_hook(udynlink_hook_stage_t stage,
+                                 udynlink_module_t *p_mod,
+                                 void *pv_hook_ctx) {
+    load_progress_t *progress = (load_progress_t *)pv_hook_ctx;
+    progress->stages_reached++;
+
+    switch (stage) {
+        case UDYNLINK_HOOK_HEADER_PARSED:
+            printf("Header parsed: %s\n", udynlink_get_module_name(p_mod));
+            break;
+        case UDYNLINK_HOOK_DEPS_RESOLVED:
+            printf("Deps resolved: %u deps\n", p_mod->num_deps);
+            break;
+        case UDYNLINK_HOOK_SECTIONS_LOADED:
+            printf("Sections loaded: %u bytes RAM\n",
+                   (unsigned)udynlink_get_ram_size(p_mod));
+            break;
+        case UDYNLINK_HOOK_RELOCS_APPLIED:
+            printf("Relocs applied: module ready\n");
+            break;
+    }
+    return UDYNLINK_OK;
+}
+
+udynlink_error_t load_with_progress(udynlink_module_t *p_mod,
+                                     const udynlink_io_t *p_io) {
+    load_progress_t progress = { 0 };
+    udynlink_load_hooks_t hooks = {
+        .on_event = my_hook,
+        .pv_hook_ctx = &progress
+    };
+
+    uint8_t scratch[UDYNLINK_STREAM_MIN_SCRATCH_BUF_SIZE];
+    return udynlink_load_module_from_stream_ex(
+        p_mod, p_io, NULL, 0,
+        UDYNLINK_LOAD_MODE_COPY_ALL,
+        scratch, sizeof(scratch),
+        &hooks);
+}
+```
+
+### Example: abort at HEADER_PARSED for an allowlist
+
+```c
+typedef struct {
+    const char **allowed_names;
+    int allowed_count;
+    const char *reject_reason;
+} allowlist_ctx_t;
+
+static udynlink_error_t allowlist_hook(udynlink_hook_stage_t stage,
+                                        udynlink_module_t *p_mod,
+                                        void *pv_hook_ctx) {
+    if (stage != UDYNLINK_HOOK_HEADER_PARSED)
+        return UDYNLINK_OK;
+
+    allowlist_ctx_t *ctx = (allowlist_ctx_t *)pv_hook_ctx;
+    const char *name = udynlink_get_module_name(p_mod);
+
+    for (int i = 0; i < ctx->allowed_count; i++) {
+        if (name && strcmp(name, ctx->allowed_names[i]) == 0)
+            return UDYNLINK_OK;
+    }
+
+    ctx->reject_reason = "module not in allowlist";
+    return UDYNLINK_ERR_LOAD_HOOK_ABORTED;  // aborts load, frees RAM
+}
+```
+
+### Hook abort and dep_refcount
+
+When a hook aborts at `DEPS_RESOLVED` or later, dependencies that were already resolved have their `dep_refcount` incremented. The loader does **not** roll these back automatically because the cleanup path is shared with other error types. If your abort logic needs to undo dependency references, do so explicitly:
+
+```c
+if (err == UDYNLINK_ERR_LOAD_HOOK_ABORTED) {
+    // If we aborted after DEPS_RESOLVED, decrement refcounts we added
+    for (int i = 0; i < p_mod->num_deps; i++) {
+        if (p_mod->deps[i])
+            p_mod->deps[i]->dep_refcount--;
+    }
+}
+```
+
+### Memory-mapped loader has no hooks
+
+Hooks are only available on the streaming path (`udynlink_load_module_from_stream_ex()`). The memory-mapped path (`udynlink_load_module()`) works with direct pointers — verification and auditing can be done before or after calling load.
+
+---
+
+## Layered I/O Wrappers
+
+`udynlink_io_t` is intentionally simple: a `read` callback and a `get_size` callback. This simplicity makes it possible to wrap an existing `udynlink_io_t` in another `udynlink_io_t` that performs byte-stream transformations **without modifying the loader**.
+
+### Why layered I/O
+
+- **Zero loader changes** — the core library does not know or care whether the `io_t` it receives is raw or wrapped.
+- **Composable** — you can chain wrappers: raw SD card → decompression → ECC → udynlink loader.
+- **Per-block transforms** — because `udynlink_read_cb_t` uses absolute byte offsets, block-based transforms (per-flash-page decompression, per-sector ECC) map naturally. Global streaming transforms (single LZ4 stream) do NOT work with random access; this is a fundamental limitation.
+
+### Design pattern
+
+```c
+typedef struct {
+    udynlink_io_t *p_raw;
+    // per-wrapper state
+} wrapper_ctx_t;
+
+static int32_t wrapper_read(void *pv_ctx, void *buf,
+                            uint32_t num_bytes, uint32_t offset) {
+    wrapper_ctx_t *ctx = (wrapper_ctx_t *)pv_ctx;
+    // 1. Translate logical offset to physical block
+    // 2. Read and transform the block(s)
+    // 3. Copy the requested logical bytes into buf
+    return num_bytes;  // or -1 on error
+}
+
+static int32_t wrapper_get_size(void *pv_ctx) {
+    wrapper_ctx_t *ctx = (wrapper_ctx_t *)pv_ctx;
+    // Return the *logical* (uncompressed/decrypted) size
+    return ctx->logical_size;
+}
+```
+
+### Example: page-based decompression wrapper
+
+This example reads 256-byte compressed pages from an SD card and decompresses them on demand. A one-page cache avoids redundant decompression for small sequential reads.
+
+```c
+#include "udynlink.h"
+
+#define COMPRESSED_PAGE_SIZE 256
+#define DECOMPRESSED_PAGE_SIZE 512
+
+typedef struct {
+    udynlink_io_t *p_raw;
+    uint8_t compressed_buf[COMPRESSED_PAGE_SIZE];
+    uint8_t decompressed_buf[DECOMPRESSED_PAGE_SIZE];
+    uint32_t cached_page;      // which logical page is in decompressed_buf
+    int cache_valid;
+} decompress_ctx_t;
+
+// Your decompression function (e.g., heatshrink, lz4, etc.)
+extern int decompress_page(const uint8_t *in, size_t in_len,
+                           uint8_t *out, size_t out_len);
+
+static int32_t decompress_read(void *pv_ctx, void *buf,
+                                uint32_t num_bytes, uint32_t offset) {
+    decompress_ctx_t *ctx = (decompress_ctx_t *)pv_ctx;
+    uint8_t *dst = (uint8_t *)buf;
+    uint32_t remaining = num_bytes;
+
+    while (remaining > 0) {
+        uint32_t page = offset / DECOMPRESSED_PAGE_SIZE;
+        uint32_t page_offset = offset % DECOMPRESSED_PAGE_SIZE;
+        uint32_t chunk = DECOMPRESSED_PAGE_SIZE - page_offset;
+        if (chunk > remaining) chunk = remaining;
+
+        if (!ctx->cache_valid || ctx->cached_page != page) {
+            // Read compressed page from raw I/O
+            uint32_t phys_offset = page * COMPRESSED_PAGE_SIZE;
+            int32_t raw = ctx->p_raw->read(ctx->p_raw->pv_ctx,
+                                            ctx->compressed_buf,
+                                            COMPRESSED_PAGE_SIZE,
+                                            phys_offset);
+            if (raw != COMPRESSED_PAGE_SIZE) return -1;
+
+            // Decompress
+            int rc = decompress_page(ctx->compressed_buf, COMPRESSED_PAGE_SIZE,
+                                      ctx->decompressed_buf, DECOMPRESSED_PAGE_SIZE);
+            if (rc < 0) return -1;
+
+            ctx->cached_page = page;
+            ctx->cache_valid = 1;
+        }
+
+        memcpy(dst, ctx->decompressed_buf + page_offset, chunk);
+        dst += chunk;
+        offset += chunk;
+        remaining -= chunk;
+    }
+    return num_bytes;
+}
+
+static int32_t decompress_get_size(void *pv_ctx) {
+    decompress_ctx_t *ctx = (decompress_ctx_t *)pv_ctx;
+    // logical_size is set during wrapper initialization
+    return ctx->logical_size;
+}
+
+udynlink_error_t load_compressed_module(udynlink_module_t *p_mod,
+                                       udynlink_io_t *p_raw_io,
+                                       uint32_t logical_size) {
+    static decompress_ctx_t ctx;  // or allocate dynamically
+    ctx.p_raw = p_raw_io;
+    ctx.logical_size = logical_size;
+    ctx.cache_valid = 0;
+
+    udynlink_io_t io = {
+        .read = decompress_read,
+        .get_size = decompress_get_size,
+        .pv_ctx = &ctx
+    };
+
+    uint8_t scratch[UDYNLINK_STREAM_MIN_SCRATCH_BUF_SIZE];
+    return udynlink_load_module_from_stream(
+        p_mod, &io, NULL, 0,
+        UDYNLINK_LOAD_MODE_COPY_ALL,
+        scratch, sizeof(scratch));
+}
+```
+
+### Example: per-page ECC wrapper
+
+If your storage medium is lossy (e.g., LoRa frames, noisy SPI flash), you can add a Reed-Solomon or Hamming ECC wrapper around the raw read.
+
+```c
+#define PAGE_SIZE 256
+#define ECC_SIZE 8
+#define PHY_PAGE_SIZE (PAGE_SIZE + ECC_SIZE)
+
+typedef struct {
+    udynlink_io_t *p_raw;
+    uint8_t phy_buf[PHY_PAGE_SIZE];
+    uint8_t data_buf[PAGE_SIZE];
+    uint32_t cached_page;
+    int cache_valid;
+} ecc_ctx_t;
+
+extern int correct_page(const uint8_t *in, uint8_t *out);  // returns 0 on success
+
+static int32_t ecc_read(void *pv_ctx, void *buf,
+                         uint32_t num_bytes, uint32_t offset) {
+    ecc_ctx_t *ctx = (ecc_ctx_t *)pv_ctx;
+    uint8_t *dst = (uint8_t *)buf;
+    uint32_t remaining = num_bytes;
+
+    while (remaining > 0) {
+        uint32_t page = offset / PAGE_SIZE;
+        uint32_t page_offset = offset % PAGE_SIZE;
+        uint32_t chunk = PAGE_SIZE - page_offset;
+        if (chunk > remaining) chunk = remaining;
+
+        if (!ctx->cache_valid || ctx->cached_page != page) {
+            uint32_t phys_offset = page * PHY_PAGE_SIZE;
+            int32_t raw = ctx->p_raw->read(ctx->p_raw->pv_ctx,
+                                            ctx->phy_buf,
+                                            PHY_PAGE_SIZE,
+                                            phys_offset);
+            if (raw != PHY_PAGE_SIZE) return -1;
+
+            int rc = correct_page(ctx->phy_buf, ctx->data_buf);
+            if (rc != 0) return -1;  // uncorrectable error
+
+            ctx->cached_page = page;
+            ctx->cache_valid = 1;
+        }
+
+        memcpy(dst, ctx->data_buf + page_offset, chunk);
+        dst += chunk;
+        offset += chunk;
+        remaining -= chunk;
+    }
+    return num_bytes;
+}
+```
+
+### Chaining wrappers
+
+You can compose multiple wrappers by passing one wrapper's `udynlink_io_t` as the `p_raw` of another:
+
+```c
+// Layer 1: SD card file
+udynlink_io_t sd_io = { .read = sd_read, .get_size = sd_get_size, .pv_ctx = &sd_ctx };
+
+// Layer 2: ECC correction
+ecc_ctx_t ecc_ctx = { .p_raw = &sd_io };
+udynlink_io_t ecc_io = { .read = ecc_read, .get_size = ecc_get_size, .pv_ctx = &ecc_ctx };
+
+// Layer 3: Decompression
+decompress_ctx_t dec_ctx = { .p_raw = &ecc_io };
+udynlink_io_t dec_io = { .read = decompress_read, .get_size = decompress_get_size, .pv_ctx = &dec_ctx };
+
+// Loader sees only the final layer
+udynlink_load_module_from_stream(p_mod, &dec_io, ...);
+```
+
+### Important limitation: no random-access streaming transforms
+
+The `udynlink_read_cb_t` contract allows the loader to request bytes at arbitrary offsets (e.g., reading the header at offset 0, then relocation pairs at offset 500). This means:
+
+- **Block/page transforms work** — each offset maps to a known physical block.
+- **Global stream transforms do NOT work** — a single LZ4 stream starting at offset 0 cannot be decompressed starting at offset 500 without decompressing everything before it.
+
+If you need global compression, decompress the entire module to a RAM buffer first, then use `udynlink_load_module()` on the decompressed image.
 
 ---
 

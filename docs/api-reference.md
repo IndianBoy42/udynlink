@@ -176,6 +176,34 @@ typedef struct {
 
 ---
 
+### `udynlink_load_hooks_t`
+
+Descriptor for streaming load lifecycle hooks. Passed to `udynlink_load_module_from_stream_ex()`. A `NULL` pointer means "no hooks" and is fully backward compatible.
+
+```c
+typedef udynlink_error_t (*udynlink_hook_cb_t)(
+    udynlink_hook_stage_t stage,
+    udynlink_module_t *p_mod,
+    void *pv_hook_ctx
+);
+
+typedef struct {
+    udynlink_hook_cb_t  on_event;
+    void               *pv_hook_ctx;
+} udynlink_load_hooks_t;
+```
+
+**Field descriptions:**
+
+| Field | Description |
+|-------|-------------|
+| `on_event` | Single callback invoked for every stage. Returning any value other than `UDYNLINK_OK` aborts the load immediately with `UDYNLINK_ERR_LOAD_HOOK_ABORTED`. |
+| `pv_hook_ctx` | Opaque user context forwarded to the callback. Use this to pass state (e.g., a progress counter, abort reason flag, or policy struct) between the hook and the caller. |
+
+**Size:** The struct is 8 bytes on 32-bit ARM (two pointers). Using a single callback + stage enum instead of one callback per stage saves ~12 bytes per descriptor.
+
+---
+
 ### `udynlink_hash_table_t`
 
 GNU-hash table structure for O(1) host symbol resolution.
@@ -250,6 +278,20 @@ Error codes returned by loader functions.
 | `14` | `UDYNLINK_ERR_LOAD_IO_ERROR` | A streaming read operation failed (returned `-1` or short count). |
 | `15` | `UDYNLINK_ERR_MODULE_HAS_DEPENDENTS` | `udynlink_unload_module` was called on a module that other loaded modules still depend on. |
 | `16` | `UDYNLINK_ERR_INVALID_MODULE` | A `NULL` module pointer was passed, or the module handle is uninitialized. |
+| `17` | `UDYNLINK_ERR_LOAD_HOOK_ABORTED` | A streaming load lifecycle hook returned non-OK, aborting the load. |
+
+---
+
+### `udynlink_hook_stage_t`
+
+Stages at which a streaming load lifecycle hook is invoked. Only used by `udynlink_load_module_from_stream_ex()`. The memory-mapped loader does not invoke hooks.
+
+| Value | Name | Description |
+|-------|------|-------------|
+| `0` | `UDYNLINK_HOOK_HEADER_PARSED` | Header read and validated (signature, ABI version, architecture tag). RAM not yet allocated. `p_mod->p_header` points to a stack-local copy valid only during the callback. |
+| `1` | `UDYNLINK_HOOK_DEPS_RESOLVED` | Dependencies verified and `dep_refcount` incremented. RAM allocated (or set to `load_addr`). Sections not yet copied. |
+| `2` | `UDYNLINK_HOOK_SECTIONS_LOADED` | Code and data copied to RAM, BSS zeroed. LOT unmapped. Relocations not yet applied. |
+| `3` | `UDYNLINK_HOOK_RELOCS_APPLIED` | All relocations processed. Module is fully loaded and ready to use. |
 
 ---
 
@@ -276,6 +318,7 @@ Controls verbosity of loader debug output.
 | `UDYNLINK_SYM_TYPE_EXPORTED` | `1` | Symbol explicitly exported by the module (e.g., `extern "C"` functions or public API). |
 | `UDYNLINK_SYM_TYPE_EXTERN` | `2` | Symbol referenced by the module but defined elsewhere (host firmware or another module). |
 | `UDYNLINK_SYM_TYPE_MODULE_NAME` | `3` | The module's own name entry. Always the first entry in the symbol table. |
+| `UDYNLINK_SYM_TYPE_WEAK` | `4` | Weak symbol defined in the module. The loader first applies the module's own address, then attempts host/dependency override via the same three-tier resolution used for `EXTERN`. If no override is found, the module's definition remains. |
 
 ### Symbol Location Constants
 
@@ -435,6 +478,52 @@ Loads a module from a stream (e.g., SD card, serial flash).
 
 ---
 
+### `udynlink_load_module_from_stream_ex`
+
+```c
+udynlink_error_t udynlink_load_module_from_stream_ex(
+    udynlink_module_t *p_mod,
+    const udynlink_io_t *p_io,
+    void *load_addr,
+    size_t load_size,
+    udynlink_load_mode_t load_mode,
+    void *scratch_buf,
+    size_t scratch_buf_size,
+    const udynlink_load_hooks_t *p_hooks);
+```
+
+Identical to `udynlink_load_module_from_stream()` but accepts an optional lifecycle hooks descriptor.
+
+**Parameters:**
+
+All parameters are the same as `udynlink_load_module_from_stream()`, plus:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `p_hooks` | `const udynlink_load_hooks_t *` | Optional lifecycle hooks. If non-NULL, `on_event` is called at each of the four [`udynlink_hook_stage_t`](#udynlink_hook_stage_t) stages. If NULL, behavior is identical to `udynlink_load_module_from_stream()`. |
+
+**Return value:**
+
+- `UDYNLINK_OK` on success.
+- `UDYNLINK_ERR_LOAD_HOOK_ABORTED` if a hook returned non-OK. The specific stage is identifiable from the caller's own hook logic (both sides are controlled by the same developer).
+- All other error codes from `udynlink_load_module_from_stream()` apply.
+
+**Hook abort and cleanup:**
+
+When a hook returns an error, the loader sets `res = UDYNLINK_ERR_LOAD_HOOK_ABORTED` and jumps to the normal error cleanup path (`exit` label). This means:
+- Auto-allocated RAM is freed via `udynlink_external_free()`.
+- `dep_refcount` increments from successfully resolved dependencies are **not** rolled back (they were already applied before the hook that aborts). The caller must handle this if aborting at `DEPS_RESOLVED` or later.
+- The module handle is zeroed.
+
+**Use cases for hooks:**
+
+1. **Pre-load verification** — at `HEADER_PARSED`, inspect the header (module name, size, version) and reject modules that fail an allowlist or signature check.
+2. **Progress reporting** — at each stage, update a UI progress bar or log a timestamp.
+3. **Post-load integrity check** — at `SECTIONS_LOADED`, verify a checksum over the loaded code/data before allowing execution.
+4. **Post-link audit** — at `RELOCS_APPLIED`, log which symbols were resolved and from which tier.
+
+---
+
 ### `udynlink_unload_module`
 
 ```c
@@ -505,7 +594,7 @@ Links a dependency between two already-loaded modules.
 ```c
 udynlink_error_t udynlink_link_symbol(udynlink_module_t *p_mod,
                                       const char *sym_name,
-                                      uint32_t sym_addr);
+                                      uintptr_t sym_addr);
 ```
 
 Directly patches a symbol's relocation slot in a loaded module.

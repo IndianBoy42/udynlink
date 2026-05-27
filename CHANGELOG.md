@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Streaming load lifecycle hooks** — `udynlink_load_module_from_stream_ex()` with optional `udynlink_load_hooks_t` callback invoked at four stages: `HEADER_PARSED`, `DEPS_RESOLVED`, `SECTIONS_LOADED`, and `RELOCS_APPLIED`. Returning non-OK from a hook aborts the load with `UDYNLINK_ERR_LOAD_HOOK_ABORTED` and triggers normal cleanup. The original `udynlink_load_module_from_stream()` remains a thin backward-compatible wrapper with `NULL` hooks.
+- **Layered I/O wrapper examples** — documented patterns in `udynlink/udynlink_io_examples.h` for building custom `udynlink_io_t` wrappers that perform on-the-fly decompression, ECC correction, or decryption without modifying the loader. Includes page-based decompression and per-page ECC wrapper templates.
+- **Integration test** `test-streaming-hooks` — validates hook ordering, `p_mod` state at each stage, abort-and-cleanup behavior, and backward compatibility.
+
 ## [0.1.0] - 2026-05-26
 
 ### Added

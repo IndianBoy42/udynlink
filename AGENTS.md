@@ -90,7 +90,7 @@ just test-f429-single test-globals1   # Single test on STM32F429
 ```
 
 Each test is executed **twice**: once with `-O0` and once with `-Os`.
-The full suite of 24 tests per platform completes in ~30 seconds (mainline QEMU).
+The full suite of 25 tests per platform completes in ~30 seconds (mainline QEMU).
 
 ### Run a single test manually (advanced)
 The test driver orchestrates several steps:
