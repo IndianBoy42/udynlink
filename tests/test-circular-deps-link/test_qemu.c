@@ -73,9 +73,11 @@ static int test_circular_link_single(udynlink_load_mode_t mode) {
     // Clear deferred symbols so re-resolution can find them in deps
     udynlink_test_clear_deferred_symbols();
 
-    // Link the deferred direction
-    if (udynlink_link_dependency(&mod_a, &mod_b) != UDYNLINK_OK) {
-        printf("link_dependency failed\n");
+    // Manually link the deferred direction and incrementally resolve
+    mod_a.deps[mod_a.num_deps++] = &mod_b;
+    mod_b.dep_refcount++;
+    if (udynlink_link_incremental(&mod_a) != UDYNLINK_OK) {
+        printf("link_incremental failed\n");
         ok = 0;
         goto cleanup;
     }

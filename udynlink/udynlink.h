@@ -153,13 +153,26 @@ typedef struct _udynlink_module_t {
     };
     /** Bitmask storing the load mode and RAM ownership flags. */
     uint8_t info;
-    /** Number of successfully resolved dependencies. */
+    /** Number of valid entries in @c deps (populated by the loader for
+     *  non-deferred dependencies, or by the host for deferred links). */
     uint8_t num_deps;
     /** Number of other loaded modules that list this module as a dependency. */
     uint8_t dep_refcount;
-    /** Capacity of the @c deps array (number of slots the host allocated). */
+    /** Capacity of the @c deps backing array (number of slots the host
+     *  allocated). Must be at least @c p_header->num_deps. */
     uint8_t max_deps;
-    /** Array of pointers to dependency modules (host-allocated, may be NULL). */
+    /** Array of pointers to dependency modules.
+     *
+     *  This is a host-allocated backing array of @c max_deps slots.
+     *  The first @c num_deps entries are valid dependency pointers;
+     *  remaining slots should be left @c NULL.  The loader populates
+     *  entries during udynlink_load_module() for dependencies that are
+     *  already loaded.  For deferred or optional dependencies, the host
+     *  must manually append pointers (bumping @c num_deps and the
+     *  target module's @c dep_refcount) before calling
+     *  udynlink_link_incremental() or udynlink_relink_all().
+     *
+     *  May be @c NULL if the module declares no dependencies. */
     const struct _udynlink_module_t **deps;
     /** Opaque user context pointer.  Never read or written by the loader;
      *  provided for the host to associate arbitrary state with a module
@@ -751,21 +764,44 @@ uint8_t *udynlink_get_text_pointer(const udynlink_module_t *p_mod);
 size_t udynlink_get_ram_requirements(const void *base_addr, udynlink_load_mode_t mode);
 
 /**
- * @brief Link a dependency between two already-loaded modules.
+ * @brief Incrementally resolve unresolved EXTERN relocations in a loaded module.
  *
- * This function is symmetric: it checks whether @p a declares @p b as a
- * dependency (and vice-versa) and, if the dependency is not already linked,
- * adds it to the runtime deps array and re-resolves all EXTERN relocations.
+ * Scans the module's relocation table and attempts to resolve only those
+ * EXTERN slots that are currently zero. Already-resolved slots are left
+ * untouched, so host fallback symbols are not overwritten by later
+ * dependency symbols.
  *
- * Re-resolution ensures that tier-2 (dependency module) symbols take
- * precedence over tier-3 (host fallback) symbols after the link is made.
+ * The caller is responsible for ensuring the module's @c deps[] array is
+ * populated with all desired dependency modules before calling this function.
+ * To populate a deferred dependency, append its pointer to
+ * @c p_mod->deps[p_mod->num_deps++], then increment the dependency module's
+ * @c dep_refcount, and finally call this function.
  *
- * @param[in] a Pointer to the first loaded module.
- * @param[in] b Pointer to the second loaded module.
+ * @param[in] p_mod Pointer to the loaded module.
  *
- * @return ::UDYNLINK_OK on success (including idempotent no-op cases).
+ * @return ::UDYNLINK_OK on success.
  */
-udynlink_error_t udynlink_link_dependency(udynlink_module_t *a, udynlink_module_t *b);
+udynlink_error_t udynlink_link_incremental(udynlink_module_t *p_mod);
+
+/**
+ * @brief Re-resolve all EXTERN relocations in a loaded module from scratch.
+ *
+ * Scans the module's relocation table and re-resolves every EXTERN slot
+ * using the current @c deps[] array and the three-tier resolution chain.
+ * This is slower than the incremental variant but ensures that dependency
+ * module symbols take precedence over host fallback symbols.
+ *
+ * The caller is responsible for ensuring the module's @c deps[] array is
+ * populated with all desired dependency modules before calling this function.
+ * To populate a deferred dependency, append its pointer to
+ * @c p_mod->deps[p_mod->num_deps++], then increment the dependency module's
+ * @c dep_refcount, and finally call this function.
+ *
+ * @param[in] p_mod Pointer to the loaded module.
+ *
+ * @return ::UDYNLINK_OK on success.
+ */
+udynlink_error_t udynlink_relink_all(udynlink_module_t *p_mod);
 
 /**
  * @brief Directly patch a symbol's relocation slot in a loaded module.
@@ -810,8 +846,8 @@ udynlink_module_t *udynlink_get_linked_dependency(const udynlink_module_t *p_mod
  *
  * A symbol that was deferred during load and has not yet been linked
  * will resolve to 0 (or the host fallback value). After
- * udynlink_link_dependency() resolves it from a dependency module,
- * this function returns 1.
+ * udynlink_link_incremental() or udynlink_relink_all() resolves it from
+ * a dependency module, this function returns 1.
  *
  * @param[in] p_mod    Pointer to a loaded module.
  * @param[in] sym_name Null-terminated symbol name.

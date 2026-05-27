@@ -654,35 +654,71 @@ Unloads a module, freeing its RAM and clearing its handle.
 
 ## Linking Functions
 
-### `udynlink_link_dependency`
+### `udynlink_link_incremental`
 
 ```c
-udynlink_error_t udynlink_link_dependency(udynlink_module_t *a, udynlink_module_t *b);
+udynlink_error_t udynlink_link_incremental(udynlink_module_t *p_mod);
 ```
 
-Links a dependency between two already-loaded modules.
+Incrementally resolves unresolved `EXTERN` relocations in a loaded module.
 
 **Parameters:**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `a` | `udynlink_module_t *` | First loaded module. |
-| `b` | `udynlink_module_t *` | Second loaded module. |
+| `p_mod` | `udynlink_module_t *` | Loaded module. |
 
-**Return value:** `UDYNLINK_OK` on success, including idempotent no-op cases.
+**Return value:** `UDYNLINK_OK` on success.
 
 **Behavior:**
 
-1. Checks if `a`'s header lists `b` as a dependency and `b` is not yet in `a->deps`. If so, adds `b` and increments `b->dep_refcount`, then re-resolves all EXTERN relocations in `a`.
-2. Repeats the check in the reverse direction (`b` → `a`).
-3. Returns `UDYNLINK_OK` even if neither direction applies.
+- Scans the module's relocation table for `EXTERN` entries.
+- Only slots that are currently `0` are resolved; already-resolved slots are left untouched.
+- Resolution uses the current `deps[]` array and the three-tier chain (critical host → dependencies → fallback host).
+
+**Precondition:** The caller must populate `p_mod->deps[]` with all desired dependency modules before calling this function. To append a deferred dependency:
+1. Set `p_mod->deps[p_mod->num_deps++] = dep_mod`.
+2. Increment `dep_mod->dep_refcount`.
+3. Call `udynlink_link_incremental(p_mod)`.
 
 **Use cases:**
 - Loading circular dependency graphs (e.g., `mod_a` ↔ `mod_b`).
 - Linking optional dependencies after they are loaded later.
-- Re-resolving symbols when a dependency becomes available.
+- Bulk-linking multiple dependencies efficiently (only zero slots are touched).
 
-**Thread safety:** This function reads and writes `deps`, `num_deps`, and `dep_refcount` on both modules. The host must ensure no concurrent load/unload operations are in progress. See [Thread Safety](integrating-as-host.md#thread-safety-and-concurrency).
+**Thread safety:** This function reads `deps` and writes relocation slots. The host must ensure no concurrent load/unload operations are in progress. See [Thread Safety](integrating-as-host.md#thread-safety-and-concurrency).
+
+---
+
+### `udynlink_relink_all`
+
+```c
+udynlink_error_t udynlink_relink_all(udynlink_module_t *p_mod);
+```
+
+Re-resolves **all** `EXTERN` relocations in a loaded module from scratch.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `p_mod` | `udynlink_module_t *` | Loaded module. |
+
+**Return value:** `UDYNLINK_OK` on success.
+
+**Behavior:**
+
+- Scans every `EXTERN` relocation slot and re-resolves it using the current `deps[]` and the three-tier chain.
+- Dependency module symbols (tier 2) take precedence over host fallback symbols (tier 3), even if the slot was already non-zero.
+- Slower than `udynlink_link_incremental()` but correct when host fallbacks must be overridden.
+
+**Precondition:** Same as `udynlink_link_incremental()` — caller must populate `deps[]` first.
+
+**Use cases:**
+- Re-linking after adding a dependency that should override an existing host fallback symbol.
+- Explicit full re-resolution when the incremental behavior is insufficient.
+
+**Thread safety:** Same as `udynlink_link_incremental`.
 
 ---
 
@@ -781,7 +817,7 @@ Checks whether an extern symbol has a non-zero resolved value.
 
 **Return value:** `1` if the symbol exists and its value is non-zero, `0` otherwise.
 
-**Note:** A symbol that was deferred during load and has not yet been linked resolves to `0`. After `udynlink_link_dependency()` resolves it from a dependency module, this function returns `1`.
+**Note:** A symbol that was deferred during load and has not yet been linked resolves to `0`. After `udynlink_link_incremental()` or `udynlink_relink_all()` resolves it from a dependency module, this function returns `1`.
 
 ---
 

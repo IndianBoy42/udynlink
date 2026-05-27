@@ -1,6 +1,8 @@
 # Plan: Backwards-Compatible Circular Dependency Support
 
 > **Status**: Phase 0 (detection & rejection) is **COMPLETE**. This plan describes the opt-in extension for hosts that need to load circular dependency graphs.
+>
+> **API Note**: The plan below references `udynlink_link_dependency()`. The final implementation replaced this with two lower-level primitives — `udynlink_link_incremental()` and `udynlink_relink_all()` — plus the host manually populating `p_mod->deps[]`. See the user-facing docs for the current API.
 
 ## Current State (As of Today)
 

@@ -67,9 +67,11 @@ static int test_optional_dep_single(udynlink_load_mode_t mode) {
     // Clear deferred symbols so re-resolution can find them in deps
     udynlink_test_clear_deferred_symbols();
 
-    // Link the optional dependency
-    if (udynlink_link_dependency(&consumer, &logging) != UDYNLINK_OK) {
-        printf("link_dependency failed\n");
+    // Manually link the optional dependency and incrementally resolve
+    consumer.deps[consumer.num_deps++] = &logging;
+    logging.dep_refcount++;
+    if (udynlink_link_incremental(&consumer) != UDYNLINK_OK) {
+        printf("link_incremental failed\n");
         ok = 0;
         goto cleanup;
     }

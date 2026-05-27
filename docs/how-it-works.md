@@ -689,13 +689,13 @@ Hosts that need to load circular dependency graphs can use **deferred dependency
 
 When the loader sees this sentinel, it skips the dependency: no entry is added to `deps`, no `dep_refcount` is incremented, and loading continues. The deferred symbol's LOT slot is left at `0`.
 
-After both modules are loaded, the host calls `udynlink_link_dependency(a, b)` to link them symmetrically:
+After both modules are loaded, the host manually populates the deferred direction in `deps[]` and calls `udynlink_link_incremental()`:
 
-1. Checks if `a` declares `b` as a dependency and `b` is not yet in `a->deps`. If so, adds `b` and increments `b->dep_refcount`, then re-runs the three-tier EXTERN resolution chain for `a`.
-2. Repeats the check in the reverse direction (`b` → `a`).
-3. Returns `UDYNLINK_OK` even if nothing changed (idempotent).
+1. Append the dependency pointer to `a->deps[a->num_deps++]`.
+2. Increment `b->dep_refcount` so `b` cannot be unloaded while `a` depends on it.
+3. Call `udynlink_link_incremental(&a)` to resolve only the zero `EXTERN` slots.
 
-**Why re-resolve:** During initial load, an `EXTERN` symbol might have resolved from the host fallback (tier 3) because the dependency wasn't in `deps` yet. After linking, tier 2 (dependency module) should take precedence. A full re-scan is correct and the overhead is negligible for typical embedded modules.
+`udynlink_link_incremental()` only touches slots that are currently `0`, so existing host fallback symbols are not overwritten. If you need dependency symbols to override host fallbacks, use `udynlink_relink_all()` instead, which re-resolves every `EXTERN` slot from scratch.
 
 **Example:**
 
@@ -713,7 +713,9 @@ udynlink_load_module(&mod_b, mod_b_image, NULL, 0, UDYNLINK_LOAD_MODE_COPY_ALL);
 host_register_module(&mod_b);
 
 // Link the deferred direction
-udynlink_link_dependency(&mod_a, &mod_b);
+mod_a.deps[mod_a.num_deps++] = &mod_b;
+mod_b.dep_refcount++;
+udynlink_link_incremental(&mod_a);
 ```
 
 #### Circular Dependencies and Unload
@@ -736,7 +738,7 @@ void my_init(void) {
 }
 ```
 
-Later, if the optional module is loaded, the host calls `udynlink_link_dependency(consumer, optional)` and the symbol is re-resolved from the newly loaded dependency.
+Later, if the optional module is loaded, the host appends it to `consumer.deps[]`, increments its `dep_refcount`, and calls `udynlink_link_incremental(&consumer)` to resolve the deferred symbol from the newly loaded dependency.
 
 **Caveat:** If the host provides a fallback stub for the optional symbol, the LOT slot is non-zero and the module's `NULL` check will falsely succeed. Hosts should not provide stubs for optional symbols if they want modules to detect absence.
 

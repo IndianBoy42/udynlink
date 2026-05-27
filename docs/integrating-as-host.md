@@ -510,21 +510,34 @@ When a resolve callback returns this value:
 - Loading **continues** (does not fail).
 - The module can check `if (func_ptr != NULL)` at runtime.
 
-### Linking Deferred Dependencies: `udynlink_link_dependency()`
+### Linking Deferred Dependencies: `udynlink_link_incremental()` and `udynlink_relink_all()`
 
-After deferred modules are loaded, call this to link them:
+After deferred modules are loaded, the host must manually populate the `deps[]` array and then call one of the relink functions to resolve deferred symbols.
 
 ```c
-udynlink_error_t udynlink_link_dependency(udynlink_module_t *a, udynlink_module_t *b);
+udynlink_error_t udynlink_link_incremental(udynlink_module_t *p_mod);
+udynlink_error_t udynlink_relink_all(udynlink_module_t *p_mod);
 ```
 
-This function is **symmetric**: it checks both directions and links whichever is missing. After adding a dependency to `deps`, it re-runs the three-tier EXTERN resolution chain so that dependency symbols (tier 2) take precedence over host fallbacks (tier 3).
+Both functions resolve `EXTERN` relocation slots using the current contents of `p_mod->deps[]`. The caller is responsible for appending dependency module pointers before calling them:
+
+1. Append the dependency pointer to `p_mod->deps[p_mod->num_deps++]`.
+2. Increment the dependency module's `dep_refcount`.
+3. Call `udynlink_link_incremental()` (fast, only resolves zero slots) or `udynlink_relink_all()` (slow full re-scan, lets dependency symbols override host fallbacks).
+
+**`deps[]` array layout:**
+- `max_deps` — capacity of the backing array (host-allocated).
+- `num_deps` — number of valid entries; remaining slots must be `NULL`.
+- The loader populates non-deferred entries during `udynlink_load_module()`.
+- The host appends deferred/optional entries manually before relinking.
 
 **Example:**
 
 ```c
 // Both A and B are loaded; A declared dependency on B, but B was deferred
-udynlink_link_dependency(&mod_a, &mod_b);
+mod_a.deps[mod_a.num_deps++] = &mod_b;
+mod_b.dep_refcount++;
+udynlink_link_incremental(&mod_a);
 
 // Verify linking succeeded
 if (udynlink_is_module_fully_linked(&mod_a)) {

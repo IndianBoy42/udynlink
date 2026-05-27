@@ -289,4 +289,4 @@ The `.gitignore` and test harness generate these artifacts; do not commit them:
 | 10 | ~~Add Cortex-M0+/M3/M7/M33/M55/M85 support~~ | ~~Low~~ | Done. Toolchain supports all 9 targets. QEMU hosts created for M0, M3, M4/M4F, M7, M33. M55/M85 hosts need upstream QEMU board support. |
 | 11 | Add unit tests for Python toolchain | Low | Only integration tests via QEMU currently exist |
 | 12 | Add Justfile for convenient command running | Low | Done. See `just --list` for available commands. |
-| 13 | ~~Add circular dependency support (sentinel + link_dependency)~~ | ~~Medium~~ | Done. `UDYNLINK_DEP_DEFERRED` and `UDYNLINK_SYM_DEFERRED` sentinels, `udynlink_link_dependency()`, `udynlink_link_symbol()`, query helpers, and 4 new integration tests. |
+| 13 | ~~Add circular dependency support (sentinel + link_dependency)~~ | ~~Medium~~ | Done. `UDYNLINK_DEP_DEFERRED` and `UDYNLINK_SYM_DEFERRED` sentinels, `udynlink_link_incremental()`, `udynlink_relink_all()`, `udynlink_link_symbol()`, query helpers, and 4 new integration tests. |

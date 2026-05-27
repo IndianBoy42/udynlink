@@ -690,8 +690,10 @@ int main(void) {
     }
     register_module(&mod_b);
 
-    // Link the deferred direction
-    udynlink_link_dependency(&mod_a, &mod_b);
+    // Link the deferred direction: manually add B to A's deps, then resolve
+    mod_a.deps[mod_a.num_deps++] = &mod_b;
+    mod_b.dep_refcount++;
+    udynlink_link_incremental(&mod_a);
 
     // Verify both are fully linked
     printf("A fully linked: %d\n", udynlink_is_module_fully_linked(&mod_a));
@@ -716,7 +718,7 @@ int main(void) {
 ### Key points
 
 - `UDYNLINK_DEP_DEFERRED` breaks the cycle by allowing the loader to skip a dependency.
-- `udynlink_link_dependency()` is symmetric: one call links both directions.
+- The host manually appends dependency pointers to `deps[]` and then calls `udynlink_link_incremental()` to resolve deferred symbols.
 - Circular modules remain un-unloadable (`dep_refcount >= 1` for all members).
 
 ---
@@ -771,8 +773,10 @@ udynlink_load_module(&logging, mod_logging_module_data, NULL, 0,
                      UDYNLINK_LOAD_MODE_COPY_ALL);
 host_register_module(&logging);
 
-// Link the optional dependency
-udynlink_link_dependency(&consumer, &logging);
+// Link the optional dependency: manually add logging to consumer's deps
+consumer.deps[consumer.num_deps++] = &logging;
+logging.dep_refcount++;
+udynlink_link_incremental(&consumer);
 
 // Now consumer resolves logging's symbol
 printf("Linked: %d\n", ((int (*)(void))sym.val)());  // 123

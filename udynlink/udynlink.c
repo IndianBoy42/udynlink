@@ -863,9 +863,10 @@ size_t udynlink_get_ram_requirements(const void *base_addr, udynlink_load_mode_t
     return get_ram_size_for_header(p_header, mode);
 }
 
-// Helper: re-resolve all EXTERN relocations in a loaded module.
-// Used by udynlink_link_dependency() after a new dependency is added.
-static void apply_extern_relocations(udynlink_module_t *p_mod) {
+// Helper: resolve EXTERN relocations in a loaded module.
+// If @p incremental is non-zero, only slots that are currently zero are
+// resolved; otherwise all EXTERN slots are re-resolved from scratch.
+static void apply_extern_relocations_impl(udynlink_module_t *p_mod, int incremental) {
     const udynlink_module_header_t *p_header = p_mod->p_header;
     const uint32_t *p_rels = get_relocs_pointer(p_mod);
     uint32_t *p_lot = (uint32_t *)p_mod->p_ram;
@@ -885,6 +886,9 @@ static void apply_extern_relocations(udynlink_module_t *p_mod) {
         uint32_t *p_rel_location = (lot_offset < p_header->num_lot) ?
             p_lot + lot_offset : p_data + lot_offset - p_header->num_lot;
 
+        if (incremental && *p_rel_location != 0)
+            continue;
+
         uintptr_t sym_addr = resolve_symbol_tiered(p_mod, sym.name);
         if (sym_addr == UDYNLINK_SYM_DEFERRED) {
             *p_rel_location = 0;
@@ -893,57 +897,20 @@ static void apply_extern_relocations(udynlink_module_t *p_mod) {
         if (sym_addr > 0) {
             *p_rel_location = (uint32_t)sym_addr;
         } else {
-            *p_rel_location = 0; // unresolved after re-resolution
+            *p_rel_location = 0; // unresolved
         }
     }
 }
 
-udynlink_error_t udynlink_link_dependency(udynlink_module_t *a, udynlink_module_t *b) {
-    if (!a || !b) return UDYNLINK_ERR_INVALID_MODULE;
+udynlink_error_t udynlink_link_incremental(udynlink_module_t *p_mod) {
+    if (!p_mod || !p_mod->p_header) return UDYNLINK_ERR_INVALID_MODULE;
+    apply_extern_relocations_impl(p_mod, 1);
+    return UDYNLINK_OK;
+}
 
-    const udynlink_module_header_t *ha = a->p_header;
-    const udynlink_module_header_t *hb = b->p_header;
-
-    // Direction A -> B
-    const char *deps_a = get_deps_strtab(ha);
-    if (deps_a) {
-        for (uint16_t d = 0; d < ha->num_deps; d++) {
-            if (strcmp(deps_a, udynlink_get_module_name(b)) == 0) {
-                int already = 0;
-                for (uint16_t i = 0; i < a->num_deps; i++) {
-                    if (a->deps[i] == b) { already = 1; break; }
-                }
-                if (!already) {
-                    a->deps[a->num_deps++] = b;
-                    b->dep_refcount++;
-                    apply_extern_relocations(a);
-                }
-                break;
-            }
-            deps_a += strlen(deps_a) + 1;
-        }
-    }
-
-    // Direction B -> A
-    const char *deps_b = get_deps_strtab(hb);
-    if (deps_b) {
-        for (uint16_t d = 0; d < hb->num_deps; d++) {
-            if (strcmp(deps_b, udynlink_get_module_name(a)) == 0) {
-                int already = 0;
-                for (uint16_t i = 0; i < b->num_deps; i++) {
-                    if (b->deps[i] == a) { already = 1; break; }
-                }
-                if (!already) {
-                    b->deps[b->num_deps++] = a;
-                    a->dep_refcount++;
-                    apply_extern_relocations(b);
-                }
-                break;
-            }
-            deps_b += strlen(deps_b) + 1;
-        }
-    }
-
+udynlink_error_t udynlink_relink_all(udynlink_module_t *p_mod) {
+    if (!p_mod || !p_mod->p_header) return UDYNLINK_ERR_INVALID_MODULE;
+    apply_extern_relocations_impl(p_mod, 0);
     return UDYNLINK_OK;
 }
 
