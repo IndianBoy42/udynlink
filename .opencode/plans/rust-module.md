@@ -11,9 +11,70 @@ Enable developers to write `no_std` Rust crates, compile them, and produce udynl
 
 **Non-goal:** Using Rust's native PIC/RWPI/ROPI models. Investigation showed none produce `R_ARM_GOT_BREL` and all have significant bugs or `core` library incompatibilities.
 
+## 2. XIP Incompatibility: A Critical Architectural Constraint
+
+### The Problem
+
+XIP mode (`UDYNLINK_LOAD_MODE_XIP`) copies only `.data` to RAM. The code stays in flash at the original `base_addr`. For C modules, this works because:
+- Code accesses data via `r9` + LOT index (GOT-based indirection)
+- The LOT is in RAM, patched at load time
+- The code itself is read-only and never modified
+
+For Rust with the `static` relocation model:
+- Code contains absolute addresses in `MOVW`/`MOVT` instruction immediates
+- These addresses must be adjusted to point to the new RAM location of `.data`
+- The adjustment depends on the load-time RAM address, which is not known at build time
+- Therefore, instructions MUST be patched at load time
+- XIP keeps code in flash → **patching is impossible** (flash is read-only or write-protected)
+
+### The Solution
+
+**Rust modules support `COPY_ALL` and `COPY_CODE` modes only.** XIP mode returns `UDYNLINK_ERR_LOAD_UNABLE_TO_XIP`.
+
+For `COPY_ALL` and `COPY_CODE`, the code IS copied to RAM, so the loader can safely patch instructions in-place.
+
+### Implementation
+
+The loader checks when it encounters an instruction relocation (bit 28 or 29 set) and the load mode is XIP:
+
+```c
+if (symt_offset & (1u << 29)) {
+    if (load_mode == UDYNLINK_LOAD_MODE_XIP) {
+        res = UDYNLINK_ERR_LOAD_UNABLE_TO_XIP;
+        goto exit;
+    }
+    // ... patch MOVW ...
+}
+if (symt_offset & (1u << 28)) {
+    if (load_mode == UDYNLINK_LOAD_MODE_XIP) {
+        res = UDYNLINK_ERR_LOAD_UNABLE_TO_XIP;
+        goto exit;
+    }
+    // ... patch MOVT ...
+}
+```
+
+### Test Matrix
+
+| Mode | C Module | Rust Module |
+|------|----------|-------------|
+| COPY_ALL | ✅ | ✅ |
+| COPY_CODE | ✅ | ✅ |
+| XIP | ✅ | ❌ (returns `UDYNLINK_ERR_LOAD_UNABLE_TO_XIP`) |
+
+### Is This Acceptable?
+
+Yes. For dynamically loaded modules:
+- The primary use case is loading into RAM for execution
+- XIP is an optimization that avoids copying code to RAM
+- COPY_CODE mode copies code to RAM (small overhead, acceptable for small modules)
+- The module still works correctly; it just uses slightly more RAM
+
+**This must be documented clearly in the Rust module guide.**
+
 ---
 
-## 2. Investigation Findings (Summary)
+## 3. Investigation Findings (Summary)
 
 A full investigation of all Rust relocation models revealed:
 
@@ -120,7 +181,7 @@ Example: `printf` is `SHN_UNDEF` in the ELF. The post-processor records it as `t
 
 ---
 
-## 3. Architecture: How It Works
+## 4. Architecture: How It Works
 
 ### 3.1 Build Pipeline
 
@@ -253,7 +314,7 @@ The loader looks up the symbol, sees it's extern, calls `udynlink_external_resol
 
 ---
 
-## 4. Custom Linker Script for Rust Modules
+## 5. Custom Linker Script for Rust Modules
 
 Rust keeps `.rodata` separate. Udynlink expects `.rodata` merged into `.text` (or adjacent with known offsets). The linker script must:
 1. Place `.text` at 0x0
@@ -306,7 +367,7 @@ SECTIONS {
 
 ---
 
-## 5. Phase 1: Proc-Macro (`#[udynlink_export]`)
+## 6. Phase 1: Proc-Macro (`#[udynlink_export]`)
 
 ### 5.1 Design
 
@@ -411,7 +472,7 @@ No re-linking needed. The post-processor constructs the UDLM binary directly fro
 
 ---
 
-## 6. Phase 2: Python Post-Processing Tool (`scripts/rust2udynlink.py`)
+## 7. Phase 2: Python Post-Processing Tool (`scripts/rust2udynlink.py`)
 
 ### 6.1 Input
 
@@ -688,7 +749,7 @@ But since we preserve the existing bits (mask `0xFBF0` keeps the opcode), the en
 
 ---
 
-## 7. Phase 3: Loader Extension (`udynlink.c`)
+## 8. Phase 3: Loader Extension (`udynlink.c`)
 
 ### 7.1 New Flag Bits
 
@@ -771,7 +832,7 @@ The same logic must be applied to `udynlink_load_module_stream()`. The instructi
 
 ---
 
-## 8. Task Breakdown
+## 9. Task Breakdown
 
 ### Block A: Foundation (can be done in parallel)
 
@@ -807,13 +868,13 @@ The same logic must be applied to `udynlink_load_module_stream()`. The instructi
 | # | Task | Agent | Deliverable | Notes |
 |---|------|-------|-------------|-------|
 | D1 | Integrate Rust module with test harness | `agent` | `test_driver.py` compiles Rust module + runs in QEMU | |
-| D2 | Test on MPS2-AN386 (Cortex-M4) | `agent` | Passes `-O0` and `-Os` for all 3 load modes | |
+| D2 | Test on MPS2-AN386 (Cortex-M4) | `agent` | Passes `-O0` and `-Os` for COPY_ALL and COPY_CODE | XIP returns expected error |
 | D3 | Test multiple targets | `quick/agent` | Validate on at least M4, M3, M7 | |
 | D4 | Add `just` commands for Rust module compilation | `quick` | `just rust-module source.rs`, `just rust-module-for cortex-m7 source.rs` | |
 
 ---
 
-## 9. Risk Register (Updated with Investigation Results)
+## 10. Risk Register (Updated with Investigation Results)
 
 | Risk | Likelihood | Impact | Strategy |
 |------|-----------|--------|----------|
@@ -823,17 +884,19 @@ The same logic must be applied to `udynlink_load_module_stream()`. The instructi
 | `R_ARM_ABS32` in `.rodata` (now merged into `.text`) | Medium | Medium | Custom linker script merges `.rodata` into `.text`; loader handles ABS32 |
 | rust-lld drops `.udynlink.exports` section | Low | Medium | Use `#[used]` attribute; verify with `readelf -S` |
 | Performance: patching instructions at load time is slower than LOT | Low | Low | Embedded target with small modules; negligible overhead |
+| XIP mode incompatible with Rust modules | Certain (by design) | Medium | Document clearly; reject in loader with proper error code |
 | `dyn Trait` / vtables non-relocatable | High | Medium | Document restriction. Static generics work fine. |
 | External function calls don't resolve correctly | Medium | High | Ensure `R_ARM_THM_CALL` with `SHN_UNDEF` symbols is handled; test with printf |
 
 ---
 
-## 10. Open Questions
+## 11. Open Questions
 
 1. **Should we also support `R_ARM_MOVW_ABS_NC` / `R_ARM_MOVT_ABS` (non-Thumb)?** The `thumbv7em` target generates Thumb-2 instructions. ARM instruction variants are unlikely.
 2. **How to handle `R_ARM_ABS32` in `.rodata`?** With our custom linker script, `.rodata` is merged into `.text`. ABS32 relocations in `.text` for string literal pointers need to be handled. But since `.text` is in the code section, maybe we should keep `.rodata` separate and place it after `.text` in the binary.
-3. **Should we use the LOT at all, or just patch instructions directly?** With the `static` model, there's no LOT indirection. We could set `num_lot = 0` and handle everything via instruction patching and data ABS32. This simplifies the module format. But keeping the LOT allows future flexibility.
-   - **Decision:** Start with `num_lot = 0` for Rust modules. Simpler post-processor, simpler loader interaction. This means the relocation table only contains instruction relocations (bits 28/29) and data relocations (bit 31).
+3. **Should we use the LOT at all, or just patch instructions directly?** With the `static` model, there's no LOT indirection. We could set `num_lot = 0` and handle everything via instruction patching and data ABS32.
+   - **Decision:** Start with `num_lot = 0` for Rust modules. Simpler post-processor, simpler loader interaction. The relocation table contains instruction relocations (bits 28/29) and data relocations (bit 31).
+4. **Should we ever add XIP support for Rust modules?** This would require transforming the binary to use LOT-based access at build time (post-processor replaces MOVW/MOVT with LDR+LOT sequences). Complex but possible. **Decision:** Not in v1. Document as future enhancement.
 
 ---
 

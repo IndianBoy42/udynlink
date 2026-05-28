@@ -29,6 +29,7 @@ Each direction is independent enough to be developed, tested, and merged separat
 |----------|----------------|-----------|
 | **Direction priority** | Rust Module first, then Rust Host | User explicitly asked to start with post-processing module support |
 | **Module relocation model** | `static` with MOVW/MOVT loader extension | Investigation shows no Rust model produces `R_ARM_GOT_BREL`; `static` model works reliably with existing `core` lib |
+| **XIP mode** | Not supported for Rust modules | Rust `static` model encodes absolute addresses in instructions; XIP keeps code in flash (read-only), so instructions cannot be patched |
 | **Export mechanism** | Proc-macro `#[udynlink_export]` with generated assembly prologues | Idiomatic Rust; avoids objcopy symbol mangling; post-processor generates wrappers like C toolchain |
 | **Build tool style** | Standalone CLI (`rust2udynlink`) first, then `cargo-udynlink` subcommand | Immediate CLI for experimentation, then cargo integration for real workflows |
 | **Host API safety** | Both: `udynlink-sys` (raw unsafe FFI) + `udynlink-rs` (safe wrappers) | Users choose their abstraction level |
@@ -84,7 +85,8 @@ This workstream is **independent** of the module workstream. A Rust host can loa
 Both workstreams must integrate with the existing QEMU test harness:
 - `tests/test_driver.py` orchestrates compilation → build host → run QEMU → validate
 - Add `test-rust-module` and `test-rust-host` test cases
-- Each test runs with `-O0` and `-Os`, across all 3 load modes
+- **Rust modules:** Test with `-O0` and `-Os`, but only `COPY_ALL` and `COPY_CODE` modes (XIP returns expected error)
+- **Rust host:** Can load existing C modules (all 3 modes, including XIP)
 - Platforms: at minimum MPS2-AN386 (Cortex-M4), others as needed
 
 ---
