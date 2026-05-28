@@ -15,6 +15,7 @@
 - [Hash-Based Symbol Resolution](#hash-based-symbol-resolution)
 - [Utility Functions](#utility-functions)
 - [Convenience Macros](#convenience-macros)
+- [Dependency System](#dependency-system-udynlink_depsh)
 - [Call Convenience Macros](#call-convenience-macros)
 - [External Callbacks](#external-callbacks)
 
@@ -1007,6 +1008,241 @@ Expands to a `{name, address}` initializer pair for building static host symbol 
 ```
 
 Internal macro used by the loader to emit debug messages. Not intended for host use, but documented for completeness.
+
+---
+
+## Dependency System (`udynlink_deps.h`)
+
+The `udynlink/udynlink_deps.h` header provides an optional standalone layer for cross-module function calls and dependency tracking. It is designed to be used on top of the core loader without modifying it. Hosts that do not need cross-module linking can omit this header entirely.
+
+### Dependency Prefix Macros
+
+| Macro | Value | Description |
+|-------|-------|-------------|
+| `UDYNLINK_DEP_PREFIX` | `".udynlink.mod.requires."` | Symbol prefix for dependency declarations. |
+| `UDYNLINK_DEP_PREFIX_LEN` | `24` | Length of the prefix string. |
+| `UDYNLINK_DEP_MAX_DEPTH` | `8` | Maximum depth of the circular-dependency detection stack. |
+| `UDYNLINK_THUNK_SIZE` | `28` | Size of an inline per-function thunk in bytes. |
+
+### `UDYNLINK_REQUIRES`
+
+```c
+#define UDYNLINK_REQUIRES(mod_name) \
+    extern udynlink_module_t *__udynlink_dep_##mod_name \
+    __asm__(".udynlink.mod.requires." #mod_name)
+```
+
+Module-side macro that declares a dependency on another module named `mod_name`. Expands to an `extern` symbol with a mangled name `.udynlink.mod.requires.{mod_name}`. At load time the core loader treats this as an `UDYNLINK_SYM_TYPE_EXTERN` symbol and calls the host's `udynlink_external_resolve_symbol()` to resolve it.
+
+---
+
+### `udynlink_thunk_pool_t`
+
+```c
+typedef struct {
+    uint8_t *base;
+    size_t   size;
+    size_t   used;
+} udynlink_thunk_pool_t;
+```
+
+RAM pool for cross-module call thunks. The host provides a contiguous buffer in executable RAM. Each cross-module function reference gets a 28-byte inline thunk allocated from this pool via `udynlink_thunk_alloc()`.
+
+| Field | Description |
+|-------|-------------|
+| `base` | Start of the thunk RAM region (host-provided). |
+| `size` | Total size of the region in bytes. |
+| `used` | Number of bytes currently allocated. |
+
+### `udynlink_thunk_pool_init`
+
+```c
+void udynlink_thunk_pool_init(udynlink_thunk_pool_t *pool,
+                              uint8_t *buf, size_t sz);
+```
+
+Initializes a thunk pool. `buf` must point to RAM that is readable and executable by the MCU (e.g., SRAM or ITCM). `sz` should be a multiple of `UDYNLINK_THUNK_SIZE` for clean accounting.
+
+### `udynlink_thunk_alloc`
+
+```c
+void *udynlink_thunk_alloc(udynlink_thunk_pool_t *pool, size_t n);
+```
+
+Allocates `n` bytes from the thunk pool. Returns a pointer to the allocated region, or `NULL` if the pool is exhausted. The pool is a simple bump allocator; there is no per-allocation free. When the pool is reset (via `udynlink_thunk_pool_init`), all previously allocated thunks become invalid.
+
+---
+
+### `udynlink_dep_mgr_t`
+
+```c
+typedef struct {
+    udynlink_module_t **modules;
+    size_t              count;
+    size_t              capacity;
+    const char         *loading_stack[UDYNLINK_DEP_MAX_DEPTH];
+    size_t              loading_depth;
+} udynlink_dep_mgr_t;
+```
+
+Dependency manager state. Tracks loaded modules and detects circular dependencies during load.
+
+| Field | Description |
+|-------|-------------|
+| `modules` | Registry of loaded module pointers (host-owned array). |
+| `count` | Number of modules currently registered. |
+| `capacity` | Maximum size of the `modules` array. |
+| `loading_stack` | Circular-dependency detection stack (module names). |
+| `loading_depth` | Current depth of the loading stack. |
+
+### `udynlink_dep_mgr_init`
+
+```c
+void udynlink_dep_mgr_init(udynlink_dep_mgr_t *mgr,
+                           udynlink_module_t **buf, size_t cap);
+```
+
+Initializes a dependency manager. `buf` is a host-provided array of `udynlink_module_t *` with capacity `cap`. The manager does not allocate memory; it only stores pointers into `buf`.
+
+---
+
+### `udynlink_dep_is_dependency`
+
+```c
+int udynlink_dep_is_dependency(const char *name);
+```
+
+Returns non-zero if `name` starts with `UDYNLINK_DEP_PREFIX` (`.udynlink.mod.requires.`), indicating a dependency declaration symbol. Returns `0` otherwise.
+
+### `udynlink_dep_get_name`
+
+```c
+const char *udynlink_dep_get_name(const char *name);
+```
+
+Extracts the module name from a dependency symbol. Skips the prefix and returns a pointer to the module name portion. Returns `NULL` if `name` is not a dependency symbol.
+
+### `udynlink_dep_find`
+
+```c
+udynlink_module_t *udynlink_dep_find(udynlink_dep_mgr_t *mgr,
+                                    const char *name);
+```
+
+Searches the dependency manager's registry for a module whose name matches `name`. Returns a pointer to the module handle, or `NULL` if not found.
+
+---
+
+### `udynlink_dep_resolve_dependency`
+
+```c
+uintptr_t udynlink_dep_resolve_dependency(udynlink_dep_mgr_t *mgr,
+                                          const char *name);
+```
+
+Resolves a dependency declaration symbol (`.udynlink.mod.requires.*`). Called from the host's `udynlink_external_resolve_symbol()` callback.
+
+**Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `mgr` | Dependency manager. |
+| `name` | Full dependency symbol name. |
+
+**Return value:**
+
+- The module handle address (cast to `uintptr_t`) if the dependency is found.
+- `UDYNLINK_SYM_DEFERRED` if the dependency is on the loading stack (circular dependency).
+- `0` if the dependency is not found.
+
+### `udynlink_dep_resolve_func`
+
+```c
+uintptr_t udynlink_dep_resolve_func(udynlink_dep_mgr_t *mgr,
+                                    udynlink_thunk_pool_t *pool,
+                                    const char *name);
+```
+
+Resolves a cross-module function symbol by searching all registered dependency modules. If found, allocates a 28-byte inline thunk from the pool that switches `r9` to the callee module's base and calls the target function.
+
+**Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `mgr` | Dependency manager. |
+| `pool` | Thunk pool for thunk allocation. |
+| `name` | Symbol name to resolve. |
+
+**Return value:**
+
+- Thunk address on success.
+- `0` if the symbol is not found in any dependency module or the pool is exhausted.
+
+### `udynlink_dep_resolve_data`
+
+```c
+uintptr_t udynlink_dep_resolve_data(udynlink_dep_mgr_t *mgr,
+                                    const char *name);
+```
+
+Resolves a cross-module data symbol by searching all registered dependency modules. Data symbols do not require thunks — the absolute address is returned directly.
+
+**Return value:**
+
+- Symbol address on success.
+- `0` if the symbol is not found or is not a data symbol.
+
+### `udynlink_dep_register`
+
+```c
+void udynlink_dep_register(udynlink_dep_mgr_t *mgr,
+                           udynlink_module_t *p_mod);
+```
+
+Registers a module in the dependency manager after loading. Useful when the host loads modules via `udynlink_load_module()` directly instead of `udynlink_dep_load()`. The module must be successfully loaded before registration.
+
+### `udynlink_dep_load`
+
+```c
+udynlink_error_t udynlink_dep_load(udynlink_dep_mgr_t *mgr,
+                                   udynlink_module_t *p_mod,
+                                   const void *base_addr,
+                                   void *load_addr, size_t load_size,
+                                   udynlink_load_mode_t load_mode,
+                                   udynlink_thunk_pool_t *pool);
+```
+
+Loads a module with automatic dependency tracking. This wrapper:
+
+1. Pushes the module name onto the loading stack (for circular-dependency detection).
+2. Calls `udynlink_load_module()`.
+3. Registers the module in the dependency manager.
+4. Pops the loading stack.
+
+**Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `mgr` | Dependency manager. |
+| `p_mod` | Module handle (must be zero-initialized). |
+| `base_addr` | Module image base address. |
+| `load_addr` | RAM load address, or `NULL` for auto-allocation. |
+| `load_size` | Size of pre-allocated RAM if `load_addr` is not `NULL`. |
+| `load_mode` | Load mode (`COPY_ALL`, `COPY_TEXT_DATA`, or `XIP`). |
+| `pool` | Thunk pool (used for future resolution; currently unused during load). |
+
+**Return value:** Same as `udynlink_load_module()`.
+
+### `udynlink_dep_unload`
+
+```c
+udynlink_error_t udynlink_dep_unload(udynlink_dep_mgr_t *mgr,
+                                      udynlink_module_t *p_mod);
+```
+
+Unloads a module and deregisters it from the dependency manager. Removes the module pointer from the registry, then calls `udynlink_unload_module()`. Any thunks pointing to this module become stale and must not be called afterward.
+
+**Return value:** `UDYNLINK_OK` on success, or `UDYNLINK_ERR_INVALID_MODULE` if `mgr` or `p_mod` is `NULL`.
 
 ---
 

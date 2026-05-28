@@ -9,6 +9,7 @@ This guide is for firmware developers who want to integrate the udynlink micro d
 - [Adding udynlink to Your Build](#adding-udynlink-to-your-build)
 - [Implementing the External Callbacks](#implementing-the-external-callbacks)
 - [Deferred Dependencies and Symbols](#deferred-dependencies-and-symbols)
+- [Integrating the Dependency System](#integrating-the-dependency-system-udynlink_deps)
 - [The LOT Base Address Convention](#the-lot-base-address-convention)
 - [Building and Using the Host Symbol Table](#building-and-using-the-host-symbol-table)
 - [Hash-Based Symbol Resolution](#hash-based-symbol-resolution)
@@ -374,6 +375,125 @@ int udynlink_is_symbol_resolved(const udynlink_module_t *p_mod,
 ```
 
 Returns `1` if the symbol exists in the module's relocation table and has a non-zero value, `0` otherwise. A symbol that was deferred during load and has not yet been patched or relinked resolves to `0`.
+
+---
+
+## Integrating the Dependency System (`udynlink_deps`)
+
+The `udynlink_deps` layer is an optional standalone subsystem that enables cross-module function calls and dependency tracking. It sits on top of the core loader and does not affect hosts that do not use it.
+
+### When to Use It
+
+Use the dependency system when:
+
+- Your firmware loads multiple modules that need to call each other.
+- You want modules to declare explicit dependencies (e.g., a UI module that requires a math module).
+- You need automatic circular-dependency detection.
+
+Hosts that load only single, isolated modules do not need this layer.
+
+### Required Setup
+
+Before loading any modules, initialize the dependency manager and the thunk pool:
+
+```c
+#include "udynlink.h"
+#include "udynlink_deps.h"
+
+#define MAX_MODULES     8
+#define THUNK_POOL_SIZE 512
+
+static udynlink_module_t *g_mod_slots[MAX_MODULES];
+static udynlink_dep_mgr_t g_dep_mgr;
+static uint8_t g_thunk_buf[THUNK_POOL_SIZE];
+static udynlink_thunk_pool_t g_thunk_pool;
+
+void init_deps(void) {
+    udynlink_dep_mgr_init(&g_dep_mgr, g_mod_slots, MAX_MODULES);
+    udynlink_thunk_pool_init(&g_thunk_pool, g_thunk_buf, sizeof(g_thunk_buf));
+}
+```
+
+- **`g_mod_slots`** — array of module pointers. The dependency manager tracks registered modules here.
+- **`g_thunk_buf`** — executable RAM buffer for cross-module call thunks. Each cross-module function reference consumes 28 bytes.
+
+### The Host Resolver Pattern
+
+The critical integration point is `udynlink_external_resolve_symbol()`. A dependency-aware host checks dep symbols first, then falls back to function/data resolution and finally to host-native symbols:
+
+```c
+uintptr_t udynlink_external_resolve_symbol(const char *name) {
+    // 1. Dependency declarations: .udynlink.mod.requires.{name}
+    if (udynlink_dep_is_dependency(name)) {
+        return udynlink_dep_resolve_dependency(&g_dep_mgr, name);
+    }
+
+    // 2. Cross-module function (allocates a thunk)
+    uintptr_t thunk = udynlink_dep_resolve_func(&g_dep_mgr, &g_thunk_pool, name);
+    if (thunk != 0) return thunk;
+
+    // 3. Cross-module data variable (no thunk needed)
+    uintptr_t data = udynlink_dep_resolve_data(&g_dep_mgr, name);
+    if (data != 0) return data;
+
+    // 4. Host-native symbols (printf, delay_ms, etc.)
+    if (!strcmp(name, "printf"))
+        return (uintptr_t)&my_printf;
+    if (!strcmp(name, "delay_ms"))
+        return (uintptr_t)&my_delay_ms;
+
+    return 0;  // unknown symbol
+}
+```
+
+**Order matters.** Always check `udynlink_dep_is_dependency()` first. Dependency symbols have a special prefix (`.udynlink.mod.requires.`) and must be resolved to a module handle address, not a thunk or a host function.
+
+### Loading and Unloading with Tracking
+
+Use `udynlink_dep_load()` and `udynlink_dep_unload()` instead of the raw core loader functions. These wrappers push/pop the circular-dependency detection stack and automatically register/deregister the module:
+
+```c
+udynlink_module_t mod_math, mod_app;
+memset(&mod_math, 0, sizeof(mod_math));
+memset(&mod_app, 0, sizeof(mod_app));
+
+udynlink_error_t err = udynlink_dep_load(
+    &g_dep_mgr, &mod_math, mod_math_blob,
+    NULL, 0, UDYNLINK_LOAD_MODE_COPY_ALL, &g_thunk_pool);
+if (err != UDYNLINK_OK) { /* handle error */ }
+
+err = udynlink_dep_load(
+    &g_dep_mgr, &mod_app, mod_app_blob,
+    NULL, 0, UDYNLINK_LOAD_MODE_COPY_ALL, &g_thunk_pool);
+if (err != UDYNLINK_OK) { /* handle error */ }
+
+// ... use modules ...
+
+udynlink_dep_unload(&g_dep_mgr, &mod_app);
+udynlink_dep_unload(&g_dep_mgr, &mod_math);
+```
+
+If you load modules via `udynlink_load_module()` directly (e.g., for the first bootstrap module), you must manually register them afterward:
+
+```c
+udynlink_load_module(&mod_math, mod_math_blob, NULL, 0, UDYNLINK_LOAD_MODE_COPY_ALL);
+udynlink_dep_register(&g_dep_mgr, &mod_math);
+```
+
+### Circular Dependencies
+
+If module A declares `UDYNLINK_REQUIRES(B)` and module B declares `UDYNLINK_REQUIRES(A)`, the loader detects the cycle via the loading stack and returns `UDYNLINK_SYM_DEFERRED` for the second reference. This allows the load to succeed if the modules handle deferred symbols gracefully (e.g., checking `if (func != NULL)` before calling).
+
+### Thunk Pool Sizing
+
+Estimate the maximum number of cross-module function references your system will have simultaneously, then allocate:
+
+```c
+#define MAX_CROSS_CALLS 20
+#define THUNK_POOL_SIZE (MAX_CROSS_CALLS * UDYNLINK_THUNK_SIZE)
+```
+
+There is no thunk free API. When a module is unloaded, its thunks become stale. If you need to reclaim thunk RAM, reset the pool by calling `udynlink_thunk_pool_init()` again (this invalidates all existing thunks, so only do it when no modules are loaded).
 
 ---
 

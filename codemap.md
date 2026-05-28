@@ -15,9 +15,9 @@ This repository is the **eh2k fork** of the original udynlink project. It adds C
 ## Directory Map (Aggregated)
 | Directory | Responsibility Summary | Detailed Map |
 |-----------|------------------------|--------------|
-| `udynlink/` | Core dynamic linker runtime: module loading, relocation, symbol resolution, unloading, C++ constructor init. | [View Map](udynlink/codemap.md) |
+| `udynlink/` | Core dynamic linker runtime: module loading, relocation, symbol resolution, unloading, C++ constructor init, cross-module thunk pool. | [View Map](udynlink/codemap.md) |
 | `scripts/` | Build toolchain: compile C/C++ to PIC, wrap exports, link with `--gc-sections`, parse ELF, emit loadable binary images. | [View Map](scripts/codemap.md) |
-| `tests/` | QEMU-based integration test harness: test driver, per-test modules, host firmware, and validation utils. | [View Map](tests/codemap.md) |
+| `tests/` | QEMU-based integration test harness: test driver, per-test modules (including cross-module deps), host firmware, and validation utils. | [View Map](tests/codemap.md) |
 
 ## Key Design Notes
 - **Position Independence**: Relies on GCC ARM Embedded flags (`-fPIE`, `-msingle-pic-base`) and an `r9`-relative LOT (Linker Offset Table) instead of a traditional GOT.
@@ -28,6 +28,7 @@ This repository is the **eh2k fork** of the original udynlink project. It adds C
 - **Dead Code Elimination**: `--gc-sections` is used during linking, with `KEEP(*(.text_nogc))` and `KEEP(*(.init_array))` preserving prologues and constructors.
 - **Selective Exporting**: `--public-symbols` allows restricting which global functions are wrapped/exported, reducing binary size and attack surface.
 - **Host-Managed r9**: ABI v3.0 removed `UDYNLINK_LOT_BASE_ADDR`. The host sets `r9` directly via `UDYNLINK_PREPARE_CALL(p_mod)` before every module call. The assembly prologue only saves/restores the caller's `r9`.
+- **Cross-Module Calls**: The `udynlink_deps` layer adds optional cross-module linking via runtime-generated thunks in executable RAM. `udynlink/udynlink_deps.h` and `udynlink/udynlink_deps.c` implement the thunk pool, dependency manager, and resolution helpers. The `UDYNLINK_REQUIRES` macro lets modules declare explicit dependencies.
 
 ### Hash-Based Symbol Resolution (O(1))
 - New files: `udynlink/udynlink_hash.h` (hash table struct + lookup declaration + ~60-line GNU hash + bloom filter lookup implementation)
@@ -35,6 +36,16 @@ This repository is the **eh2k fork** of the original udynlink project. It adds C
 - The hash table struct `udynlink_hash_table_t` contains: bloom filter, buckets, hash values, symbol addresses, and string table
 - Lookup function: `udynlink_resolve_hashed_symbol()` — O(1) amortized, replaces the O(N) strcmp resolution chain
 - No changes to existing `udynlink.h` / `udynlink.c` / `udynlink_externals.h` for this feature; it is an optional additive capability
+
+### Cross-Module Dependency System (`udynlink_deps`)
+- New files: `udynlink/udynlink_deps.h` (public API) and `udynlink/udynlink_deps.c` (implementation)
+- Thunk pool: `udynlink_thunk_pool_t` / `udynlink_thunk_pool_init()` / `udynlink_thunk_alloc()` — bump allocator in executable RAM
+- Dependency manager: `udynlink_dep_mgr_t` / `udynlink_dep_mgr_init()` — tracks loaded modules, detects circular dependencies (max depth 8)
+- Resolution helpers: `udynlink_dep_resolve_dependency()`, `udynlink_dep_resolve_func()`, `udynlink_dep_resolve_data()` — called from host's `udynlink_external_resolve_symbol()`
+- Load/unload wrappers: `udynlink_dep_load()` / `udynlink_dep_unload()` — auto-register modules, push/pop loading stack
+- Thunk template: 28-byte ARM Thumb-2 inline function that saves caller's `r9`, sets callee's `r9` via `ram_base`, calls target via `blx ip`, then restores caller's `r9`
+- Uses `r12` (IP) for target function address to avoid clobbering `r0-r3` argument registers
+- Test: `tests/test-cross-module/` — validates cross-module calls between `mod_math` and `mod_app` across all load modes and optimization levels
 
 ### Non-Contiguous Image Loading
 - New API: `udynlink_load_module_image()` loads modules from a `udynlink_module_image_t` descriptor with per-section pointers, enabling loading from SD card, SPI flash, decompressed buffers, or any non-contiguous source

@@ -39,7 +39,7 @@ The test driver (`test_driver.py`) runs each test directory **twice**:
 - once with `-O 3`
 - once with `-Os` (default `mkmodule` optimization)
 
-Because the harness internally exercises all three load modes, **each test runs 6 times by default** (3 load modes x 2 optimization levels). See [Module Guide](writing-modules.md) for how compiler flags affect generated code. The test suite contains 20 test directories; each directory is compiled and run twice (O3 and Os), yielding 40 top-level test runs on platforms where all tests are enabled.
+Because the harness internally exercises all three load modes, **each test runs 6 times by default** (3 load modes x 2 optimization levels). See [Module Guide](writing-modules.md) for how compiler flags affect generated code. The test suite contains 24 test directories; each directory is compiled and run twice (O3 and Os), yielding 48 top-level test runs on platforms where all tests are enabled.
 
 ## How to Run Tests
 
@@ -133,12 +133,12 @@ If you need the legacy binary manually, use an older xPack release (7.2.5-1) fro
 
 | Platform | QEMU Machine | QEMU Binary | CPU | Status | Notes |
 |----------|--------------|-------------|-----|--------|-------|
-| `stm32f429_discovery` | STM32F429I-Discovery | `qemu-system-gnuarmeclipse` | cortex-m4 | Passing | Fast baseline, legacy xPack fork (38/40 pass; `test-strip-init-array` skipped) |
-| `mps2_an386` | mps2-an386 | `qemu-system-arm` (9.2.4+) | cortex-m4 | Passing | Mainline QEMU, ~0.5 s per test (40 pass) |
-| `olimex_stm32_h405` | olimex-stm32-h405 | `qemu-system-arm` | cortex-m4f | Passing | Hard-float M4F on mainline QEMU (40 pass) |
-| `mps2_an385` | mps2-an385 | `qemu-system-arm` | cortex-m3 | Passing | Mainline QEMU (40 pass) |
-| `mps2_an500` | mps2-an500 | `qemu-system-arm` | cortex-m7 | Passing | Mainline QEMU (40 pass) |
-| `mps2_an505` | mps2-an505 | `qemu-system-arm` | cortex-m33 | Passing | Mainline QEMU, secure boot (see below) (40 pass) |
+| `stm32f429_discovery` | STM32F429I-Discovery | `qemu-system-gnuarmeclipse` | cortex-m4 | Passing | Fast baseline, legacy xPack fork (46/48 pass; `test-strip-init-array` skipped) |
+| `mps2_an386` | mps2-an386 | `qemu-system-arm` (9.2.4+) | cortex-m4 | Passing | Mainline QEMU, ~0.5 s per test (48 pass) |
+| `olimex_stm32_h405` | olimex-stm32-h405 | `qemu-system-arm` | cortex-m4f | Passing | Hard-float M4F on mainline QEMU (48 pass) |
+| `mps2_an385` | mps2-an385 | `qemu-system-arm` | cortex-m3 | Passing | Mainline QEMU (48 pass) |
+| `mps2_an500` | mps2-an500 | `qemu-system-arm` | cortex-m7 | Passing | Mainline QEMU (48 pass) |
+| `mps2_an505` | mps2-an505 | `qemu-system-arm` | cortex-m33 | Passing | Mainline QEMU, secure boot (see below) (48 pass) |
 | `microbit` | microbit | `qemu-system-arm` | cortex-m0 | Broken | QEMU microbit machine does not support ELF `-kernel` at 0x00000000 |
 | `stm32f103_bluepill` | NUCLEO-F103RB | `qemu-system-gnuarmeclipse` | cortex-m3 | Partial | Boots, internal calls OK; Flash-to-RAM host calls hang (QEMU quirk) |
 | `stm32f051_discovery` | STM32F0-Discovery | `qemu-system-gnuarmeclipse` | cortex-m0 | Partial | Boots, internal calls OK; same Flash-to-RAM quirk as M3 |
@@ -253,6 +253,10 @@ If a test directory does not contain `test_data.py`, the driver falls back to au
 Tests that load more than one module must use `test_load_module()` and `test_unload_module()` instead of calling the raw loader API. These wrappers maintain a global module table (`g_modules[]` in `main.c`) and can be used together with `test_resolve_symbol()` (a weak symbol in the test host) to implement custom cross-module symbol resolution.
 
 `UDYNLINK_MAX_MODULES` defaults to 8 in the test host firmware. You can override it at CMake time if your test loads more modules.
+
+### Cross-Module Test
+
+The `test-cross-module` test validates the `udynlink_deps` dependency system. It loads two modules (`mod_math` and `mod_app`) and verifies that `mod_app` can call functions exported by `mod_math` via inline thunks. The test uses `udynlink_dep_load()`, `udynlink_dep_unload()`, and a custom `test_resolve_symbol()` that delegates to `udynlink_dep_resolve_func()` and `udynlink_dep_resolve_data()`. It exercises all three load modes (COPY_ALL, COPY_TEXT_DATA, XIP) at both `-O3` and `-Os`.
 
 ## How to Add a New QEMU Platform
 

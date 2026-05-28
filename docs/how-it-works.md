@@ -11,7 +11,8 @@
 7. [Three Load Modes](#three-load-modes)
 8. [Symbol Resolution at Load Time](#symbol-resolution-at-load-time)
 9. [ABI Versioning and Architecture Tags](#abi-versioning-and-architecture-tags)
-10. [Non-Contiguous Image Loading](#non-contiguous-image-loading)
+10. [Cross-Module Calls via Runtime Thunks](#cross-module-calls-via-runtime-thunks)
+11. [Non-Contiguous Image Loading](#non-contiguous-image-loading)
 
 ---
 
@@ -599,6 +600,98 @@ This prevents loading a hard-float VFP module on a soft-float Cortex-M3 host, wh
 ### v1.0 / v2.0 Backward Compatibility
 
 Modules compiled with `--udynlink-version 1.0` or `2.0` use the same 32-byte header layout as v3.0 (with `reserved` at offset 0x0E). The loader detects older versions by checking `udynlink_version <= UDYNLINK_LOADER_ABI_VERSION` and accepts them as long as they do not require a newer loader. The `reserved` field must be 0 in all valid images.
+
+---
+
+## Cross-Module Calls via Runtime Thunks
+
+### The Problem
+
+In ABI v3.0, every module has its own LOT base address in `r9`. When module A calls a function in module B, two things must happen:
+
+1. The callee (module B) needs its own `r9` to access its LOT.
+2. The caller (module A) needs its original `r9` restored after the call.
+
+Direct function pointers cannot solve this because a single `r9` value cannot serve two modules simultaneously. The `udynlink_deps` optional layer solves this by generating small inline **thunks** in executable RAM at load time.
+
+### The Thunk Template
+
+Each cross-module function reference gets a 28-byte inline thunk allocated from a host-provided thunk pool. The thunk is a tiny ARM Thumb-2 function that switches `r9` to the callee module's base, calls the target, then restores the caller's `r9`:
+
+```asm
+    push    {r4, lr}         ; save caller's r4 and return address
+    mov     r4, r9           ; save caller's r9 in r4 (callee-saved)
+    ldr     r2, [pc, #12]    ; load callee's ram_base from literal pool
+    mov     r9, r2           ; set callee's r9
+    ldr.w   ip, [pc, #12]    ; load target function address into r12
+    blx     ip               ; call the target function
+    mov     r9, r4           ; restore caller's r9
+    pop     {r4, pc}         ; restore r4, return to caller
+    nop                      ; alignment padding
+    .word   ram_base         ; callee module's LOT base
+    .word   func_addr        ; target function absolute address
+```
+
+Instruction-by-instruction breakdown:
+
+| Instruction | Purpose |
+|-------------|---------|
+| `push {r4, lr}` | Save caller's `r4` and link register. |
+| `mov r4, r9` | Save caller's `r9` in `r4` (callee-saved register). |
+| `ldr r2, [pc, #12]` | Load the callee module's `ram_base` from the literal pool. |
+| `mov r9, r2` | Set `r9` to the callee's LOT base so its PIC data accesses work. |
+| `ldr.w ip, [pc, #12]` | Load the target function address into `r12` (IP). |
+| `blx ip` | Branch to the target function. |
+| `mov r9, r4` | Restore the caller's `r9` after the callee returns. |
+| `pop {r4, pc}` | Restore `r4` and return to the caller. |
+
+### Why R12 (IP)?
+
+The AAPCS reserves `r12` (IP) as an intra-procedure-call scratch register. Using it to hold the target function address avoids clobbering `r0-r3`, which are used for argument passing under the ARM calling convention. This means the thunk is transparent to the caller's argument setup — the thunk can be called with the same register state as the real function.
+
+### Thunk Pool Requirements
+
+The thunk pool must be in RAM that is both readable and executable by the MCU. On Cortex-M this is typically a region of SRAM or ITCM. The host provides the buffer and initializes the pool:
+
+```c
+static uint8_t g_thunk_buf[512];
+static udynlink_thunk_pool_t g_thunk_pool;
+udynlink_thunk_pool_init(&g_thunk_pool, g_thunk_buf, sizeof(g_thunk_buf));
+```
+
+Each thunk consumes `UDYNLINK_THUNK_SIZE` (28) bytes. The pool is a simple bump allocator; there is no per-thunk free operation because thunks are only invalidated when the callee module is unloaded (at which point the entire pool can be reset or discarded).
+
+### Declaring Dependencies: `UDYNLINK_REQUIRES`
+
+Modules declare their dependencies using the `UDYNLINK_REQUIRES` macro:
+
+```c
+UDYNLINK_REQUIRES(math);
+```
+
+This expands to an `extern` declaration with a special mangled symbol name:
+
+```c
+extern udynlink_module_t *__udynlink_dep_math
+    __asm__(".udynlink.mod.requires.math");
+```
+
+At link time, this becomes an `UDYNLINK_SYM_TYPE_EXTERN` symbol. At load time, the core loader calls `udynlink_external_resolve_symbol(".udynlink.mod.requires.math")`. A dependency-aware host can resolve this by looking up the module named `math` in its registry.
+
+### Resolution Flow
+
+When a module references a symbol that might be in another module, the host's `udynlink_external_resolve_symbol()` callback typically checks in this order:
+
+1. **Is it a dependency declaration?** (`udynlink_dep_is_dependency`) → resolve via `udynlink_dep_resolve_dependency()`
+2. **Is it a function in a loaded dependency?** → resolve via `udynlink_dep_resolve_func()` (allocates a thunk)
+3. **Is it a data variable in a loaded dependency?** → resolve via `udynlink_dep_resolve_data()` (returns address directly, no thunk needed)
+4. **Is it a host firmware symbol?** → return the host's own address
+
+The thunk is generated at load time and patched with the callee module's `ram_base` and the target function's absolute address. After loading, the module's LOT slot contains the thunk address, so subsequent calls go through the thunk automatically.
+
+### Circular Dependency Detection
+
+The dependency manager maintains a loading stack (max depth `UDYNLINK_DEP_MAX_DEPTH` = 8). If module A requires module B, and module B requires module A, the loader detects the cycle when the same module name appears on the loading stack. It returns `UDYNLINK_SYM_DEFERRED` for the circular reference, allowing the load to continue if the module handles deferred symbols gracefully.
 
 ---
 

@@ -103,7 +103,7 @@ just test-f429-single test-globals1   # Single test on STM32F429
 ```
 
 Each test is executed **twice**: once with `-O0` and once with `-Os`.
-The full suite of 20 tests per platform completes in ~30 seconds (mainline QEMU).
+The full suite of 24 tests per platform completes in ~30 seconds (mainline QEMU).
 
 ### Run a single test manually (advanced)
 The test driver orchestrates several steps:
@@ -180,6 +180,7 @@ The platform is selected via `-DUDYNLINK_PLATFORM=<name>` (default: `stm32f429_d
 ## New Headers
 
 - `udynlink/udynlink_call.h` — C convenience layer for host-call ergonomics. Provides `udynlink_func_t`, `udynlink_resolve_func()`, `UDYNLINK_CALL`, and `UDYNLINK_CALL_MODULE_FUNC`. These macros save and restore the host's `r9` around module calls.
+- `udynlink/udynlink_deps.h` — Optional standalone dependency system for cross-module function calls and dependency tracking. Provides `UDYNLINK_REQUIRES`, `udynlink_thunk_pool_t`, `udynlink_dep_mgr_t`, `udynlink_dep_resolve_func()`, `udynlink_dep_resolve_data()`, and load/unload wrappers with circular-dependency detection. See [Integrating as a Host](docs/integrating-as-host.md) for usage.
 
 ## Architecture & Key Constraints
 
@@ -228,6 +229,13 @@ All tests validate all three modes by default:
 - `UDYNLINK_LOAD_MODE_COPY_TEXT_DATA`: copy text + data to RAM (header stays at base_addr)
 - `UDYNLINK_LOAD_MODE_XIP`: copy only data to RAM; execute code in place from flash
 
+### Dependency System (`udynlink_deps`)
+The optional `udynlink/udynlink_deps.h` layer provides cross-module function calls via runtime-generated RAM thunks. Each cross-module function reference gets a 28-byte inline thunk that saves/restores the caller's `r9` and calls the target with the callee module's `ram_base`. The thunk uses `r12` (IP) for the function address to avoid clobbering argument registers `r0-r3`. The thunk pool must be in executable RAM.
+
+- Modules declare dependencies with `UDYNLINK_REQUIRES(mod_name)` which emits a `.udynlink.mod.requires.{name}` symbol.
+- The host's `udynlink_external_resolve_symbol()` checks `udynlink_dep_is_dependency()` first, then `udynlink_dep_resolve_func()` for functions, then `udynlink_dep_resolve_data()` for data, and finally falls back to host-native symbols.
+- `udynlink_dep_load()` and `udynlink_dep_unload()` wrap the core loader with automatic module registration and circular-dependency detection (max depth 8).
+
 ### Module Uniqueness
 Unlike the original, the eh2k fork allows **multiple instances of the same module** (no deduplication by name).
 
@@ -235,12 +243,12 @@ Unlike the original, the eh2k fork allows **multiple instances of the same modul
 
 | Platform | QEMU Machine | QEMU Binary | CPU | Status | Notes |
 |----------|--------------|-------------|-----|--------|-------|
-| `stm32f429_discovery` | STM32F429I-Discovery | `qemu-system-gnuarmeclipse` | cortex-m4 | ✅ **All 40 tests pass** | Fast, legacy xPack fork |
-| `mps2_an386` | mps2-an386 | `qemu-system-arm` (9.2.4+) | cortex-m4 | ✅ **All 40 tests pass** | Mainline QEMU, ~0.5s/test |
-| `olimex_stm32_h405` | olimex-stm32-h405 | `qemu-system-arm` | cortex-m4f | ✅ **All 40 tests pass** | Hard-float M4F on mainline QEMU |
-| `mps2_an385` | mps2-an385 | `qemu-system-arm` | cortex-m3 | ✅ **All 40 tests pass** | Mainline QEMU |
-| `mps2_an500` | mps2-an500 | `qemu-system-arm` | cortex-m7 | ✅ **All 40 tests pass** | Mainline QEMU |
-| `mps2_an505` | mps2-an505 | `qemu-system-arm` | cortex-m33 | ✅ **All 40 tests pass** | Mainline QEMU, secure boot (see notes) |
+| `stm32f429_discovery` | STM32F429I-Discovery | `qemu-system-gnuarmeclipse` | cortex-m4 | ✅ **All 48 tests pass** | Fast, legacy xPack fork (46/48 pass; `test-strip-init-array` skipped) |
+| `mps2_an386` | mps2-an386 | `qemu-system-arm` (9.2.4+) | cortex-m4 | ✅ **All 48 tests pass** | Mainline QEMU, ~0.5s/test |
+| `olimex_stm32_h405` | olimex-stm32-h405 | `qemu-system-arm` | cortex-m4f | ✅ **All 48 tests pass** | Hard-float M4F on mainline QEMU |
+| `mps2_an385` | mps2-an385 | `qemu-system-arm` | cortex-m3 | ✅ **All 48 tests pass** | Mainline QEMU |
+| `mps2_an500` | mps2-an500 | `qemu-system-arm` | cortex-m7 | ✅ **All 48 tests pass** | Mainline QEMU |
+| `mps2_an505` | mps2-an505 | `qemu-system-arm` | cortex-m33 | ✅ **All 48 tests pass** | Mainline QEMU, secure boot (see notes) |
 | `microbit` | microbit | `qemu-system-arm` | cortex-m0 | ⚠️ **Builds, `-kernel` broken** | QEMU microbit machine does not support ELF `-kernel` at 0x00000000 |
 | `stm32f103_bluepill` | NUCLEO-F103RB | `qemu-system-gnuarmeclipse` | cortex-m3 | ⚠️ **Boots, internal calls OK** | Flash→RAM host calls hang (QEMU quirk) |
 | `stm32f051_discovery` | STM32F0-Discovery | `qemu-system-gnuarmeclipse` | cortex-m0 | ⚠️ **Boots, internal calls OK** | Same Flash→RAM quirk as M3 |

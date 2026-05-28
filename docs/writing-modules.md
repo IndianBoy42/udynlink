@@ -8,6 +8,7 @@ This guide is for module authors who want to write C or C++ code that can be loa
 - [Quick Start: Hello World Module](#quick-start-hello-world-module)
 - [Module Code Structure](#module-code-structure)
 - [Consuming Host Symbols](#consuming-host-symbols)
+- [Cross-Module Calls](#cross-module-function-calls)
 - [C++ Modules](#c-modules)
 - [Data and Variables in Modules](#data-and-variables-in-modules)
 - [Target Selection and Cross-Compilation](#target-selection-and-cross-compilation)
@@ -212,6 +213,47 @@ int read_and_blink(void) {
 ### What Happens If the Symbol Is Missing
 
 If the host does not implement `sensor_read`, `udynlink_load_module` returns `UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL`. The module handle is invalid and must not be used.
+
+### Cross-Module Function Calls
+
+If your module needs to call functions in another module (e.g., a math library), declare them as `extern` just like host symbols. The host's dependency system will resolve them at load time:
+
+```c
+// mod_app.c — calls functions from mod_math
+extern int math_add(int a, int b);
+extern int math_mul(int a, int b);
+
+int call_math(int a, int b) {
+    int sum = math_add(a, b);
+    int prod = math_mul(a, b);
+    return sum | prod;
+}
+```
+
+The other module (`mod_math.c`) simply exports the functions as non-static globals:
+
+```c
+int math_add(int a, int b) { return a + b; }
+int math_mul(int a, int b) { return a * b; }
+```
+
+At load time, the host's `udynlink_external_resolve_symbol()` callback locates the target module and allocates a small thunk (28 bytes) that switches `r9` to the callee module's LOT base before calling the function. From the module author's perspective, this is transparent — the call looks like a normal function call.
+
+### Declaring Explicit Dependencies
+
+To ensure a module is not loaded before its dependencies are available, use `UDYNLINK_REQUIRES`:
+
+```c
+#include "udynlink_deps.h"
+
+UDYNLINK_REQUIRES(math);
+
+extern int math_add(int a, int b);
+```
+
+`UDYNLINK_REQUIRES(math)` expands to an extern symbol named `.udynlink.mod.requires.math`. The host's dependency system recognizes this prefix and checks that a module named `math` is already loaded. If the dependency is missing, the load fails with `UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL`.
+
+**Best practice:** Always use `UDYNLINK_REQUIRES` for every module you depend on. It documents the dependency for readers and enables the host to fail fast with a clear error message.
 
 ### Common Host Symbols
 
