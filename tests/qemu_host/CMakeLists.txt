@@ -69,7 +69,7 @@ if(DEFINED UDYNLINK_TEST_DEBUG_LEVEL)
     target_compile_definitions(test1.elf PRIVATE UDYNLINK_DEBUG_LEVEL=${UDYNLINK_TEST_DEBUG_LEVEL})
 endif()
 
-# Ensure the udynlink library is compiled with the same core flags
+# Ensure the udynlink libraries are compiled with the same core flags
 if(TARGET udynlink)
     target_compile_options(udynlink PRIVATE
         ${UDYNLINK_PLATFORM_CFLAGS}
@@ -78,6 +78,15 @@ if(TARGET udynlink)
     target_compile_definitions(udynlink PRIVATE
         ${UDYNLINK_PLATFORM_DEFINES}
         UDYNLINK_MAX_HANDLES=8
+    )
+endif()
+if(TARGET udynlink_deps)
+    target_compile_options(udynlink_deps PRIVATE
+        ${UDYNLINK_PLATFORM_CFLAGS}
+        ${UDYNLINK_PLATFORM_COMPILE_OPTIONS}
+    )
+    target_compile_definitions(udynlink_deps PRIVATE
+        ${UDYNLINK_PLATFORM_DEFINES}
     )
 endif()
 
@@ -100,7 +109,7 @@ target_link_directories(test1.elf PRIVATE
     ${UDYNLINK_PLATFORM_LINK_DIRS}
 )
 
-target_link_libraries(test1.elf PRIVATE udynlink)
+target_link_libraries(test1.elf PRIVATE udynlink udynlink_deps)
 
 # --- Standard C++ if any C++ sources ---
 if(UDYNLINK_PLATFORM_HAS_CXX)

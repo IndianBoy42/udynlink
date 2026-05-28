@@ -14,10 +14,18 @@ endif()
 
 project(udynlink VERSION 0.1.0 LANGUAGES C)
 
-# Library target
+# Core library target
 add_library(udynlink STATIC udynlink/udynlink.c)
 
 target_include_directories(udynlink PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/udynlink>
+    $<INSTALL_INTERFACE:include>
+)
+
+# Standalone dependency system (optional; link if needed)
+add_library(udynlink_deps STATIC udynlink/udynlink_deps.c)
+target_link_libraries(udynlink_deps PUBLIC udynlink)
+target_include_directories(udynlink_deps PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/udynlink>
     $<INSTALL_INTERFACE:include>
 )
@@ -43,7 +51,13 @@ install(FILES
     udynlink/udynlink_hash.h
     udynlink/udynlink_call.h
     udynlink/udynlink.hpp
+    udynlink/udynlink_deps.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/udynlink
+)
+
+install(TARGETS udynlink_deps
+    EXPORT udynlinkTargets
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
 
 # Package config file
