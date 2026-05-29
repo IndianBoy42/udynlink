@@ -149,6 +149,29 @@ typedef struct {
 udynlink_module_t *udynlink_external_dep_load(const char *name);
 
 /**
+ * @brief Find an existing thunk stub for a cross-module function.
+ *
+ * Called by udynlink_dep_resolve_func() to check whether a stub has
+ * already been allocated for a given function address.  The default
+ * weak implementation scans the thunk pool linearly; hosts may
+ * override with a faster lookup (e.g. hash table) when the pool is
+ * large.
+ *
+ * @param pool      Thunk pool to search.
+ * @param func_addr Target function address (absolute, as returned by
+ *                  udynlink_lookup_symbol).
+ *
+ * @return Stub address (with Thumb bit set) if a matching stub exists,
+ *         0 otherwise.
+ *
+ * @note A weak default that scans the pool is provided.  Hosts only
+ *       need to override this for performance; correctness is not
+ *       affected by the lookup speed.
+ */
+uintptr_t udynlink_external_find_stub(const udynlink_thunk_pool_t *pool,
+                                       uint32_t func_addr);
+
+/**
  * @brief Dependency manager state.
  *
  * Tracks loaded modules for cross-module symbol resolution.

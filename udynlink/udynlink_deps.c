@@ -15,11 +15,71 @@
 #include "udynlink_externals.h"
 #include <string.h>
 
+#define GATEWAY_SIZE  18
+#define STUB_SIZE     10
+
 udynlink_module_t *udynlink_external_dep_load(const char *name)
     __attribute__((weak));
 udynlink_module_t *udynlink_external_dep_load(const char *name) {
     (void)name;
     return NULL;
+}
+
+/* ─── Default find_stub: scan the thunk pool ──────────────────────── */
+
+static uint16_t read_le16(const uint8_t *p) {
+    return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+}
+
+static int decode_movw_ip_imm16(const uint8_t *stub, uint16_t *out) {
+    uint16_t hw0 = read_le16(stub);
+    uint16_t hw1 = read_le16(stub + 2);
+    if ((hw0 & 0xFBF0) != 0xF240) return 0;
+    if ((hw1 & 0x0F00) != 0x0C00) return 0;
+    unsigned i    = (hw0 >> 10) & 1;
+    unsigned imm4 = hw0 & 0xF;
+    unsigned imm3 = (hw1 >> 12) & 0x7;
+    unsigned imm8 = hw1 & 0xFF;
+    *out = (i << 11) | (imm4 << 12) | (imm3 << 8) | imm8;
+    return 1;
+}
+
+static int decode_movt_ip_imm16(const uint8_t *stub, uint16_t *out) {
+    uint16_t hw0 = read_le16(stub);
+    uint16_t hw1 = read_le16(stub + 2);
+    if ((hw0 & 0xFBF0) != 0xF2C0) return 0;
+    if ((hw1 & 0x0F00) != 0x0C00) return 0;
+    unsigned i    = (hw0 >> 10) & 1;
+    unsigned imm4 = hw0 & 0xF;
+    unsigned imm3 = (hw1 >> 12) & 0x7;
+    unsigned imm8 = hw1 & 0xFF;
+    *out = (i << 11) | (imm4 << 12) | (imm3 << 8) | imm8;
+    return 1;
+}
+
+uintptr_t udynlink_external_find_stub(const udynlink_thunk_pool_t *pool,
+                                       uint32_t func_addr)
+    __attribute__((weak));
+uintptr_t udynlink_external_find_stub(const udynlink_thunk_pool_t *pool,
+                                       uint32_t func_addr) {
+    if (pool == NULL || pool->used < STUB_SIZE) return 0;
+
+    const uint8_t *base = pool->base;
+    size_t pos = pool->used;
+
+    while (pos >= STUB_SIZE) {
+        pos -= STUB_SIZE;
+        const uint8_t *candidate = base + pos;
+        uint16_t lo16, hi16;
+        if (decode_movw_ip_imm16(candidate, &lo16) &&
+            decode_movt_ip_imm16(candidate + 4, &hi16)) {
+            uint32_t addr = ((uint32_t)hi16 << 16) | lo16;
+            if (addr == func_addr) {
+                return (uintptr_t)candidate | 1;
+            }
+        }
+    }
+    return 0;
 }
 
 /* ─── Thunk templates (flash-resident byte arrays) ─────────────────── */
@@ -51,9 +111,6 @@ udynlink_module_t *udynlink_external_dep_load(const char *name) {
  *
  * Break-even at N=2:  38 vs 56 bytes.  For N=5:  68 vs 140 bytes.
  */
-
-#define GATEWAY_SIZE  18
-#define STUB_SIZE     10
 
 /* Gateway template: push.w {r9,lr}; ldr.w r9,[pc,#4]; blx ip; pop.w {r9,pc}; .word ram_base */
 static const uint8_t gateway_template[GATEWAY_SIZE] = {
@@ -288,6 +345,9 @@ uintptr_t udynlink_dep_resolve_func(udynlink_dep_mgr_t *mgr,
         uint32_t func_addr = (uint32_t)sym.val;
 
         udynlink_dep_entry_t *entry = &mgr->entries[i];
+
+        uintptr_t existing = udynlink_external_find_stub(pool, func_addr);
+        if (existing != 0) return existing;
 
         if (entry->gateway == NULL) {
             entry->gateway = alloc_gateway(pool, ram_base);

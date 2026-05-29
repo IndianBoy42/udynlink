@@ -24,11 +24,6 @@
 
 struct _udynlink_module_t;
 
-#ifndef __UDYNLINK_MODULE_T_TYPEDEF__
-#define __UDYNLINK_MODULE_T_TYPEDEF__
-typedef struct _udynlink_module_t udynlink_module_t;
-#endif
-
 /**
  * @brief Host integration callbacks.
  *
@@ -127,27 +122,6 @@ void udynlink_external_vprintf(const char *s, va_list va);
  *       to override it.
  */
 uintptr_t udynlink_external_resolve_symbol(const char *name);
-
-/**
- * @brief Load a missing dependency module.
- *
- * Called by the standalone dependency system
- * (udynlink_dep_resolve_dependency()) when a module declares a
- * dependency via UDYNLINK_REQUIRES() and the required module is not
- * yet loaded.  The host should locate the module image, allocate a
- * udynlink_module_t, and call udynlink_dep_load() (or
- * udynlink_load_module() + udynlink_dep_register()).
- *
- * @param name Module name (without the .udynlink.mod.requires. prefix).
- *
- * @return Pointer to the loaded module handle, or NULL if the
- *         dependency could not be loaded (in which case the dependent
- *         module's load will fail with an unresolved symbol error).
- *
- * @note A weak default returning NULL is provided.  Hosts that want
- *       automatic dependency loading must override this function.
- */
-udynlink_module_t *udynlink_external_dep_load(const char *name);
 
 /**
  * @brief Convenience macro for building host symbol tables.
