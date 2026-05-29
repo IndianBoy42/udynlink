@@ -1,5 +1,4 @@
 #include <stdint.h>
-#include <stddef.h>
 
 #define UDYNLINK_REQUIRES(mod_name) \
     typedef void (*_udynlink_dep_fn_##mod_name)(void); \
@@ -10,15 +9,12 @@
         (void)f; \
     }
 
-UDYNLINK_REQUIRES(mod_math);
+UDYNLINK_REQUIRES(mod_a);
 
-extern int math_add(int a, int b);
-extern int math_mul(int a, int b);
+extern int mod_a_func(void);
 
-int call_math(int a, int b) {
-    int sum = math_add(a, b);
-    int prod = math_mul(a, b);
-    return sum | prod;
+int mod_b_func(void) {
+    return 20;
 }
 
 int test(void) {

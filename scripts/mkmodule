@@ -379,7 +379,15 @@ def process(output, args):
 
     relocated = {}
     realocs, total_relocs = bytearray(), 0
-    for r in  local_relocs + foreign_relocs + data_relocs:
+
+    # Process dependency relocations (.udynlink.mod.requires.*) before
+    # all others so that the core loader resolves them first, allowing
+    # the host's dependency system to auto-load required modules before
+    # it processes function EXTERN relocations for the same module.
+    dep_prefix = lambda r: (0 if r[0].startswith(".udynlink.mod.requires.") else 1)
+    ordered_relocs = sorted(local_relocs + foreign_relocs + data_relocs, key=dep_prefix)
+
+    for r in ordered_relocs:
         sym, offset, value = r
         if sym == ".text": 
             value = (1 << 30) | value #flag -> not a symt index

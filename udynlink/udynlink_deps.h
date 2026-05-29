@@ -58,24 +58,31 @@ extern "C" {
 /**
  * @brief Declare a dependency on another module.
  *
- * Emits an EXTERN symbol named ".udynlink.mod.requires.{mod_name}".
- * At load time the core loader will call
- * udynlink_external_resolve_symbol() for this symbol. A
- * dependency-aware host returns the module handle address, causing
- * the load to fail if the dependency is not available.
+ * Emits a GOT-referenced extern symbol named
+ * ".udynlink.mod.requires.{mod_name}" plus a dummy function that
+ * forces the compiler to emit an R_ARM_GOT_BREL (LOT) relocation for
+ * the symbol. This ensures:
  *
- * The symbol is marked __attribute__((used)) so that --gc-sections
- * cannot strip it even when no code references the dependency handle.
+ * - The core loader's external symbol resolver processes it via
+ *   udynlink_external_resolve_symbol()
+ * - mkmodule places the relocation before function EXTERN relocations
+ *   so the dependency is resolved first, enabling auto-loading
+ * - --gc-sections keeps the symbol alive via the linked section
  *
  * @param mod_name Identifier of the required module (not a string).
  *
- * @note This macro does not require any header includes; it uses
- *       only compiler built-in attributes and asm labels.
+ * @note This macro does not require any header includes beyond
+ *       stdint.h/stddef.h. It uses only compiler built-in attributes
+ *       and asm labels.
  */
 #define UDYNLINK_REQUIRES(mod_name) \
-    const void *__udynlink_dep_##mod_name \
-    __asm__(".udynlink.mod.requires." #mod_name) \
-    __attribute__((used)) = 0
+    typedef void (*_udynlink_dep_fn_##mod_name)(void); \
+    _udynlink_dep_fn_##mod_name _udynlink_dep_##mod_name \
+        __asm__(".udynlink.mod.requires." #mod_name); \
+    __attribute__((used)) void _udynlink_dep_ref_##mod_name(void) { \
+        volatile _udynlink_dep_fn_##mod_name f = _udynlink_dep_##mod_name; \
+        (void)f; \
+    }
 
 /* ─── Thunk pool ───────────────────────────────────────────────────── */
 
