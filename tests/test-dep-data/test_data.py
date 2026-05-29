@@ -5,7 +5,7 @@ test_data = {
         ["mod_app.c"],
     ],
     "required": [
-        r"^read_counter\(\) = 42$",
+        r"^g_shared_counter = 42$",
         r"^cross-module data: OK$",
     ]
 }

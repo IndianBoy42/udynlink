@@ -111,12 +111,12 @@ static int test_stub_dedup_single(udynlink_load_mode_t mode) {
     {
         size_t expected_used = UDYNLINK_STUB_SIZE;
         if (g_thunk_pool.used != expected_used) {
-            printf("pool used = %zu, expected %zu (dedup failed)\n",
+            printf("pool used = %u, expected %u (dedup failed)\n",
                    g_thunk_pool.used, expected_used);
             ok = 0;
             goto cleanup_b;
         }
-        printf("pool used = %zu (1 stub shared by 2 modules)\n", g_thunk_pool.used);
+        printf("pool used = %u (1 stub shared by 2 modules)\n", g_thunk_pool.used);
     }
 
     printf("stub dedup: OK\n");

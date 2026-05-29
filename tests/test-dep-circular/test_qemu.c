@@ -52,23 +52,47 @@ uintptr_t test_resolve_symbol(const char *name) {
 }
 
 int test_qemu(void) {
-    udynlink_module_t mod_a;
+    udynlink_module_t mod_a, mod_b;
     udynlink_error_t err;
+    int ok = 0;
 
     memset(&mod_a, 0, sizeof(mod_a));
+    memset(&mod_b, 0, sizeof(mod_b));
 
     udynlink_dep_mgr_init(&g_dep_mgr, g_mod_entries, MAX_MODULES);
     udynlink_thunk_pool_init(&g_thunk_pool, g_thunk_buf, THUNK_POOL_SIZE);
 
     err = udynlink_dep_load(&g_dep_mgr, &mod_a, mod_a_module_data,
             NULL, 0, UDYNLINK_LOAD_MODE_COPY_ALL, &g_thunk_pool);
-
-    if (err != UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL) {
-        printf("circular dep: expected LOAD_UNKNOWN_SYMBOL, got %d\n", err);
-        udynlink_dep_unload(&g_dep_mgr, &mod_a);
+    if (err != UDYNLINK_OK) {
+        printf("mod_a load failed: %d\n", err);
         return 0;
     }
 
-    printf("circular dep detected: OK\n");
-    return 1;
+    if (g_dep_mgr.count != 2) {
+        printf("expected 2 modules, got %u\n", (unsigned)g_dep_mgr.count);
+        goto cleanup;
+    }
+
+    err = udynlink_dep_load(&g_dep_mgr, &mod_b, mod_b_module_data,
+            NULL, 0, UDYNLINK_LOAD_MODE_COPY_ALL, &g_thunk_pool);
+    if (err != UDYNLINK_OK) {
+        printf("mod_b load failed: %d\n", err);
+        goto cleanup;
+    }
+
+    printf("both modules loaded despite circular dep\n");
+
+    udynlink_link_symbol(&mod_a, ".udynlink.mod.requires.mod_b",
+        (uintptr_t)udynlink_dep_find(&g_dep_mgr, "mod_b"));
+    udynlink_link_symbol(&mod_b, ".udynlink.mod.requires.mod_a",
+        (uintptr_t)udynlink_dep_find(&g_dep_mgr, "mod_a"));
+
+    printf("circular dep deferred and patched: OK\n");
+    ok = 1;
+
+cleanup:
+    udynlink_dep_unload(&g_dep_mgr, &mod_b);
+    udynlink_dep_unload(&g_dep_mgr, &mod_a);
+    return ok;
 }

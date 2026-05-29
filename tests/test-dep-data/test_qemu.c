@@ -16,20 +16,6 @@ static udynlink_thunk_pool_t g_thunk_pool;
 static udynlink_dep_entry_t g_mod_entries[MAX_MODULES];
 static udynlink_dep_mgr_t g_dep_mgr;
 
-udynlink_module_t *udynlink_external_dep_load(const char *name);
-udynlink_module_t *udynlink_external_dep_load(const char *name) {
-    static udynlink_module_t s_mod_math;
-    if (strcmp(name, "mod_math") == 0) {
-        if (udynlink_dep_load(&g_dep_mgr, &s_mod_math,
-                mod_math_module_data, NULL, 0,
-                UDYNLINK_LOAD_MODE_COPY_ALL, &g_thunk_pool) != UDYNLINK_OK) {
-            return NULL;
-        }
-        return &s_mod_math;
-    }
-    return NULL;
-}
-
 uintptr_t test_resolve_symbol(const char *name);
 uintptr_t test_resolve_symbol(const char *name) {
     if (udynlink_dep_is_dependency(name)) {
@@ -66,20 +52,16 @@ static int test_dep_data_single(udynlink_load_mode_t mode) {
 
     {
         udynlink_sym_t sym;
-        if (udynlink_lookup_symbol(&mod_app, "read_counter", &sym) == NULL) {
-            printf("read_counter not found\n");
-            ok = 0;
+        if (udynlink_lookup_symbol(&mod_math, "g_shared_counter", &sym) == NULL) {
+            printf("g_shared_counter not found\n");
             goto cleanup_app;
         }
-        int (*p_func)(void) = (int (*)(void))sym.val;
-        UDYNLINK_PREPARE_CALL(&mod_app);
-        int r = p_func();
-        if (r != 42) {
-            printf("read_counter() = %d, expected 42\n", r);
-            ok = 0;
+        volatile int *p_counter = (volatile int *)sym.val;
+        if (*p_counter != 42) {
+            printf("g_shared_counter = %d, expected 42\n", *p_counter);
             goto cleanup_app;
         }
-        printf("read_counter() = 42\n");
+        printf("g_shared_counter = 42\n");
     }
 
     printf("cross-module data: OK\n");

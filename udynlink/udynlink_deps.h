@@ -44,7 +44,7 @@ extern "C" {
  * udynlink_external_resolve_symbol().
  */
 #define UDYNLINK_DEP_PREFIX             ".udynlink.mod.requires."
-#define UDYNLINK_DEP_PREFIX_LEN         24
+#define UDYNLINK_DEP_PREFIX_LEN         23
 
 /* Maximum depth of the circular-dependency detection stack. */
 #define UDYNLINK_DEP_MAX_DEPTH          8

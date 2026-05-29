@@ -57,9 +57,9 @@ static int test_auto_load_single(udynlink_load_mode_t mode) {
         return 0;
     }
 
-    printf("dep count after auto-load = %zu\n", g_dep_mgr.count);
+    printf("dep count after auto-load = %u\n", g_dep_mgr.count);
     if (g_dep_mgr.count != 2) {
-        printf("expected 2 modules (math + app), got %zu\n", g_dep_mgr.count);
+        printf("expected 2 modules (math + app), got %u\n", g_dep_mgr.count);
         goto cleanup;
     }
 

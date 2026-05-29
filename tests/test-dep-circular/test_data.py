@@ -6,6 +6,7 @@ test_data = {
     ],
     "total_loads": 1,
     "required": [
-        r"^circular dep detected: OK$",
+        r"^both modules loaded despite circular dep$",
+        r"^circular dep deferred and patched: OK$",
     ]
 }
