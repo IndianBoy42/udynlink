@@ -164,10 +164,11 @@ void udynlink_thunk_pool_init(udynlink_thunk_pool_t *pool,
     pool->base = buf;
     pool->size = sz;
     pool->used = 0;
+    pool->gateway_top = sz;
 }
 
 void *udynlink_thunk_alloc(udynlink_thunk_pool_t *pool, size_t n) {
-    if (pool->used + n > pool->size) {
+    if (pool->used + n > pool->gateway_top) {
         return NULL;
     }
     void *p = pool->base + pool->used;
@@ -175,12 +176,15 @@ void *udynlink_thunk_alloc(udynlink_thunk_pool_t *pool, size_t n) {
     return p;
 }
 
-/* ─── Internal: allocate a gateway for a module ────────────────────── */
+/* ─── Internal: allocate a gateway from the top of the pool ──────── */
 
 static uint8_t *alloc_gateway(udynlink_thunk_pool_t *pool,
                                uint32_t ram_base) {
-    uint8_t *g = (uint8_t *)udynlink_thunk_alloc(pool, GATEWAY_SIZE);
-    if (g == NULL) return NULL;
+    if (pool->gateway_top < pool->used + GATEWAY_SIZE) {
+        return NULL;
+    }
+    pool->gateway_top -= GATEWAY_SIZE;
+    uint8_t *g = pool->base + pool->gateway_top;
     memcpy(g, gateway_template, GATEWAY_SIZE);
     memcpy(g + GATEWAY_RAM_BASE_OFF, &ram_base, sizeof(uint32_t));
     return g;

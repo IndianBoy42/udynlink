@@ -76,12 +76,18 @@ extern "C" {
  * @brief RAM pool for cross-module call thunks.
  *
  * The host provides a contiguous RAM buffer.  Per-module gateways
- * (18 bytes) and per-function stubs (10 bytes) are allocated from
- * this pool.  The pool must be in RAM readable and executable
- * by the MCU.
+ * (18 bytes) are allocated from the END of the pool, growing
+ * downward.  Per-function stubs (10 bytes) are allocated from the
+ * START of the pool, growing upward.  This separation allows
+ * udynlink_external_find_stub() to scan only stubs by stepping
+ * through the lower region at STUB_SIZE intervals.
  *
- * Pool layout (per module, gateway first then stubs):
- *   [gateway: 18B] [stub1: 10B] [stub2: 10B] ...
+ * Pool layout:
+ *   [stub1][stub2]...[free gap]...[gateway2][gateway1]
+ *   ^                   ^                       ^
+ *   base               used                  gateway_top
+ *
+ * The pool is full when used >= gateway_top.
  *
  * Total per module with N cross-module function refs:
  *   18 + 10*N bytes.
@@ -91,8 +97,10 @@ typedef struct {
     uint8_t *base;
     /** Total size of the region in bytes. */
     size_t size;
-    /** Number of bytes currently allocated. */
+    /** Stubs: next free offset from base (grows upward). */
     size_t used;
+    /** Gateways: next free offset from base (grows downward). */
+    size_t gateway_top;
 } udynlink_thunk_pool_t;
 
 /**
