@@ -15,6 +15,13 @@
 #include "udynlink_externals.h"
 #include <string.h>
 
+udynlink_module_t *udynlink_external_dep_load(const char *name)
+    __attribute__((weak));
+udynlink_module_t *udynlink_external_dep_load(const char *name) {
+    (void)name;
+    return NULL;
+}
+
 /* ─── Thunk templates (flash-resident byte arrays) ─────────────────── */
 
 /*
@@ -246,6 +253,11 @@ uintptr_t udynlink_dep_resolve_dependency(udynlink_dep_mgr_t *mgr,
     }
 
     udynlink_module_t *p_mod = udynlink_dep_find(mgr, dep_name);
+    if (p_mod != NULL) {
+        return (uintptr_t)p_mod;
+    }
+
+    p_mod = udynlink_external_dep_load(dep_name);
     if (p_mod != NULL) {
         return (uintptr_t)p_mod;
     }

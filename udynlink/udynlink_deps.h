@@ -131,6 +131,24 @@ typedef struct {
 } udynlink_dep_entry_t;
 
 /**
+ * @brief Host-provided callback to load a missing dependency module.
+ *
+ * Called by udynlink_dep_resolve_dependency() when a required module
+ * is not yet loaded.  The host should locate the module image,
+ * allocate a udynlink_module_t, and call udynlink_dep_load() (or
+ * udynlink_load_module() + udynlink_dep_register()).
+ *
+ * A weak no-op default returning NULL is provided.  Hosts that want
+ * automatic dependency loading must override this function.
+ *
+ * @param name Module name (without the .udynlink.mod.requires. prefix).
+ *
+ * @return Pointer to the loaded module handle, or NULL if the
+ *         dependency could not be loaded.
+ */
+udynlink_module_t *udynlink_external_dep_load(const char *name);
+
+/**
  * @brief Dependency manager state.
  *
  * Tracks loaded modules for cross-module symbol resolution.
@@ -200,7 +218,8 @@ udynlink_module_t *udynlink_dep_find(udynlink_dep_mgr_t *mgr,
  *
  * @return The module handle address (cast to uintptr_t) on success,
  *         UDYNLINK_SYM_DEFERRED on circular dependency, or 0 on
- *         failure.
+ *         failure (dependency not found or udynlink_external_dep_load
+ *         returned NULL).
  */
 uintptr_t udynlink_dep_resolve_dependency(udynlink_dep_mgr_t *mgr,
                                            const char *name);

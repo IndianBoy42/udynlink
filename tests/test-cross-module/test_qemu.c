@@ -16,6 +16,20 @@ static udynlink_thunk_pool_t g_thunk_pool;
 static udynlink_dep_entry_t g_mod_entries[MAX_MODULES];
 static udynlink_dep_mgr_t g_dep_mgr;
 
+udynlink_module_t *udynlink_external_dep_load(const char *name);
+udynlink_module_t *udynlink_external_dep_load(const char *name) {
+    static udynlink_module_t s_mod_math;
+    if (strcmp(name, "mod_math") == 0) {
+        if (udynlink_dep_load(&g_dep_mgr, &s_mod_math,
+                mod_math_module_data, NULL, 0,
+                UDYNLINK_LOAD_MODE_COPY_ALL, &g_thunk_pool) != UDYNLINK_OK) {
+            return NULL;
+        }
+        return &s_mod_math;
+    }
+    return NULL;
+}
+
 uintptr_t test_resolve_symbol(const char *name);
 uintptr_t test_resolve_symbol(const char *name) {
     if (udynlink_dep_is_dependency(name)) {
