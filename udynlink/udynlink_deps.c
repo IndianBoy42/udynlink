@@ -15,9 +15,6 @@
 #include "udynlink_externals.h"
 #include <string.h>
 
-#define GATEWAY_SIZE  18
-#define STUB_SIZE     10
-
 udynlink_module_t *udynlink_external_dep_load(const char *name)
     __attribute__((weak));
 udynlink_module_t *udynlink_external_dep_load(const char *name) {
@@ -62,13 +59,13 @@ uintptr_t udynlink_external_find_stub(const udynlink_thunk_pool_t *pool,
     __attribute__((weak));
 uintptr_t udynlink_external_find_stub(const udynlink_thunk_pool_t *pool,
                                        uint32_t func_addr) {
-    if (pool == NULL || pool->used < STUB_SIZE) return 0;
+    if (pool == NULL || pool->used < UDYNLINK_STUB_SIZE) return 0;
 
     const uint8_t *base = pool->base;
     size_t pos = pool->used;
 
-    while (pos >= STUB_SIZE) {
-        pos -= STUB_SIZE;
+    while (pos >= UDYNLINK_STUB_SIZE) {
+        pos -= UDYNLINK_STUB_SIZE;
         const uint8_t *candidate = base + pos;
         uint16_t lo16, hi16;
         if (decode_movw_ip_imm16(candidate, &lo16) &&
@@ -113,7 +110,7 @@ uintptr_t udynlink_external_find_stub(const udynlink_thunk_pool_t *pool,
  */
 
 /* Gateway template: push.w {r9,lr}; ldr.w r9,[pc,#4]; blx ip; pop.w {r9,pc}; .word ram_base */
-static const uint8_t gateway_template[GATEWAY_SIZE] = {
+static const uint8_t gateway_template[UDYNLINK_GATEWAY_SIZE] = {
     0x2D, 0xE9, 0x00, 0x42,       /* push.w  {r9, lr}          */
     0xDF, 0xF8, 0x04, 0x90,       /* ldr.w   r9, [pc, #4]      */
     0xE0, 0x47,                   /* blx     ip                 */
@@ -180,12 +177,12 @@ void *udynlink_thunk_alloc(udynlink_thunk_pool_t *pool, size_t n) {
 
 static uint8_t *alloc_gateway(udynlink_thunk_pool_t *pool,
                                uint32_t ram_base) {
-    if (pool->gateway_top < pool->used + GATEWAY_SIZE) {
+    if (pool->gateway_top < pool->used + UDYNLINK_GATEWAY_SIZE) {
         return NULL;
     }
-    pool->gateway_top -= GATEWAY_SIZE;
+    pool->gateway_top -= UDYNLINK_GATEWAY_SIZE;
     uint8_t *g = pool->base + pool->gateway_top;
-    memcpy(g, gateway_template, GATEWAY_SIZE);
+    memcpy(g, gateway_template, UDYNLINK_GATEWAY_SIZE);
     memcpy(g + GATEWAY_RAM_BASE_OFF, &ram_base, sizeof(uint32_t));
     return g;
 }
@@ -195,7 +192,7 @@ static uint8_t *alloc_gateway(udynlink_thunk_pool_t *pool,
 static uintptr_t alloc_stub(udynlink_thunk_pool_t *pool,
                              uint32_t func_addr,
                              const uint8_t *gateway_addr) {
-    uint8_t *s = (uint8_t *)udynlink_thunk_alloc(pool, STUB_SIZE);
+    uint8_t *s = (uint8_t *)udynlink_thunk_alloc(pool, UDYNLINK_STUB_SIZE);
     if (s == NULL) return 0;
 
     encode_movw_ip(s, (uint16_t)(func_addr & 0xFFFF));
@@ -208,7 +205,7 @@ static uintptr_t alloc_stub(udynlink_thunk_pool_t *pool,
     int16_t hw_offset = (int16_t)(byte_offset / 2);
 
     if (hw_offset < -1024 || hw_offset > 1023) {
-        pool->used -= STUB_SIZE;
+        pool->used -= UDYNLINK_STUB_SIZE;
         return 0;
     }
 

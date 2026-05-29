@@ -84,9 +84,13 @@ def compile(src_name, args, public_symbols, macros=[]):
     # Collect exported symbols and (optionally) generate prologue wrappers
     if not args.no_prologue:
         for objname in [] + object_files:
-            # Generate temporary object file with renamed symbols
             global_funcs = [s for s in get_public_functions_in_object(objname) if len(public_symbols) == 0 or s in public_symbols or s == "__init_array"]
             weak_funcs = [s for s in get_weak_functions_in_object(objname) if s in global_funcs]
+            dep_syms = get_dependency_symbols_in_object(objname)
+            if dep_syms:
+                if not hasattr(args, 'dep_syms'):
+                    args.dep_syms = set()
+                args.dep_syms.update(dep_syms)
             debug("Generating temporary object files with wrapped symbols '%s'" % ", ".join(global_funcs), args)
             temp_obj = os.path.join(objname + '.temp.o')
             os.rename(objname, temp_obj)
@@ -114,6 +118,11 @@ def compile(src_name, args, public_symbols, macros=[]):
             if not hasattr(args, 'exported_syms'):
                 args.exported_syms = set()
             args.exported_syms.update(global_funcs)
+            dep_syms = get_dependency_symbols_in_object(objname)
+            if dep_syms:
+                if not hasattr(args, 'dep_syms'):
+                    args.dep_syms = set()
+                args.dep_syms.update(dep_syms)
 
     if len(public_symbols) != 0:
         public_symbols.add("__init_array")
@@ -128,6 +137,9 @@ def link(objects, output, args):
     extra_link_flags = ""
     if args.no_prologue and hasattr(args, 'exported_syms') and args.exported_syms:
         for sym in sorted(args.exported_syms):
+            extra_link_flags += " -Wl,--undefined=%s" % sym
+    if hasattr(args, 'dep_syms') and args.dep_syms:
+        for sym in sorted(args.dep_syms):
             extra_link_flags += " -Wl,--undefined=%s" % sym
     link_data = {"input": " ".join(objects), "output": output, "ld": linker_script, "mcpu": args.mcpu, "fpu": args.fpu_flag, "float_abi": args.float_abi_flag, "extra_link_flags": extra_link_flags}
     debug("Linking (%s -> %s)" % (" + ".join(objects), output), args)
@@ -209,6 +221,16 @@ def process(output, args):
     print_list([s for s in sym_map if sym_map[s] == "external"], "External :", args)
     print_list([s for s in sym_map if sym_map[s] == "weak"],   "Weak     :", args)
     print_list([s for s in sym_map if sym_map[s] == "local"],   "Locals   :", args)
+
+    # Reclassify .udynlink.mod.requires.* symbols as external.
+    # These are emitted by UDYNLINK_REQUIRES() as definitions with value 0
+    # (to survive --gc-sections) but semantically they are dependency
+    # declarations that must be resolved by the host at load time.
+    for s in list(sym_map.keys()):
+        if s.startswith(".udynlink.mod.requires.") and sym_map[s] == "exported":
+            debug("Reclassified dependency symbol '%s' from exported to external" % s, args)
+            del sym_map[s]
+            sym_map[s] = "external"
 
     # Detect and omit empty init-array sentinel symbols from the symbol table.
     # These four symbols are emitted by the linker script even for C modules

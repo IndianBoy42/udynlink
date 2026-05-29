@@ -64,11 +64,18 @@ extern "C" {
  * dependency-aware host returns the module handle address, causing
  * the load to fail if the dependency is not available.
  *
+ * The symbol is marked __attribute__((used)) so that --gc-sections
+ * cannot strip it even when no code references the dependency handle.
+ *
  * @param mod_name Identifier of the required module (not a string).
+ *
+ * @note This macro does not require any header includes; it uses
+ *       only compiler built-in attributes and asm labels.
  */
 #define UDYNLINK_REQUIRES(mod_name) \
-    extern udynlink_module_t *__udynlink_dep_##mod_name \
-    __asm__(".udynlink.mod.requires." #mod_name)
+    const void *__udynlink_dep_##mod_name \
+    __asm__(".udynlink.mod.requires." #mod_name) \
+    __attribute__((used)) = 0
 
 /* ─── Thunk pool ───────────────────────────────────────────────────── */
 

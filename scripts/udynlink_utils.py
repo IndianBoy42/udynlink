@@ -158,6 +158,16 @@ def get_weak_functions_in_object(obj):
 def get_local_symbols_in_object(obj):
     return [s for s, d in get_symbols_in_elf(obj).items() if d["bind"] == "STB_LOCAL" and s.startswith(".")]
 
+def get_dependency_symbols_in_object(obj):
+    """Return .udynlink.mod.requires.* extern symbols.
+
+    These are emitted by the UDYNLINK_REQUIRES() macro and must be kept
+    alive through --gc-sections so the dependency system can detect them
+    at load time.
+    """
+    return [s for s, d in get_symbols_in_elf(obj).items()
+            if s.startswith(".udynlink.mod.requires.")]
+
 def get_relocations_in_elf(obj):
     rels = []
     with open(obj, "rb") as f:
