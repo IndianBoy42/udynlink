@@ -4,6 +4,13 @@
  * RAM thunks.  This is an optional layer on top of the v3.0 core; hosts
  * that do not use it pay zero code/RAM cost.
  *
+ * Thunk design: two-level dispatch with per-module gateways (18 bytes)
+ * and per-function stubs (10 bytes).  The stub loads the target
+ * function address into R12 (IP) via movw+movt, then branches to the
+ * module's shared gateway which switches R9 and calls the function.
+ * This preserves R0-R3 (argument registers) and saves ~14 bytes per
+ * cross-module function reference compared to inline thunks.
+ *
  * Copyright (c) 2026 udynlink contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -42,8 +49,9 @@ extern "C" {
 /* Maximum depth of the circular-dependency detection stack. */
 #define UDYNLINK_DEP_MAX_DEPTH          8
 
-/* Size of an inline per-function thunk in bytes. */
-#define UDYNLINK_THUNK_SIZE             28
+/* Thunk sizes in bytes. */
+#define UDYNLINK_GATEWAY_SIZE           18
+#define UDYNLINK_STUB_SIZE              10
 
 /* ─── Module writer API ─────────────────────────────────────────────── */
 
@@ -67,10 +75,16 @@ extern "C" {
 /**
  * @brief RAM pool for cross-module call thunks.
  *
- * The host provides a contiguous RAM buffer.  Each cross-module
- * function reference gets an inline thunk allocated from this pool
- * (28 bytes each). The pool must be in RAM readable and executable
+ * The host provides a contiguous RAM buffer.  Per-module gateways
+ * (18 bytes) and per-function stubs (10 bytes) are allocated from
+ * this pool.  The pool must be in RAM readable and executable
  * by the MCU.
+ *
+ * Pool layout (per module, gateway first then stubs):
+ *   [gateway: 18B] [stub1: 10B] [stub2: 10B] ...
+ *
+ * Total per module with N cross-module function refs:
+ *   18 + 10*N bytes.
  */
 typedef struct {
     /** Base of the thunk RAM region (host-provided). */
@@ -105,6 +119,18 @@ void *udynlink_thunk_alloc(udynlink_thunk_pool_t *pool, size_t n);
 /* ─── Dependency manager ───────────────────────────────────────────── */
 
 /**
+ * @brief Per-module entry in the dependency manager.
+ *
+ * Tracks the module handle and its allocated gateway (if any).
+ */
+typedef struct {
+    /** Loaded module handle. */
+    udynlink_module_t *p_mod;
+    /** Allocated gateway in the thunk pool, or NULL. */
+    uint8_t *gateway;
+} udynlink_dep_entry_t;
+
+/**
  * @brief Dependency manager state.
  *
  * Tracks loaded modules for cross-module symbol resolution.
@@ -112,10 +138,10 @@ void *udynlink_thunk_alloc(udynlink_thunk_pool_t *pool, size_t n);
  */
 typedef struct {
     /** Registry of loaded modules (host-owned array). */
-    udynlink_module_t **modules;
+    udynlink_dep_entry_t *entries;
     /** Number of modules currently registered. */
     size_t count;
-    /** Capacity of the @c modules array. */
+    /** Capacity of the @c entries array. */
     size_t capacity;
     /** Circular dependency detection stack (module names). */
     const char *loading_stack[UDYNLINK_DEP_MAX_DEPTH];
@@ -127,11 +153,11 @@ typedef struct {
  * @brief Initialise a dependency manager.
  *
  * @param mgr  Pointer to the manager to initialise.
- * @param buf  Host-provided array of module pointers.
+ * @param buf  Host-provided array of module entries.
  * @param cap  Capacity of @p buf (max modules).
  */
 void udynlink_dep_mgr_init(udynlink_dep_mgr_t *mgr,
-                           udynlink_module_t **buf, size_t cap);
+                           udynlink_dep_entry_t *buf, size_t cap);
 
 /* ─── Dependency query helpers ──────────────────────────────────────── */
 
@@ -177,20 +203,25 @@ udynlink_module_t *udynlink_dep_find(udynlink_dep_mgr_t *mgr,
  *         failure.
  */
 uintptr_t udynlink_dep_resolve_dependency(udynlink_dep_mgr_t *mgr,
-                                          const char *name);
+                                           const char *name);
 
 /**
- * @brief Resolve a cross-module function symbol via an inline thunk.
+ * @brief Resolve a cross-module function symbol via a thunk stub.
  *
  * Searches all loaded dependency modules for @p name.  If found,
- * allocates an inline thunk (28 bytes) from the thunk pool.
+ * allocates a gateway (18 bytes, one per module) and a stub
+ * (10 bytes, one per function) from the thunk pool.
+ *
+ * The stub loads the function address into R12 (IP) via movw+movt
+ * and branches to the module's shared gateway, which switches R9
+ * and calls the function.  This preserves R0-R3 (argument registers).
  *
  * @param mgr  Dependency manager.
  * @param pool Thunk pool for thunk allocation.
  * @param name Symbol name to resolve.
  *
- * @return Thunk address on success, 0 if the symbol is not found in
- *         any dependency module.
+ * @return Stub address (with Thumb bit set) on success, 0 if the
+ *         symbol is not found in any dependency module.
  */
 uintptr_t udynlink_dep_resolve_func(udynlink_dep_mgr_t *mgr,
                                     udynlink_thunk_pool_t *pool,

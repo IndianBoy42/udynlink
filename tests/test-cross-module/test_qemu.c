@@ -13,7 +13,7 @@
 static uint8_t g_thunk_buf[THUNK_POOL_SIZE];
 static udynlink_thunk_pool_t g_thunk_pool;
 
-static udynlink_module_t *g_mod_slots[MAX_MODULES];
+static udynlink_dep_entry_t g_mod_entries[MAX_MODULES];
 static udynlink_dep_mgr_t g_dep_mgr;
 
 uintptr_t test_resolve_symbol(const char *name);
@@ -38,7 +38,7 @@ static int test_cross_module_single(udynlink_load_mode_t mode) {
     memset(&mod_math, 0, sizeof(mod_math));
     memset(&mod_app, 0, sizeof(mod_app));
 
-    udynlink_dep_mgr_init(&g_dep_mgr, g_mod_slots, MAX_MODULES);
+    udynlink_dep_mgr_init(&g_dep_mgr, g_mod_entries, MAX_MODULES);
     udynlink_thunk_pool_init(&g_thunk_pool, g_thunk_buf, THUNK_POOL_SIZE);
 
     if (udynlink_dep_load(&g_dep_mgr, &mod_math, mod_math_module_data,
