@@ -21,7 +21,8 @@
 #include "udynlink.h"
 #include "udynlink_call.h"
 
-#include <cstring>
+#include <optional>
+#include <utility>
 
 namespace udynlink {
 
@@ -36,32 +37,39 @@ class Context;
 class Module;
 
 // ---------------------------------------------------------------------------
-// Internal helper: typed function invocation with null-check
+// Internal helper: typed function invocation with r9 save/restore
 // ---------------------------------------------------------------------------
 
 namespace detail {
 
 template<typename R, typename... Args>
 struct FuncInvoker {
-    static R invoke(uintptr_t addr, const udynlink_module_t *p_mod, Args... args) {
+    static inline R invoke(uintptr_t addr, const udynlink_module_t &mod, Args... args) {
         if (addr == 0) {
             return R();
         }
-        UDYNLINK_PREPARE_CALL(p_mod);
+        uint32_t prev_r9;
+        __asm volatile ("mov %0, r9" : "=r"(prev_r9) : :);
+        UDYNLINK_PREPARE_CALL(&mod);
         typedef R (*Fptr)(Args...);
-        return reinterpret_cast<Fptr>(addr)(args...);
+        R result = reinterpret_cast<Fptr>(addr)(args...);
+        __asm volatile ("mov r9, %0" :: "r"(prev_r9) : "r9");
+        return result;
     }
 };
 
 template<typename... Args>
 struct FuncInvoker<void, Args...> {
-    static void invoke(uintptr_t addr, const udynlink_module_t *p_mod, Args... args) {
+    static inline void invoke(uintptr_t addr, const udynlink_module_t &mod, Args... args) {
         if (addr == 0) {
             return;
         }
-        UDYNLINK_PREPARE_CALL(p_mod);
+        uint32_t prev_r9;
+        __asm volatile ("mov %0, r9" : "=r"(prev_r9) : :);
+        UDYNLINK_PREPARE_CALL(&mod);
         typedef void (*Fptr)(Args...);
         reinterpret_cast<Fptr>(addr)(args...);
+        __asm volatile ("mov r9, %0" :: "r"(prev_r9) : "r9");
     }
 };
 
@@ -78,6 +86,10 @@ struct FuncInvoker<void, Args...> {
  * call many times.  This avoids the O(N) string search on every
  * invocation and provides compile-time type safety.
  *
+ * On invocation, r9 is saved, set to the module's ram_base, and
+ * restored after the call returns — matching the UDYNLINK_CALL()
+ * contract from the C API.
+ *
  * @tparam R    Return type.
  * @tparam Args Argument types.
  *
@@ -87,8 +99,14 @@ struct FuncInvoker<void, Args...> {
  *   if (!add) { // symbol not found
  *       return;
  *   }
- *   int r = add(2, 3);
+ *   int r = (*add)(2, 3);
  * @endcode
+ *
+ * @warning Func holds an unowned reference to the udynlink_module_t.
+ *          If the Module is unloaded or destroyed while any Func
+ *          still references it, invoking that Func causes undefined
+ *          behaviour.  The lifetime of Func must not exceed the
+ *          lifetime of the Module it was resolved from.
  */
 template<typename R, typename... Args>
 class Func<R(Args...)> {
@@ -97,17 +115,22 @@ class Func<R(Args...)> {
 
 public:
     /**
+     * @brief Construct a disengaged (null) handle.
+     */
+    Func() noexcept : p_mod_(nullptr), addr_(0) {}
+
+    /**
      * @brief Resolve a symbol by name into a typed handle.
      *
-     * If the symbol is not found, addr_ remains 0 and operator bool()
-     * returns false.
+     * If the symbol is not found, the handle remains disengaged
+     * (operator bool() returns false).
      *
-     * @param[in] p_mod Pointer to the loaded module.
-     * @param[in] name  Null-terminated symbol name.
+     * @param[in] mod  Reference to the loaded module.
+     * @param[in] name Null-terminated symbol name.
      */
-    Func(const udynlink_module_t *p_mod, const char *name)
-        : p_mod_(p_mod), addr_(0) {
-        if (p_mod_ != NULL && name != NULL) {
+    Func(const udynlink_module_t &mod, const char *name) noexcept
+        : p_mod_(&mod), addr_(0) {
+        if (name != nullptr) {
             udynlink_func_t h;
             if (udynlink_resolve_func(p_mod_, name, &h) == UDYNLINK_OK) {
                 addr_ = h.addr;
@@ -116,42 +139,41 @@ public:
     }
 
     /**
-     * @brief Construct from a pre-resolved C handle.
+     * @brief Construct from a pre-resolved address.
      *
-     * @param[in] p_mod Pointer to the loaded module.
-     * @param[in] addr  Resolved function address.
+     * @param[in] mod  Reference to the loaded module.
+     * @param[in] addr Resolved function address.
      */
-    Func(const udynlink_module_t *p_mod, uintptr_t addr)
-        : p_mod_(p_mod), addr_(addr) {}
+    Func(const udynlink_module_t &mod, uintptr_t addr) noexcept
+        : p_mod_(&mod), addr_(addr) {}
 
     /**
      * @brief Invoke the module function.
      *
-     * Automatically sets r9 to the module's RAM base (via
-     * UDYNLINK_PREPARE_CALL) and calls the function with the supplied
-     * arguments.
+     * Saves r9, sets r9 to the module's RAM base, calls the function,
+     * and restores the original r9 — equivalent to UDYNLINK_CALL().
      *
      * @return The value returned by the module function, or R() if the
      *         symbol was not resolved.
      *
      * @warning Not interrupt-safe if the called function itself is not
-     *          re-entrant.  Each invocation uses UDYNLINK_PREPARE_CALL
-     *          which directly overwrites r9; nested calls from the same
-     *          module are fine, but an ISR calling a different module
-     *          during this call would corrupt r9 unless interrupts are
-     *          disabled.
+     *          re-entrant.  The r9 save/restore happens in the caller's
+     *          stack frame, so nested module calls from the same
+     *          interrupt level are safe, but an ISR calling a different
+     *          module during this call would corrupt r9 unless
+     *          interrupts are disabled.
      */
-    R operator()(Args... args) const {
-        return detail::FuncInvoker<R, Args...>::invoke(addr_, p_mod_, args...);
+    inline R operator()(Args... args) const {
+        return detail::FuncInvoker<R, Args...>::invoke(addr_, *p_mod_, args...);
     }
 
     /** @return true if the symbol was resolved successfully. */
-    explicit operator bool() const {
+    explicit operator bool() const noexcept {
         return addr_ != 0;
     }
 
     /** @return Raw resolved address. */
-    uintptr_t address() const {
+    uintptr_t address() const noexcept {
         return addr_;
     }
 };
@@ -181,28 +203,26 @@ public:
     /**
      * @brief Bind to a module: save previous r9, write new ram_base.
      *
-     * @param[in] p_mod Pointer to the loaded module.
+     * @param[in] mod Reference to the loaded module.
      */
-    explicit Context(const udynlink_module_t *p_mod)
-        : p_mod_(p_mod), prev_r9_(0) {
-        if (p_mod_ != NULL) {
-            __asm volatile ("mov %0, r9" : "=r"(prev_r9_) : :);
-            __asm volatile ("mov r9, %0" :: "r"((uint32_t)p_mod_->ram_base) : "r9");
-        }
+    explicit Context(const udynlink_module_t &mod) noexcept
+        : p_mod_(&mod), prev_r9_(0) {
+        __asm volatile ("mov %0, r9" : "=r"(prev_r9_) : :);
+        __asm volatile ("mov r9, %0" :: "r"((uint32_t)p_mod_->ram_base) : "r9");
     }
 
     /**
      * @brief Restore the previous r9.
      */
-    ~Context() {
-        if (p_mod_ != NULL) {
-            __asm volatile ("mov r9, %0" :: "r"(prev_r9_) : "r9");
-        }
+    ~Context() noexcept {
+        __asm volatile ("mov r9, %0" :: "r"(prev_r9_) : "r9");
     }
 
     // Non-copyable, non-movable
     Context(const Context &) = delete;
     Context &operator=(const Context &) = delete;
+    Context(Context &&) = delete;
+    Context &operator=(Context &&) = delete;
 
     /**
      * @brief Re-bind to a different module (mid-loop switch).
@@ -211,17 +231,15 @@ public:
      * The previous value (saved at construction) is NOT touched;
      * it will be restored when this Context is destroyed.
      *
-     * @param[in] p_mod Pointer to the new loaded module.
+     * @param[in] mod Reference to the new loaded module.
      */
-    void rebind(const udynlink_module_t *p_mod) {
-        p_mod_ = p_mod;
-        if (p_mod_ != NULL) {
-            __asm volatile ("mov r9, %0" :: "r"((uint32_t)p_mod_->ram_base) : "r9");
-        }
+    void rebind(const udynlink_module_t &mod) noexcept {
+        p_mod_ = &mod;
+        __asm volatile ("mov r9, %0" :: "r"((uint32_t)p_mod_->ram_base) : "r9");
     }
 
     /** @return Pointer to the currently bound module. */
-    const udynlink_module_t *module() const {
+    const udynlink_module_t *module() const noexcept {
         return p_mod_;
     }
 };
@@ -235,22 +253,21 @@ public:
  *
  * Handles load, automatic C++ init, and unload in a single class.
  * On successful load(), udynlink_cpp_init() is called unconditionally
- * (safe no-op for C modules).
+ * (safe no-op for C modules, since it only runs __init_array
+ * constructors if the module exports that symbol).
  */
 class Module {
-    udynlink_module_t mod_;
-    bool loaded_;
+    udynlink_module_t mod_ = {};
+    bool loaded_ = false;
 
 public:
     /** @brief Construct an empty (not loaded) module handle. */
-    Module() : loaded_(false) {
-        std::memset(&mod_, 0, sizeof(mod_));
-    }
+    Module() = default;
 
     /**
      * @brief Unload the module if it is still loaded.
      */
-    ~Module() {
+    ~Module() noexcept {
         if (loaded_) {
             unload();
         }
@@ -264,7 +281,7 @@ public:
     Module(Module &&other) noexcept
         : mod_(other.mod_), loaded_(other.loaded_) {
         other.loaded_ = false;
-        std::memset(&other.mod_, 0, sizeof(other.mod_));
+        other.mod_ = {};
     }
 
     Module &operator=(Module &&other) noexcept {
@@ -275,7 +292,7 @@ public:
             mod_ = other.mod_;
             loaded_ = other.loaded_;
             other.loaded_ = false;
-            std::memset(&other.mod_, 0, sizeof(other.mod_));
+            other.mod_ = {};
         }
         return *this;
     }
@@ -287,23 +304,23 @@ public:
      * for C modules) and marks the module as loaded.
      *
      * @param[in] base_addr  Address of the module image.
-     * @param[in] load_addr  RAM address, or NULL to auto-allocate.
-     * @param[in] load_size  Size of @p load_addr region (ignored if NULL).
+     * @param[in] load_addr  RAM address, or nullptr to auto-allocate.
+     * @param[in] load_size  Size of @p load_addr region (ignored if nullptr).
      * @param[in] mode       Load mode.
      *
      * @return ::UDYNLINK_OK on success, or an error code on failure.
      */
-    udynlink_error_t load(const void *base_addr,
+    [[nodiscard]] udynlink_error_t load(const void *base_addr,
                           void *load_addr,
                           size_t load_size,
-                          udynlink_load_mode_t mode) {
+                          udynlink_load_mode_t mode) noexcept {
         if (loaded_) {
             udynlink_error_t err = unload();
             if (err != UDYNLINK_OK) {
                 return err;
             }
         }
-        std::memset(&mod_, 0, sizeof(mod_));
+        mod_ = {};
         udynlink_error_t err = udynlink_load_module(&mod_, base_addr, load_addr, load_size, mode);
         if (err == UDYNLINK_OK) {
             loaded_ = true;
@@ -318,8 +335,8 @@ public:
      * @param[in] base_addr Address of the module image.
      * @return ::UDYNLINK_OK on success, or an error code on failure.
      */
-    udynlink_error_t load(const void *base_addr) {
-        return load(base_addr, NULL, 0, UDYNLINK_LOAD_MODE_COPY_ALL);
+    [[nodiscard]] udynlink_error_t load(const void *base_addr) noexcept {
+        return load(base_addr, nullptr, 0, UDYNLINK_LOAD_MODE_COPY_ALL);
     }
 
     /**
@@ -327,18 +344,18 @@ public:
      *
      * @return ::UDYNLINK_OK on success, or an error code on failure.
      */
-    udynlink_error_t unload() {
+    [[nodiscard]] udynlink_error_t unload() noexcept {
         if (!loaded_) {
             return UDYNLINK_ERR_INVALID_MODULE;
         }
         udynlink_error_t err = udynlink_unload_module(&mod_);
         loaded_ = false;
-        std::memset(&mod_, 0, sizeof(mod_));
+        mod_ = {};
         return err;
     }
 
     /** @return true if the module is currently loaded. */
-    bool is_loaded() const {
+    bool is_loaded() const noexcept {
         return loaded_;
     }
 
@@ -347,11 +364,15 @@ public:
      *
      * @tparam Sig Function signature, e.g. int(int, int).
      * @param[in] name Null-terminated symbol name.
-     * @return A Func handle.  Check operator bool() for success.
+     * @return An optional Func handle.  Check has_value() / value().
      */
     template<typename Sig>
-    Func<Sig> resolve(const char *name) const {
-        return Func<Sig>(&mod_, name);
+    [[nodiscard]] std::optional<Func<Sig>> resolve(const char *name) const {
+        Func<Sig> f(mod_, name);
+        if (f) {
+            return f;
+        }
+        return std::nullopt;
     }
 
     /**
@@ -359,22 +380,41 @@ public:
      *
      * Automatically called by load(); rarely needed manually.
      */
-    void cpp_init() {
+    void cpp_init() noexcept {
         if (loaded_) {
             udynlink_cpp_init(&mod_);
         }
     }
 
     /** @return Const pointer to the raw C module handle. */
-    const udynlink_module_t *handle() const {
+    const udynlink_module_t *handle() const noexcept {
         return &mod_;
     }
 
     /** @return Pointer to the raw C module handle. */
-    udynlink_module_t *handle() {
+    udynlink_module_t *handle() noexcept {
         return &mod_;
     }
+
+    /**
+     * @brief Swap contents with another Module.
+     */
+    void swap(Module &other) noexcept {
+        if (this != &other) {
+            const udynlink_module_t tmp_mod = mod_;
+            const bool tmp_loaded = loaded_;
+            mod_ = other.mod_;
+            loaded_ = other.loaded_;
+            other.mod_ = tmp_mod;
+            other.loaded_ = tmp_loaded;
+        }
+    }
 };
+
+/** @brief ADL-findable swap for Module. */
+inline void swap(Module &a, Module &b) noexcept {
+    a.swap(b);
+}
 
 } // namespace udynlink
 
