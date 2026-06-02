@@ -49,8 +49,14 @@ struct FuncInvoker {
             return R();
         }
         uint32_t prev_r9;
-        __asm volatile ("mov %0, r9" : "=r"(prev_r9) : :);
-        UDYNLINK_PREPARE_CALL(&mod);
+        uint32_t ram_base = (uint32_t)mod.ram_base;
+        __asm volatile (
+            "mov %0, r9\n"
+            "mov r9, %1"
+            : "=r"(prev_r9)
+            : "r"(ram_base)
+            : "r9"
+        );
         typedef R (*Fptr)(Args...);
         R result = reinterpret_cast<Fptr>(addr)(args...);
         __asm volatile ("mov r9, %0" :: "r"(prev_r9) : "r9");
@@ -65,8 +71,14 @@ struct FuncInvoker<void, Args...> {
             return;
         }
         uint32_t prev_r9;
-        __asm volatile ("mov %0, r9" : "=r"(prev_r9) : :);
-        UDYNLINK_PREPARE_CALL(&mod);
+        uint32_t ram_base = (uint32_t)mod.ram_base;
+        __asm volatile (
+            "mov %0, r9\n"
+            "mov r9, %1"
+            : "=r"(prev_r9)
+            : "r"(ram_base)
+            : "r9"
+        );
         typedef void (*Fptr)(Args...);
         reinterpret_cast<Fptr>(addr)(args...);
         __asm volatile ("mov r9, %0" :: "r"(prev_r9) : "r9");
@@ -207,8 +219,14 @@ public:
      */
     explicit Context(const udynlink_module_t &mod) noexcept
         : p_mod_(&mod), prev_r9_(0) {
-        __asm volatile ("mov %0, r9" : "=r"(prev_r9_) : :);
-        __asm volatile ("mov r9, %0" :: "r"((uint32_t)p_mod_->ram_base) : "r9");
+        uint32_t ram_base = (uint32_t)p_mod_->ram_base;
+        __asm volatile (
+            "mov %0, r9\n"
+            "mov r9, %1"
+            : "=r"(prev_r9_)
+            : "r"(ram_base)
+            : "r9"
+        );
     }
 
     /**
@@ -346,7 +364,7 @@ public:
      */
     [[nodiscard]] udynlink_error_t unload() noexcept {
         if (!loaded_) {
-            return UDYNLINK_ERR_INVALID_MODULE;
+            return UDYNLINK_OK;
         }
         udynlink_error_t err = udynlink_unload_module(&mod_);
         loaded_ = false;
