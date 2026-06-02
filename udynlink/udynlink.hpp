@@ -37,7 +37,7 @@ class Context;
 class Module;
 
 // ---------------------------------------------------------------------------
-// Internal helper: typed function invocation with r9 save/restore
+// Internal helper: typed function invocation via C API
 // ---------------------------------------------------------------------------
 
 namespace detail {
@@ -48,19 +48,16 @@ struct FuncInvoker {
         if (addr == 0) {
             return R();
         }
-        uint32_t prev_r9;
-        uint32_t ram_base = (uint32_t)mod.ram_base;
-        __asm volatile (
-            "mov %0, r9\n"
-            "mov r9, %1"
-            : "=r"(prev_r9)
-            : "r"(ram_base)
-            : "r9"
-        );
         typedef R (*Fptr)(Args...);
-        R result = reinterpret_cast<Fptr>(addr)(args...);
-        __asm volatile ("mov r9, %0" :: "r"(prev_r9) : "r9");
-        return result;
+        Fptr f = reinterpret_cast<Fptr>(addr);
+        return ({
+            uint32_t _udynlink_prev_r9;
+            __asm volatile ("mov %0, r9" : "=r"(_udynlink_prev_r9) : :);
+            UDYNLINK_PREPARE_CALL(&mod);
+            R _udynlink_result = f(args...);
+            __asm volatile ("mov r9, %0" :: "r"(_udynlink_prev_r9) : "r9");
+            _udynlink_result;
+        });
     }
 };
 
@@ -70,18 +67,15 @@ struct FuncInvoker<void, Args...> {
         if (addr == 0) {
             return;
         }
-        uint32_t prev_r9;
-        uint32_t ram_base = (uint32_t)mod.ram_base;
-        __asm volatile (
-            "mov %0, r9\n"
-            "mov r9, %1"
-            : "=r"(prev_r9)
-            : "r"(ram_base)
-            : "r9"
-        );
         typedef void (*Fptr)(Args...);
-        reinterpret_cast<Fptr>(addr)(args...);
-        __asm volatile ("mov r9, %0" :: "r"(prev_r9) : "r9");
+        Fptr f = reinterpret_cast<Fptr>(addr);
+        ({
+            uint32_t _udynlink_prev_r9;
+            __asm volatile ("mov %0, r9" : "=r"(_udynlink_prev_r9) : :);
+            UDYNLINK_PREPARE_CALL(&mod);
+            f(args...);
+            __asm volatile ("mov r9, %0" :: "r"(_udynlink_prev_r9) : "r9");
+        });
     }
 };
 
@@ -126,9 +120,7 @@ class Func<R(Args...)> {
     uintptr_t addr_;
 
 public:
-    /**
-     * @brief Construct a disengaged (null) handle.
-     */
+    /** @brief Construct a disengaged (null) handle. */
     Func() noexcept : p_mod_(nullptr), addr_(0) {}
 
     /**
@@ -165,8 +157,8 @@ public:
      * Saves r9, sets r9 to the module's RAM base, calls the function,
      * and restores the original r9 — equivalent to UDYNLINK_CALL().
      *
-     * @return The value returned by the module function, or R() if the
-     *         symbol was not resolved.
+     * @return The value returned by the module function.  If the
+     *         symbol was not resolved (addr == 0), returns R().
      *
      * @warning Not interrupt-safe if the called function itself is not
      *          re-entrant.  The r9 save/restore happens in the caller's
@@ -219,14 +211,8 @@ public:
      */
     explicit Context(const udynlink_module_t &mod) noexcept
         : p_mod_(&mod), prev_r9_(0) {
-        uint32_t ram_base = (uint32_t)p_mod_->ram_base;
-        __asm volatile (
-            "mov %0, r9\n"
-            "mov r9, %1"
-            : "=r"(prev_r9_)
-            : "r"(ram_base)
-            : "r9"
-        );
+        __asm volatile ("mov %0, r9" : "=r"(prev_r9_) : :);
+        UDYNLINK_PREPARE_CALL(&mod);
     }
 
     /**
@@ -359,6 +345,8 @@ public:
 
     /**
      * @brief Unload the module.
+     *
+     * Double-unload is a no-op (returns UDYNLINK_OK).
      *
      * @return ::UDYNLINK_OK on success, or an error code on failure.
      */
