@@ -287,7 +287,7 @@ public:
      */
     ~Module() noexcept {
         if (loaded_) {
-            unload();
+            (void)unload();
         }
     }
 
@@ -305,7 +305,7 @@ public:
     Module &operator=(Module &&other) noexcept {
         if (this != &other) {
             if (loaded_) {
-                unload();
+                (void)unload();
             }
             mod_ = other.mod_;
             loaded_ = other.loaded_;

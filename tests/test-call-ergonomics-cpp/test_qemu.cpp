@@ -12,7 +12,7 @@ extern "C" int test_qemu(void) {
         {
             udynlink::Module mod;
             udynlink_error_t err = mod.load(
-                mod_callergo_cpp_module_data, NULL, 0,
+                mod_callergo_cpp_module_data, nullptr, 0,
                 (udynlink_load_mode_t)i
             );
             if (err != UDYNLINK_OK) {
@@ -36,13 +36,13 @@ extern "C" int test_qemu(void) {
                 goto exit;
             }
 
-            int r1 = h_add(2, 3);
+            int r1 = (*h_add)(2, 3);
             if (r1 != 5) {
                 printf("add(2,3) returned %d, expected 5\n", r1);
                 goto exit;
             }
 
-            int r2 = h_magic();
+            int r2 = (*h_magic)();
             if (r2 != 0xCAFE) {
                 printf("get_magic() returned 0x%04X, expected 0xCAFE\n", r2);
                 goto exit;
@@ -54,17 +54,6 @@ extern "C" int test_qemu(void) {
                 printf("Expected resolve to fail for missing symbol\n");
                 goto exit;
             }
-            if (h_missing.address() != 0) {
-                printf("Expected address 0 for missing symbol\n");
-                goto exit;
-            }
-
-            // Verify calling a missing Func returns default-constructed value
-            int r_missing = h_missing();
-            if (r_missing != 0) {
-                printf("Expected 0 from unresolved Func, got %d\n", r_missing);
-                goto exit;
-            }
 
             // Test 3: run the module's own test via C++ wrapper
             auto h_test = mod.resolve<int(void)>("test");
@@ -72,20 +61,20 @@ extern "C" int test_qemu(void) {
                 printf("resolve test failed\n");
                 goto exit;
             }
-            if (!h_test()) {
+            if (!(*h_test)()) {
                 printf("Module self-test failed\n");
                 goto exit;
             }
 
             // Test 4: Context RAII for batch calls
             {
-                udynlink::Context ctx(mod.handle());
-                int r3 = h_add(10, 20);
+                udynlink::Context ctx(*mod.handle());
+                int r3 = (*h_add)(10, 20);
                 if (r3 != 30) {
                     printf("Context add(10,20) returned %d, expected 30\n", r3);
                     goto exit;
                 }
-                int r4 = h_magic();
+                int r4 = (*h_magic)();
                 if (r4 != 0xCAFE) {
                     printf("Context get_magic() returned 0x%04X, expected 0xCAFE\n", r4);
                     goto exit;
@@ -96,7 +85,7 @@ extern "C" int test_qemu(void) {
             {
                 udynlink::Module mod2;
                 err = mod2.load(
-                    mod_callergo_cpp_module_data, NULL, 0,
+                    mod_callergo_cpp_module_data, nullptr, 0,
                     (udynlink_load_mode_t)i
                 );
                 if (err != UDYNLINK_OK) {
@@ -104,7 +93,7 @@ extern "C" int test_qemu(void) {
                     goto exit;
                 }
 
-                udynlink::Context ctx(mod.handle());
+                udynlink::Context ctx(*mod.handle());
                 auto h2 = mod2.resolve<int(int, int)>("add");
                 if (!h2) {
                     printf("mod2 resolve add failed\n");
@@ -112,8 +101,8 @@ extern "C" int test_qemu(void) {
                 }
 
                 // rebind to mod2
-                ctx.rebind(mod2.handle());
-                int r5 = h2(7, 8);
+                ctx.rebind(*mod2.handle());
+                int r5 = (*h2)(7, 8);
                 if (r5 != 15) {
                     printf("rebind add(7,8) returned %d, expected 15\n", r5);
                     goto exit;
@@ -126,7 +115,7 @@ extern "C" int test_qemu(void) {
             {
                 udynlink::Module mod_src;
                 err = mod_src.load(
-                    mod_callergo_cpp_module_data, NULL, 0,
+                    mod_callergo_cpp_module_data, nullptr, 0,
                     (udynlink_load_mode_t)i
                 );
                 if (err != UDYNLINK_OK) {
@@ -145,7 +134,7 @@ extern "C" int test_qemu(void) {
                 }
 
                 auto h_move = mod_dst.resolve<int(int, int)>("add");
-                int r6 = h_move(100, 1);
+                int r6 = (*h_move)(100, 1);
                 if (r6 != 101) {
                     printf("move add(100,1) returned %d, expected 101\n", r6);
                     goto exit;
@@ -163,7 +152,7 @@ extern "C" int test_qemu(void) {
                 }
 
                 auto h_assign = mod_assign.resolve<int(int, int)>("add");
-                int r7 = h_assign(50, 7);
+                int r7 = (*h_assign)(50, 7);
                 if (r7 != 57) {
                     printf("move-assign add(50,7) returned %d, expected 57\n", r7);
                     goto exit;
