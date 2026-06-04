@@ -429,6 +429,27 @@ target-info target=module_target:
     @cd {{scripts_dir}} && {{python_cmd}} list_targets.py {{target}}
 
 # =============================================================================
+# Benchmarks
+# =============================================================================
+
+# Run the toolchain benchmark suite (compile+mkmodule profiling)
+bench *args="":
+    cd benchmarks && {{python_cmd}} bench_toolchain.py {{args}}
+
+# Run benchmarks with all opt levels and JSON output
+bench-full target=module_target:
+    cd benchmarks && {{python_cmd}} bench_toolchain.py --target {{target}} \
+        --json /tmp/udynlink_bench_results.json
+
+# Run benchmarks for a single benchmark across all opt levels
+bench-one name target=module_target:
+    cd benchmarks && {{python_cmd}} bench_toolchain.py --target {{target}} --bench {{name}}
+
+# List available benchmark modules
+bench-list:
+    cd benchmarks && {{python_cmd}} bench_toolchain.py --list
+
+# =============================================================================
 # Development & Debug
 # =============================================================================
 
@@ -545,6 +566,12 @@ help:
     @echo "CI:"
     @echo "  just ci                      - Full CI suite (M4/M3/M7/M33/M4F on mainline QEMU)"
     @echo "  just ci-quick                - Compile-only checks"
+    @echo ""
+    @echo "BENCHMARKS:"
+    @echo "  just bench [ARGS]            - Run toolchain benchmarks (pass args to bench_toolchain.py)"
+    @echo "  just bench-list              - List available benchmark modules"
+    @echo "  just bench-one NAME          - Run a single benchmark across all opt levels"
+    @echo "  just bench-full              - Full benchmark suite with JSON output"
     @echo ""
     @echo "ENVIRONMENT VARIABLES:"
     @echo "  UDYNLINK_QEMU_BIN           - Mainline QEMU binary path"

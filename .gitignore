@@ -23,3 +23,7 @@ Makefile
 tests/xpack-qemu-arm-*
 !tests/xpack-qemu-arm-*/README.md
 tools/zig
+benchmarks/modules/*.o
+benchmarks/modules/*.elf
+benchmarks/modules/*.bin
+benchmarks/modules/*_module_data.h
