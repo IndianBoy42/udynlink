@@ -12,7 +12,8 @@
 8. [Symbol Resolution at Load Time](#symbol-resolution-at-load-time)
 9. [ABI Versioning and Architecture Tags](#abi-versioning-and-architecture-tags)
 10. [Cross-Module Calls via Runtime Thunks](#cross-module-calls-via-runtime-thunks)
-11. [Non-Contiguous Image Loading](#non-contiguous-image-loading)
+11. [Standalone Call Thunks (`udynlink_thunk`)](#standalone-call-thunks-udynlink_thunk)
+12. [Non-Contiguous Image Loading](#non-contiguous-image-loading)
 
 ---
 
@@ -694,6 +695,83 @@ The thunk is generated at load time and patched with the callee module's `ram_ba
 ### Circular Dependency Detection
 
 The dependency manager maintains a loading stack (max depth `UDYNLINK_DEP_MAX_DEPTH` = 8). If module A requires module B, and module B requires module A, the loader detects the cycle when the same module name appears on the loading stack. It returns `UDYNLINK_SYM_DEFERRED` for the circular reference, allowing the load to continue if the module handles deferred symbols gracefully.
+
+---
+
+## Standalone Call Thunks (`udynlink_thunk`)
+
+### The Problem: r9-Aware Callbacks
+
+The host must set `r9` to a module's LOT base before every call into that module. This works for direct calls via `UDYNLINK_PREPARE_CALL()` or `UDYNLINK_CALL()`, but breaks when a module function pointer must be passed to a third-party consumer (an ISR, a driver library, a timer callback) that is unaware of the r9/LOT convention. The `udynlink_thunk` optional layer solves this by creating thunks that manage `r9` automatically.
+
+### Gateway + Stub Design
+
+The thunk pool uses a two-level dispatch that is more compact than inline thunks when a module has multiple exported functions:
+
+- **Per-module gateway** (18 bytes): saves the caller's `r9`, loads the callee module's `ram_base`, branches to the function address in `r12` (IP), then restores the caller's `r9` on return:
+
+```asm
+    push.w  {r9, lr}         ; save caller's r9 and return address
+    ldr.w   r9, [pc, #4]     ; load callee's ram_base from literal pool
+    blx     ip                ; call function (address in ip from stub)
+    pop.w   {r9, pc}         ; restore r9, return to caller
+    .word   ram_base          ; callee module's LOT base
+```
+
+- **Per-function stub** (10 bytes): loads the target function address into `r12` (IP) via `movw+movt`, then branches to the module's gateway:
+
+```asm
+    movw    ip, #func_lo16   ; load low 16 bits of function address
+    movt    ip, #func_hi16   ; load high 16 bits of function address
+    b.n     gateway           ; branch to module's gateway
+```
+
+Using `r12` (IP) preserves `r0-r3` (argument registers), so stubs are transparent to the caller's argument setup. The stub-to-gateway branch uses a Thumb-16 `b.n` instruction, which has a ±2 KB range. If a stub is too far from its gateway, allocation fails.
+
+### Pool Layout
+
+Gateways are allocated from the **end** of the pool, growing downward. Stubs are allocated from the **start** of the pool, growing upward:
+
+```
+[stub1][stub2]...[free gap]...[gateway2][gateway1]
+^                   ^                       ^
+base               used                  gateway_top
+```
+
+This layout allows `udynlink_external_find_stub()` to scan only the stub region by stepping through it at `UDYNLINK_STUB_SIZE` (10-byte) intervals. The pool is full when `used >= gateway_top`.
+
+### Stub Deduplication
+
+When `udynlink_thunk_make_call()` is called, it first checks whether a stub already exists for the target function address via `udynlink_external_find_stub()`. If a matching stub is found, it is reused — no additional stub or gateway is allocated. This is important when the same module function is passed as a callback to multiple consumers.
+
+The default `udynlink_external_find_stub()` implementation scans the stub region linearly. Hosts may override it with a faster lookup (e.g., a hash table) by providing a non-weak definition.
+
+### `udynlink_thunk_make_call()`
+
+The main convenience function creates a callable thunk for any exported module symbol:
+
+```c
+udynlink_thunk_pool_t pool;
+udynlink_thunk_pool_init(&pool, thunk_buf, sizeof(thunk_buf));
+
+// Load the module first
+udynlink_module_t mod;
+udynlink_load_module(&mod, module_blob, NULL, 0, UDYNLINK_LOAD_MODE_COPY_ALL);
+
+// Create a callable thunk — no PREPARE_CALL needed
+uintptr_t thunk = udynlink_thunk_make_call(&pool, &mod, "my_callback");
+if (thunk != 0) {
+    void (*cb)(void) = (void (*)(void))thunk;
+    cb();                        // direct call, r9 handled by thunk
+    register_timer_cb(cb);      // safe to pass as callback
+}
+```
+
+The returned function pointer can be called directly or passed as a callback without any r9 management. This makes it suitable for ISRs, RTOS timer callbacks, driver registration functions, or any consumer that is unaware of udynlink's r9/LOT convention.
+
+### Relationship to `udynlink_deps`
+
+The `udynlink_deps` layer includes `udynlink_thunk.h` and delegates all thunk pool management to it. The `udynlink_external_find_stub` weak function was moved from `udynlink_deps` to `udynlink_thunk`. Hosts using the dependency system do not need to change their integration — the thunk pool is still initialized and passed in the same way.
 
 ---
 

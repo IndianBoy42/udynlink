@@ -90,6 +90,16 @@ if(TARGET udynlink_deps)
     )
 endif()
 
+if(TARGET udynlink_thunk)
+    target_compile_options(udynlink_thunk PRIVATE
+        ${UDYNLINK_PLATFORM_CFLAGS}
+        ${UDYNLINK_PLATFORM_COMPILE_OPTIONS}
+    )
+    target_compile_definitions(udynlink_thunk PRIVATE
+        ${UDYNLINK_PLATFORM_DEFINES}
+    )
+endif()
+
 # --- Include directories ---
 target_include_directories(test1.elf PRIVATE
     ${UDYNLINK_PLATFORM_INCLUDE_DIRS}
@@ -109,7 +119,7 @@ target_link_directories(test1.elf PRIVATE
     ${UDYNLINK_PLATFORM_LINK_DIRS}
 )
 
-target_link_libraries(test1.elf PRIVATE udynlink udynlink_deps)
+target_link_libraries(test1.elf PRIVATE udynlink udynlink_thunk udynlink_deps)
 
 # --- Standard C++ if any C++ sources ---
 if(UDYNLINK_PLATFORM_HAS_CXX)

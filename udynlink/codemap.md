@@ -50,6 +50,8 @@ Core C library implementing a micro dynamic linker for ARM Cortex-M MCUs. Handle
 | `udynlink.h` | Public API: data structures, error codes, function declarations. |
 | `udynlink.c` | Core implementation: load, unload, relocate, resolve, lookup, debug, `udynlink_cpp_init`. |
 | `udynlink_externals.h` | Host firmware contract: 5 functions the host MUST implement. |
+| `udynlink_thunk.h` | Thunk pool API: pool init, gateway/stub allocation, make_call, find_stub. |
+| `udynlink_thunk.c` | Thunk pool implementation: runtime-generated ARM thunks, gateway/stub templates. |
 
 ## API Additions (eh2k fork)
 - `udynlink_cpp_init(udynlink_module_t*)`: Runs C++ global constructors via `__init_array`.

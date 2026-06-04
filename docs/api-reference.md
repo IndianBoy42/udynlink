@@ -16,6 +16,7 @@
 - [Utility Functions](#utility-functions)
 - [Convenience Macros](#convenience-macros)
 - [Dependency System](#dependency-system-udynlink_depsh)
+- [Thunk System](#thunk-system-udynlink_thunkh)
 - [Call Convenience Macros](#call-convenience-macros)
 - [Host Symbol Cache](#host-symbol-cache-udynlink_host_utilsh)
 - [C++ API](#c-api-udynlinkudynlinkhpp)
@@ -1059,16 +1060,18 @@ typedef struct {
     uint8_t *base;
     size_t   size;
     size_t   used;
+    size_t   gateway_top;
 } udynlink_thunk_pool_t;
 ```
 
-RAM pool for cross-module call thunks. The host provides a contiguous buffer in executable RAM. Each cross-module function reference gets a 28-byte inline thunk allocated from this pool via `udynlink_thunk_alloc()`.
+RAM pool for call thunks. The host provides a contiguous buffer in executable RAM. Per-module gateways (18 bytes) are allocated from the end of the pool, growing downward. Per-function stubs (10 bytes) are allocated from the start of the pool, growing upward. See [Thunk System](#thunk-system-udynlink_thunkh) for full documentation.
 
 | Field | Description |
 |-------|-------------|
 | `base` | Start of the thunk RAM region (host-provided). |
 | `size` | Total size of the region in bytes. |
-| `used` | Number of bytes currently allocated. |
+| `used` | Stubs: next free offset from base (grows upward). |
+| `gateway_top` | Gateways: next free offset from base (grows downward). |
 
 ### `udynlink_thunk_pool_init`
 
@@ -1259,6 +1262,203 @@ udynlink_error_t udynlink_dep_unload(udynlink_dep_mgr_t *mgr,
 Unloads a module and deregisters it from the dependency manager. Removes the module pointer from the registry, then calls `udynlink_unload_module()`. Any thunks pointing to this module become stale and must not be called afterward.
 
 **Return value:** `UDYNLINK_OK` on success, or `UDYNLINK_ERR_INVALID_MODULE` if `mgr` or `p_mod` is `NULL`.
+
+---
+
+## Thunk System (`udynlink_thunk.h`)
+
+The `udynlink/udynlink_thunk.h` header provides an optional standalone layer for creating callable thunks that handle r9 (LOT base) switching around module function calls. It is designed to be used on top of the core loader without modifying it. Hosts that do not need thunks can omit this header entirely.
+
+The dependency system (`udynlink_deps`) includes `udynlink_thunk.h` and delegates all thunk pool management to it. The thunk mechanism can also be used independently of the dependency system — for example, to create callable function pointers for module symbols that can be passed as callbacks without r9 management.
+
+### Thunk Size Constants
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `UDYNLINK_GATEWAY_SIZE` | `18` | Size of a per-module gateway thunk in bytes. |
+| `UDYNLINK_STUB_SIZE` | `10` | Size of a per-function stub thunk in bytes. |
+
+### `udynlink_thunk_pool_t`
+
+```c
+typedef struct {
+    uint8_t *base;
+    size_t   size;
+    size_t   used;
+    size_t   gateway_top;
+} udynlink_thunk_pool_t;
+```
+
+RAM pool for call thunks. The host provides a contiguous buffer in executable RAM. Per-module gateways (18 bytes) are allocated from the **end** of the pool, growing downward. Per-function stubs (10 bytes) are allocated from the **start** of the pool, growing upward. This separation allows `udynlink_external_find_stub()` to scan only stubs by stepping through the lower region at `UDYNLINK_STUB_SIZE` intervals.
+
+Pool layout:
+
+```
+[stub1][stub2]...[free gap]...[gateway2][gateway1]
+^                   ^                       ^
+base               used                  gateway_top
+```
+
+The pool is full when `used >= gateway_top`.
+
+Total per module with N function refs: `18 + 10*N` bytes.
+
+| Field | Description |
+|-------|-------------|
+| `base` | Start of the thunk RAM region (host-provided). |
+| `size` | Total size of the region in bytes. |
+| `used` | Stubs: next free offset from base (grows upward). |
+| `gateway_top` | Gateways: next free offset from base (grows downward). |
+
+### `udynlink_thunk_pool_init`
+
+```c
+void udynlink_thunk_pool_init(udynlink_thunk_pool_t *pool,
+                              uint8_t *buf, size_t sz);
+```
+
+Initializes a thunk pool. `buf` must point to RAM that is readable and executable by the MCU (e.g., SRAM or ITCM).
+
+**Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `pool` | Pointer to the pool structure to initialise. |
+| `buf` | Host-provided RAM buffer for thunks. |
+| `sz` | Size of `buf` in bytes. |
+
+### `udynlink_thunk_alloc`
+
+```c
+void *udynlink_thunk_alloc(udynlink_thunk_pool_t *pool, size_t n);
+```
+
+Allocates `n` bytes from the thunk pool (stubs region). Returns a pointer to the allocated region, or `NULL` if the pool is exhausted. The pool is a simple bump allocator; there is no per-allocation free. When the pool is reset (via `udynlink_thunk_pool_init`), all previously allocated thunks become invalid.
+
+**Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `pool` | Thunk pool to allocate from. |
+| `n` | Number of bytes to allocate. |
+
+**Return value:** Pointer to the allocated region, or `NULL` if the pool is full.
+
+### `udynlink_thunk_find_gateway`
+
+```c
+uint8_t *udynlink_thunk_find_gateway(const udynlink_thunk_pool_t *pool,
+                                      uint32_t ram_base);
+```
+
+Finds an existing gateway for a module by its `ram_base` value. Scans the gateway region of the thunk pool for a gateway whose embedded `ram_base` literal matches the given value.
+
+**Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `pool` | Thunk pool to search. |
+| `ram_base` | The module's `ram_base` value to match. |
+
+**Return value:** Pointer to the matching gateway, or `NULL` if not found.
+
+### `udynlink_thunk_alloc_gateway`
+
+```c
+uint8_t *udynlink_thunk_alloc_gateway(udynlink_thunk_pool_t *pool,
+                                       uint32_t ram_base);
+```
+
+Allocates a gateway from the top of the thunk pool. The gateway is a small ARM Thumb-2 function that saves the caller's `r9`, loads the callee module's `ram_base`, calls the target via `blx ip`, then restores the caller's `r9`:
+
+```asm
+push.w  {r9, lr}           ; save caller's r9 and return address
+ldr.w   r9, [pc, #4]       ; load ram_base from literal
+blx     ip                  ; call function (address in ip from stub)
+pop.w   {r9, pc}            ; restore r9, return to caller
+.word   ram_base            ; callee module's LOT base
+```
+
+**Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `pool` | Thunk pool to allocate from. |
+| `ram_base` | The module's `ram_base` value to embed in the gateway. |
+
+**Return value:** Pointer to the allocated gateway, or `NULL` if the pool is full.
+
+### `udynlink_thunk_alloc_stub`
+
+```c
+uintptr_t udynlink_thunk_alloc_stub(udynlink_thunk_pool_t *pool,
+                                     uint32_t func_addr,
+                                     const uint8_t *gateway);
+```
+
+Allocates a stub and links it to a gateway. The stub is a small ARM Thumb-2 code fragment that loads the target function address into `r12` (IP), then branches to the module's gateway:
+
+```asm
+movw    ip, #func_lo16      ; load low 16 bits of func_addr
+movt    ip, #func_hi16      ; load high 16 bits of func_addr
+b.n     gateway             ; branch to module's gateway
+```
+
+Using `r12` (IP) for the function address preserves `r0-r3` (argument registers), so the thunk is transparent to the caller's argument setup.
+
+**Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `pool` | Thunk pool to allocate from. |
+| `func_addr` | Target function address (absolute, as returned by `udynlink_lookup_symbol`). |
+| `gateway` | Gateway address the stub will branch to. |
+
+**Return value:** Stub address (with Thumb bit set) on success, `0` on failure (pool full or stub-to-gateway branch offset exceeds the ±2 KB range of `b.n`).
+
+### `udynlink_external_find_stub`
+
+```c
+uintptr_t udynlink_external_find_stub(const udynlink_thunk_pool_t *pool,
+                                       uint32_t func_addr);
+```
+
+Finds an existing thunk stub for a function address. Called by `udynlink_thunk_make_call()` (and optionally by the host) to check whether a stub has already been allocated for a given function address. The default weak implementation scans the thunk pool linearly; hosts may override with a faster lookup (e.g., hash table) when the pool is large.
+
+**Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `pool` | Thunk pool to search. |
+| `func_addr` | Target function address (absolute, as returned by `udynlink_lookup_symbol`). |
+
+**Return value:** Stub address (with Thumb bit set) if a matching stub exists, `0` otherwise.
+
+**Note:** A weak default that scans the pool is provided. Hosts only need to override this for performance; correctness is not affected by the lookup speed. This function was previously part of `udynlink_deps` and has moved to `udynlink_thunk`.
+
+### `udynlink_thunk_make_call`
+
+```c
+uintptr_t udynlink_thunk_make_call(udynlink_thunk_pool_t *pool,
+                                   const udynlink_module_t *p_mod,
+                                   const char *sym_name);
+```
+
+Creates a callable thunk for a module's exported symbol. Looks up `sym_name` in `p_mod`, allocates a gateway (if one does not already exist for this module) and a stub in the thunk pool, and returns a function pointer that can be called directly without any r9 management (`UDYNLINK_PREPARE_CALL`, `UDYNLINK_CALL`, etc. are not needed).
+
+This makes module functions safe to pass as callbacks to ISRs, third-party libraries, or any consumer that is unaware of udynlink's r9/LOT convention.
+
+The function checks for existing stubs via `udynlink_external_find_stub()` for deduplication — if a stub already exists for the target function address, it is reused.
+
+**Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `pool` | Thunk pool to allocate from. |
+| `p_mod` | Pointer to the loaded module. |
+| `sym_name` | Null-terminated symbol name to create a thunk for. |
+
+**Return value:** Stub address (with Thumb bit set) on success, `0` on failure. Fails if the symbol is not found, is a data symbol, the pool is full, or the stub-to-gateway branch offset exceeds ±2 KB.
 
 ---
 

@@ -15,7 +15,7 @@ This repository is the **eh2k fork** of the original udynlink project. It adds C
 ## Directory Map (Aggregated)
 | Directory | Responsibility Summary | Detailed Map |
 |-----------|------------------------|--------------|
-| `udynlink/` | Core dynamic linker runtime: module loading, relocation, symbol resolution, unloading, C++ constructor init, cross-module thunk pool. | [View Map](udynlink/codemap.md) |
+| `udynlink/` | Core dynamic linker runtime: module loading, relocation, symbol resolution, unloading, C++ constructor init, cross-module thunk pool, standalone call thunks. | [View Map](udynlink/codemap.md) |
 | `scripts/` | Build toolchain: compile C/C++ to PIC, wrap exports, link with `--gc-sections`, parse ELF, emit loadable binary images. | [View Map](scripts/codemap.md) |
 | `tests/` | QEMU-based integration test harness: test driver, per-test modules (including cross-module deps), host firmware, and validation utils. | [View Map](tests/codemap.md) |
 
@@ -39,13 +39,24 @@ This repository is the **eh2k fork** of the original udynlink project. It adds C
 
 ### Cross-Module Dependency System (`udynlink_deps`)
 - New files: `udynlink/udynlink_deps.h` (public API) and `udynlink/udynlink_deps.c` (implementation)
-- Thunk pool: `udynlink_thunk_pool_t` / `udynlink_thunk_pool_init()` / `udynlink_thunk_alloc()` — bump allocator in executable RAM
+- Thunk pool: `udynlink_thunk_pool_t` / `udynlink_thunk_pool_init()` / `udynlink_thunk_alloc()` — bump allocator in executable RAM (now provided by `udynlink_thunk`)
+- `udynlink_external_find_stub` — weak function for stub deduplication (now provided by `udynlink_thunk`)
 - Dependency manager: `udynlink_dep_mgr_t` / `udynlink_dep_mgr_init()` — tracks loaded modules, detects circular dependencies (max depth 8)
 - Resolution helpers: `udynlink_dep_resolve_dependency()`, `udynlink_dep_resolve_func()`, `udynlink_dep_resolve_data()` — called from host's `udynlink_external_resolve_symbol()`
 - Load/unload wrappers: `udynlink_dep_load()` / `udynlink_dep_unload()` — auto-register modules, push/pop loading stack
 - Thunk template: 28-byte ARM Thumb-2 inline function that saves caller's `r9`, sets callee's `r9` via `ram_base`, calls target via `blx ip`, then restores caller's `r9`
 - Uses `r12` (IP) for target function address to avoid clobbering `r0-r3` argument registers
 - Test: `tests/test-cross-module/` — validates cross-module calls between `mod_math` and `mod_app` across all load modes and optimization levels
+
+### Standalone Call Thunks (`udynlink_thunk`)
+- New files: `udynlink/udynlink_thunk.h` (public API) and `udynlink/udynlink_thunk.c` (implementation)
+- Extracts the thunk pool and gateway/stub allocation from `udynlink_deps` into a reusable standalone layer
+- Two-level dispatch: per-module gateway (18 bytes) + per-function stub (10 bytes)
+- Gateways grow downward from pool end, stubs grow upward from pool start
+- Stub deduplication: `udynlink_external_find_stub()` — weak function, overridable for performance
+- `udynlink_thunk_make_call()` — convenience function that creates a callable thunk for a module symbol, usable without r9 management
+- Lower-level primitives: `udynlink_thunk_pool_init()`, `udynlink_thunk_alloc()`, `udynlink_thunk_find_gateway()`, `udynlink_thunk_alloc_gateway()`, `udynlink_thunk_alloc_stub()`
+- Test: `tests/test-call-thunk/` — validates standalone call thunks across all load modes
 
 ### Non-Contiguous Image Loading
 - New API: `udynlink_load_module_image()` loads modules from a `udynlink_module_image_t` descriptor with per-section pointers, enabling loading from SD card, SPI flash, decompressed buffers, or any non-contiguous source

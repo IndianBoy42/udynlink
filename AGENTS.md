@@ -24,7 +24,7 @@ These principles govern all development decisions. When in doubt, refer back to 
 | **Usage-agnostic** | Bootloaders, plugins, OTA patching, scripting FFI, LGPL compliance — all equally first-class. No use case is privileged in the API. |
 | **Flexible** | Three load modes, non-contiguous image loading, low-level relocation primitives, deferred symbols, incremental linking, direct symbol patching. The host can build any pipeline on top. |
 | **Minimal overhead** | No heap allocation when the host provides a buffer. No internal locking. No hidden state. `udynlink_module_t` is 24 bytes. |
-| **Zero-cost optional features** | `udynlink_deps`, `udynlink_hash`, `udynlink_call`, `udynlink_host_utils` — separate headers linked only if used. Unused optional features compile to zero code and zero RAM. |
+| **Zero-cost optional features** | `udynlink_deps`, `udynlink_thunk`, `udynlink_hash`, `udynlink_call`, `udynlink_host_utils` — separate headers linked only if used. Unused optional features compile to zero code and zero RAM. |
 | **Library, not framework** | You call udynlink; udynlink never calls you back except through the five explicit callbacks you implement. No main loop, no registration, no hidden threads. |
 
 ### Checking a change against the principles
@@ -46,7 +46,7 @@ All user-facing documentation lives under `docs/` and is summarized in `docs/REA
 | `docs/writing-modules.md` | Creating loadable C/C++ modules, consuming symbols, mkmodule reference |
 | `docs/api-reference.md` | Complete reference for all public functions, structs, macros, and callbacks |
 | `docs/examples.md` | Working code examples for every major feature |
-| `docs/testing.md` | Running tests, adding test cases and platforms, debugging |
+| `docs/testing.md` | Running tests, adding test cases and platforms, debugging **MUST READ before testing** |
 
 > **Always keep documentation in sync.** If you change code, public APIs, test behavior, build commands, or toolchain requirements, update the corresponding `docs/*.md` file(s) before finishing the task. `AGENTS.md` itself must also be updated if build/test commands, architecture constraints, or the platform matrix change.
 
@@ -159,6 +159,7 @@ The platform is selected via `-DUDYNLINK_PLATFORM=<name>` (default: `stm32f429_d
 | `udynlink_externals.h` | Core (required) | `udynlink_external_malloc`, `udynlink_external_free`, `udynlink_external_vprintf`, `udynlink_external_resolve_symbol`, `udynlink_external_is_pointer_in_ram` | Always (host must implement) |
 | `udynlink_call.h` | Optional (inline) | `udynlink_func_t`, `udynlink_resolve_func()`, `UDYNLINK_CALL`, `UDYNLINK_CALL_MODULE_FUNC` | Convenient r9 save/restore around module calls |
 | `udynlink_deps.h` | Optional (separate .c) | Cross-module thunks, dependency tracking, circular detection, `UDYNLINK_REQUIRES` | Modules that call other modules |
+| `udynlink_thunk.h` | Optional (separate .c) | Thunk pool, gateway/stub allocation, `udynlink_thunk_make_call()`, `udynlink_external_find_stub()` | Creating callable function pointers for module symbols without r9 management |
 | `udynlink_hash.h` | Optional (inline) | GNU hash table + bloom filter for O(1) host symbol resolution | Hosts exporting many symbols |
 | `udynlink_host_utils.h` | Optional (inline) | Tiny host-side symbol cache with LRU eviction | Speeding up repeated `udynlink_external_resolve_symbol` calls |
 | `udynlink.hpp` | Optional (C++17 inline) | `Module` (RAII lifecycle), `Func<Sig>` (typed function handle), `Context` (RAII r9 manager) | C++ hosts wanting type safety and automatic cleanup |
@@ -211,7 +212,7 @@ All tests validate all three modes by default:
 - `UDYNLINK_LOAD_MODE_XIP`: copy only data to RAM; execute code in place from flash
 
 ### Dependency System (`udynlink_deps`)
-The optional `udynlink/udynlink_deps.h` layer provides cross-module function calls via runtime-generated RAM thunks. Two-level dispatch: per-module gateways (18 bytes) and per-function stubs (10 bytes). Stubs load the target address into `r12` (IP) via `movw+movt`, then branch to the module's shared gateway which switches `r9` and calls the function. This preserves `r0-r3` argument registers.
+The optional `udynlink/udynlink_deps.h` layer provides cross-module function calls via runtime-generated RAM thunks. The thunk pool and gateway/stub allocation are implemented in the `udynlink_thunk` layer, which `udynlink_deps` includes and delegates to. The thunk mechanism can also be used independently of the dependency system via `udynlink_thunk_make_call()` to create callable function pointers for module symbols without r9 management. Two-level dispatch: per-module gateways (18 bytes) and per-function stubs (10 bytes). Stubs load the target address into `r12` (IP) via `movw+movt`, then branch to the module's shared gateway which switches `r9` and calls the function. This preserves `r0-r3` argument registers.
 
 - Modules declare dependencies with `UDYNLINK_REQUIRES(mod_name)` which emits a `.udynlink.mod.requires.{name}` symbol.
 - The host's `udynlink_external_resolve_symbol()` checks `udynlink_dep_is_dependency()` first, then `udynlink_dep_resolve_func()` for functions, then `udynlink_dep_resolve_data()` for data, and finally falls back to host-native symbols.

@@ -14,6 +14,7 @@
 - [Custom Loading Pipeline](#custom-loading-pipeline)
 - [Pre-Computing RAM Requirements](#pre-computing-ram-requirements)
 - [C++ Host with RAII Module and Typed Function Handles](#c-host-with-raii-module-and-typed-function-handles)
+- [Call Thunks: Passing Module Functions as Callbacks](#call-thunks-passing-module-functions-as-callbacks)
 
 ---
 
@@ -1054,3 +1055,145 @@ int main(void) {
 - **`Module`** is movable but not copyable. Use `std::move()` or `swap()` to transfer ownership.
 - You can access the raw C handle via `mod.handle()` to call any C API function.
 - The C++ API is a header-only layer on top of the C API. It adds zero code if you don't include `udynlink.hpp`.
+
+---
+
+## Call Thunks: Passing Module Functions as Callbacks
+
+The `udynlink_thunk` layer creates callable function pointers for module symbols that handle `r9` switching automatically. This is essential when passing module functions as callbacks to ISRs, timer APIs, or any consumer that is unaware of udynlink's r9/LOT convention.
+
+### Module source (`mod_math.c`)
+
+```c
+#include <stdint.h>
+
+int math_add(int a, int b) {
+    return a + b;
+}
+
+int math_mul(int a, int b) {
+    return a * b;
+}
+```
+
+Compile the module:
+
+```bash
+cd scripts
+python3 mkmodule --gen-c-header --header-path ../host_firmware \
+    ../modules/mod_math.c
+```
+
+### Host firmware (`host_thunk.c`)
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+#include <stdarg.h>
+
+#include "udynlink.h"
+#include "udynlink_thunk.h"
+#include "mod_math_module_data.h"
+
+/* -------------------------------------------------------------------------- */
+/*  External callbacks required by udynlink                                   */
+/* -------------------------------------------------------------------------- */
+
+void *udynlink_external_malloc(size_t size) {
+    return malloc(size);
+}
+
+void udynlink_external_free(void *p) {
+    free(p);
+}
+
+void udynlink_external_vprintf(const char *s, va_list va) {
+    vprintf(s, va);
+}
+
+int udynlink_external_is_pointer_in_ram(const void *p) {
+    uintptr_t addr = (uintptr_t)p;
+    return (addr >= 0x20000000 && addr < 0x20010000);
+}
+
+uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const char *name) {
+    (void)p_mod;
+    return 0;   /* mod_math has no extern symbols */
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Thunk pool (executable RAM)                                               */
+/* -------------------------------------------------------------------------- */
+
+#define THUNK_POOL_SIZE 512
+
+static uint8_t g_thunk_buf[THUNK_POOL_SIZE];
+static udynlink_thunk_pool_t g_thunk_pool;
+
+/* -------------------------------------------------------------------------- */
+/*  Main application                                                          */
+/* -------------------------------------------------------------------------- */
+
+int main(void) {
+    /* Initialize the thunk pool (must be in executable RAM) */
+    udynlink_thunk_pool_init(&g_thunk_pool, g_thunk_buf, sizeof(g_thunk_buf));
+
+    /* Load the module */
+    udynlink_module_t mod;
+    memset(&mod, 0, sizeof(mod));
+
+    udynlink_error_t err = udynlink_load_module(&mod, mod_math_module_data,
+                                NULL, 0, UDYNLINK_LOAD_MODE_COPY_ALL);
+    if (err != UDYNLINK_OK) {
+        printf("Load failed: %s\n", udynlink_error_msg(&err));
+        return 1;
+    }
+
+    /* Create a callable thunk for math_add — no UDYNLINK_PREPARE_CALL needed */
+    uintptr_t thunk_add = udynlink_thunk_make_call(&g_thunk_pool, &mod, "math_add");
+    if (thunk_add == 0) {
+        printf("Failed to create thunk for math_add\n");
+        udynlink_unload_module(&mod);
+        return 1;
+    }
+
+    /* Call the function pointer directly — the thunk handles r9 switching */
+    int (*p_add)(int, int) = (int (*)(int, int))thunk_add;
+    printf("thunked math_add(3, 4) = %d\n", p_add(3, 4));   /* 7 */
+
+    /* Create a thunk for a second function */
+    uintptr_t thunk_mul = udynlink_thunk_make_call(&g_thunk_pool, &mod, "math_mul");
+    if (thunk_mul != 0) {
+        int (*p_mul)(int, int) = (int (*)(int, int))thunk_mul;
+        printf("thunked math_mul(5, 6) = %d\n", p_mul(5, 6));  /* 30 */
+    }
+
+    /* Pass the function pointer as a callback — safe for ISRs, drivers, etc. */
+    void some_driver_register_callback(void (*cb)(void));
+    /* some_driver_register_callback((void (*)(void))thunk_add); */
+
+    /* Requesting the same function again returns the same stub (deduplication) */
+    uintptr_t thunk_add2 = udynlink_thunk_make_call(&g_thunk_pool, &mod, "math_add");
+    if (thunk_add == thunk_add2) {
+        printf("Stub deduplication: same thunk returned for math_add\n");
+    }
+
+    printf("Pool usage: %u bytes stubs, %u bytes gateway_top\n",
+           (unsigned)g_thunk_pool.used, (unsigned)g_thunk_pool.gateway_top);
+
+    udynlink_unload_module(&mod);
+    return 0;
+}
+```
+
+### Key points
+
+- **No r9 management needed.** The thunk handles `r9` save/set/restore internally. Call the function pointer directly without `UDYNLINK_PREPARE_CALL()` or `UDYNLINK_CALL()`.
+- **Safe for callbacks.** The returned pointer can be passed to ISRs, RTOS timer APIs, driver registration functions, or any consumer that calls the function on its own schedule.
+- **Stub deduplication.** Calling `udynlink_thunk_make_call()` for the same function returns the same stub address — no extra memory is consumed.
+- **Pool must be in executable RAM.** Cortex-M requires the thunk code to reside in SRAM or ITCM. A static array in `.data` is typically sufficient.
+- **Stubs become stale after unload.** If you unload a module, any thunks targeting it must not be called. Reset the pool with `udynlink_thunk_pool_init()` if you need to reclaim the memory.
+
+See also [API Reference: Thunk System](api-reference.md#thunk-system-udynlink_thunkh) and [How It Works: Standalone Call Thunks](how-it-works.md#standalone-call-thunks-udynlink_thunk).

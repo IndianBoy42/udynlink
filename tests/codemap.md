@@ -61,6 +61,7 @@ Integration test suite for udynlink, validating the full pipeline from C/C++ sou
 | `test-local-ptrs/` | Local pointer handling test. |
 | `test-multiple-relocs/` | Multiple relocations to the same symbol (regression test for eh2k [10]). |
 | `test-three-files/` | Multi-source module compilation test. |
+| `test-call-thunk/` | Test for standalone call thunks via udynlink_thunk_make_call. |
 
 ## Key Configuration
 - **Default timeout**: 5 seconds per QEMU run (`default_qemu_timeout` in `test_driver.py`).

@@ -29,7 +29,7 @@
 #ifndef __UDYNLINK_DEPS_H__
 #define __UDYNLINK_DEPS_H__
 
-#include "udynlink.h"
+#include "udynlink_thunk.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -48,10 +48,6 @@ extern "C" {
 
 /* Maximum depth of the circular-dependency detection stack. */
 #define UDYNLINK_DEP_MAX_DEPTH          8
-
-/* Thunk sizes in bytes. */
-#define UDYNLINK_GATEWAY_SIZE           18
-#define UDYNLINK_STUB_SIZE              10
 
 /* ─── Module writer API ─────────────────────────────────────────────── */
 
@@ -84,60 +80,6 @@ extern "C" {
         (void)f; \
     }
 
-/* ─── Thunk pool ───────────────────────────────────────────────────── */
-
-/**
- * @brief RAM pool for cross-module call thunks.
- *
- * The host provides a contiguous RAM buffer.  Per-module gateways
- * (18 bytes) are allocated from the END of the pool, growing
- * downward.  Per-function stubs (10 bytes) are allocated from the
- * START of the pool, growing upward.  This separation allows
- * udynlink_external_find_stub() to scan only stubs by stepping
- * through the lower region at STUB_SIZE intervals.
- *
- * Pool layout:
- *   [stub1][stub2]...[free gap]...[gateway2][gateway1]
- *   ^                   ^                       ^
- *   base               used                  gateway_top
- *
- * The pool is full when used >= gateway_top.
- *
- * Total per module with N cross-module function refs:
- *   18 + 10*N bytes.
- */
-typedef struct {
-    /** Base of the thunk RAM region (host-provided). */
-    uint8_t *base;
-    /** Total size of the region in bytes. */
-    size_t size;
-    /** Stubs: next free offset from base (grows upward). */
-    size_t used;
-    /** Gateways: next free offset from base (grows downward). */
-    size_t gateway_top;
-} udynlink_thunk_pool_t;
-
-/**
- * @brief Initialise a thunk pool.
- *
- * @param pool Pointer to the pool structure to initialise.
- * @param buf  Host-provided RAM buffer for thunks.
- * @param sz   Size of @p buf in bytes.
- */
-void udynlink_thunk_pool_init(udynlink_thunk_pool_t *pool,
-                              uint8_t *buf, size_t sz);
-
-/**
- * @brief Allocate @p n bytes from the thunk pool.
- *
- * @param pool Thunk pool to allocate from.
- * @param n    Number of bytes to allocate.
- *
- * @return Pointer to the allocated region, or NULL if the pool is
- *         full.
- */
-void *udynlink_thunk_alloc(udynlink_thunk_pool_t *pool, size_t n);
-
 /* ─── Dependency manager ───────────────────────────────────────────── */
 
 /**
@@ -169,29 +111,6 @@ typedef struct {
  *         dependency could not be loaded.
  */
 udynlink_module_t *udynlink_external_dep_load(const char *name);
-
-/**
- * @brief Find an existing thunk stub for a cross-module function.
- *
- * Called by udynlink_dep_resolve_func() to check whether a stub has
- * already been allocated for a given function address.  The default
- * weak implementation scans the thunk pool linearly; hosts may
- * override with a faster lookup (e.g. hash table) when the pool is
- * large.
- *
- * @param pool      Thunk pool to search.
- * @param func_addr Target function address (absolute, as returned by
- *                  udynlink_lookup_symbol).
- *
- * @return Stub address (with Thumb bit set) if a matching stub exists,
- *         0 otherwise.
- *
- * @note A weak default that scans the pool is provided.  Hosts only
- *       need to override this for performance; correctness is not
- *       affected by the lookup speed.
- */
-uintptr_t udynlink_external_find_stub(const udynlink_thunk_pool_t *pool,
-                                       uint32_t func_addr);
 
 /**
  * @brief Dependency manager state.

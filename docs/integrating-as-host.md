@@ -10,6 +10,7 @@ This guide is for firmware developers who want to integrate the udynlink micro d
 - [Implementing the External Callbacks](#implementing-the-external-callbacks)
 - [Deferred Dependencies and Symbols](#deferred-dependencies-and-symbols)
 - [Integrating the Dependency System](#integrating-the-dependency-system-udynlink_deps)
+- [Standalone Call Thunks](#standalone-call-thunks-udynlink_thunk)
 - [The LOT Base Address Convention](#the-lot-base-address-convention)
 - [Building and Using the Host Symbol Table](#building-and-using-the-host-symbol-table)
 - [Hash-Based Symbol Resolution](#hash-based-symbol-resolution)
@@ -497,6 +498,76 @@ Estimate the maximum number of cross-module function references your system will
 ```
 
 There is no thunk free API. When a module is unloaded, its thunks become stale. If you need to reclaim thunk RAM, reset the pool by calling `udynlink_thunk_pool_init()` again (this invalidates all existing thunks, so only do it when no modules are loaded).
+
+---
+
+## Standalone Call Thunks (`udynlink_thunk`)
+
+The `udynlink_thunk` layer can be used independently of the dependency system when you need callable function pointers for module symbols without managing `r9`. The primary use case is passing module functions as callbacks to ISRs, timer APIs, driver registration functions, or any consumer that is unaware of udynlink's r9/LOT convention.
+
+### When to Use It
+
+- You need to pass a module function pointer to an ISR or RTOS callback.
+- A driver or library API requires a function pointer that it will call on its own schedule.
+- You want to avoid wrapping every call site with `UDYNLINK_PREPARE_CALL()` or `UDYNLINK_CALL()`.
+- You do **not** need cross-module dependency tracking — just a simple callable pointer.
+
+### Required Setup
+
+Initialize the thunk pool before creating any thunks:
+
+```c
+#include "udynlink.h"
+#include "udynlink_thunk.h"
+
+#define THUNK_POOL_SIZE 512
+
+static uint8_t g_thunk_buf[THUNK_POOL_SIZE];
+static udynlink_thunk_pool_t g_thunk_pool;
+
+void init_thunks(void) {
+    udynlink_thunk_pool_init(&g_thunk_pool, g_thunk_buf, sizeof(g_thunk_buf));
+}
+```
+
+The thunk pool buffer must be in executable RAM (SRAM or ITCM on Cortex-M).
+
+### Creating and Using a Call Thunk
+
+```c
+udynlink_module_t mod;
+/* ... load module ... */
+
+/* Create a callable thunk — no UDYNLINK_PREPARE_CALL needed */
+uintptr_t thunk = udynlink_thunk_make_call(&g_thunk_pool, &mod, "timer_callback");
+if (thunk == 0) {
+    /* symbol not found, pool full, or branch offset out of range */
+    return;
+}
+
+/* Call directly — the thunk handles r9 switching */
+void (*cb)(void) = (void (*)(void))thunk;
+cb();
+
+/* Or pass as a callback to an ISR, RTOS timer, driver, etc. */
+register_timer_callback(cb);
+```
+
+### Thunk Pool Sizing
+
+Each module with N thunked function references consumes `18 + 10*N` bytes (one gateway plus N stubs). Stubs are deduplicated — if you call `udynlink_thunk_make_call()` for the same function twice, the same stub is returned and no additional memory is used.
+
+```c
+/* Example: 2 modules, each with 3 callback functions */
+#define MAX_MODULES     2
+#define MAX_FUNCS      3
+#define THUNK_POOL_SIZE (MAX_MODULES * UDYNLINK_GATEWAY_SIZE + \
+                         MAX_MODULES * MAX_FUNCS * UDYNLINK_STUB_SIZE)
+```
+
+### Relationship to `udynlink_deps`
+
+The `udynlink_deps` layer includes `udynlink_thunk.h` and delegates all thunk pool management to it. If you are already using the dependency system, you do not need a separate thunk pool — the same pool is shared. The `udynlink_external_find_stub()` weak function has moved from `udynlink_deps` to `udynlink_thunk`, but this is transparent to existing integration code.
 
 ---
 
