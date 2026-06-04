@@ -1372,15 +1372,17 @@ A single cache entry mapping a symbol name to its resolved address.
 static inline uintptr_t udynlink_host_sym_cache_lookup(
     udynlink_host_sym_cache_entry_t *cache,
     size_t cache_size,
+    const udynlink_module_t *p_mod,
     const char *name,
-    uintptr_t (*fallback)(const char *name));
+    uintptr_t (*fallback)(const udynlink_module_t *, const char *));
 ```
 
-Looks up a symbol in the cache. On a miss, calls `fallback(name)` and inserts the result. Uses a simple hash index for O(1) average lookup.
+Looks up a symbol in the cache. On a miss, calls `fallback(p_mod, name)` and inserts the result. Uses a simple hash index for O(1) average lookup.
 
 **Parameters:**
 - `cache` — Array of `udynlink_host_sym_cache_entry_t` entries (at least `cache_size` elements).
 - `cache_size` — Number of entries in `cache` (typically `UDYNLINK_HOST_SYM_CACHE_SIZE`).
+- `p_mod` — The module being loaded or queried, passed through to `fallback`.
 - `name` — Symbol name to resolve.
 - `fallback` — Function to call on cache miss (typically your full symbol resolver).
 
@@ -1582,11 +1584,15 @@ Debug/logging output function.
 ### `udynlink_external_resolve_symbol`
 
 ```c
-uintptr_t udynlink_external_resolve_symbol(const char *name);
+uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const char *name);
 ```
 
 Resolves an external symbol name to an address.
 
-**Called by:** The relocation engine during load and post-link re-resolution for every `UDYNLINK_SYM_TYPE_EXTERN` symbol.
+**Called by:** The relocation engine during load and post-link re-resolution for every `UDYNLINK_SYM_TYPE_EXTERN` symbol. Also called by `udynlink_lookup_symbol()` when resolving weak symbols.
 
-**Semantics:** Must return the 32-bit address of the named symbol, `0` if the symbol is unknown, or `UDYNLINK_SYM_DEFERRED` if the symbol is known but should not be resolved yet. This is the **only** symbol resolution path; there is no separate tier for dependencies or critical symbols.
+**Parameters:**
+- `p_mod` — the module being loaded or queried, allowing per-module resolution decisions.
+- `name` — the symbol name to resolve.
+
+**Semantics:** Must return the address of the named symbol, `0` if the symbol is unknown, or `UDYNLINK_SYM_DEFERRED` if the symbol is known but should not be resolved yet. This is the **only** symbol resolution path; there is no separate tier for dependencies or critical symbols.

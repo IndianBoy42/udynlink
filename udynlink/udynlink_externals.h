@@ -23,6 +23,7 @@
 #include "stdint.h"
 
 struct _udynlink_module_t;
+typedef struct _udynlink_module_t udynlink_module_t;
 
 /**
  * @brief Host integration callbacks.
@@ -106,11 +107,16 @@ void udynlink_external_vprintf(const char *s, va_list va);
  * @brief Resolve a foreign symbol.
  *
  * Called during udynlink_load_module() for each unresolved extern
- * symbol.  This is the sole resolution hook; the host is responsible
+ * symbol, and during udynlink_lookup_symbol() for weak symbols.
+ * This is the sole resolution hook; the host is responsible
  * for all symbol lookup logic (e.g. hash table, linear search, or
  * dynamic resolution).
  *
- * @param name Null-terminated symbol name.
+ * @param p_mod Pointer to the module being loaded or queried.
+ *              May be consulted to implement per-module symbol
+ *              resolution policies.  The module is partially
+ *              initialised at load time (p_header and p_ram are set).
+ * @param name  Null-terminated symbol name.
  *
  * @return The absolute address of the symbol if the host provides it,
  *         ::UDYNLINK_SYM_DEFERRED to defer resolution to a later
@@ -121,7 +127,7 @@ void udynlink_external_vprintf(const char *s, va_list va);
  *       Hosts that load modules without external symbols do not need
  *       to override it.
  */
-uintptr_t udynlink_external_resolve_symbol(const char *name);
+uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const char *name);
 
 /**
  * @brief Convenience macro for building host symbol tables.

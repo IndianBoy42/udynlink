@@ -73,8 +73,6 @@ int memcmp(const void* s1, const void* s2, size_t n) {
 /*  Host integration hooks (weak → udynlink_external_*)                      */
 /* -------------------------------------------------------------------------- */
 
-#include "udynlink_externals.h"
-
 __attribute__((weak)) void* wasm_rt_malloc(size_t size) {
     return udynlink_external_malloc(size);
 }
@@ -108,10 +106,11 @@ __attribute__((weak)) void wasm_rt_trap_handler(wasm_rt_trap_t code) {
     (void)code;
 }
 
-__attribute__((weak)) void* wasm_rt_resolve_import(const char* module,
+__attribute__((weak)) void* wasm_rt_resolve_import(const udynlink_module_t *p_mod,
+                                                    const char* module,
                                                     const char* name) {
     (void)module;
-    return (void*)udynlink_external_resolve_symbol(name);
+    return (void*)udynlink_external_resolve_symbol(p_mod, name);
 }
 
 /* -------------------------------------------------------------------------- */

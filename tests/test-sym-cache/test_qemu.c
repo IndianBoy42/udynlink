@@ -13,7 +13,8 @@ int host_func(int x) {
     return x * 10;
 }
 
-static uintptr_t real_resolver(const char *name) {
+static uintptr_t real_resolver(const udynlink_module_t *p_mod, const char *name) {
+    (void)p_mod;
     host_func_call_count++;
     if (!strcmp(name, "host_func"))
         return (uintptr_t)&host_func;
@@ -25,7 +26,7 @@ static udynlink_host_sym_cache_entry_t g_sym_cache[UDYNLINK_HOST_SYM_CACHE_SIZE]
 // Override the weak test_resolve_symbol to plug in the cache
 uintptr_t test_resolve_symbol(const char *name) {
     return udynlink_host_sym_cache_lookup(
-        g_sym_cache, UDYNLINK_HOST_SYM_CACHE_SIZE, name, real_resolver);
+        g_sym_cache, UDYNLINK_HOST_SYM_CACHE_SIZE, NULL, name, real_resolver);
 }
 
 int test_qemu(void) {

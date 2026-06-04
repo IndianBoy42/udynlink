@@ -285,12 +285,12 @@ void udynlink_external_vprintf(const char *s, va_list va) {
 ### e. `udynlink_external_resolve_symbol`
 
 ```c
-uint32_t udynlink_external_resolve_symbol(const char *name);
+uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const char *name);
 ```
 
-**When it is called:** During relocation in `udynlink_load_module()` and `udynlink_load_module_image()`, for every `UDYNLINK_SYM_TYPE_EXTERN` symbol.
+**When it is called:** During relocation in `udynlink_load_module()` and `udynlink_load_module_image()`, for every `UDYNLINK_SYM_TYPE_EXTERN` symbol. Also during `udynlink_lookup_symbol()` for weak symbols.
 
-**What it must do:** Look up `name` in the host firmware's exported API and return the 32-bit address of the symbol. Return `0` if the symbol is not found. Return `UDYNLINK_SYM_DEFERRED` ((uint32_t)1) if the symbol is known but should not be resolved yet — the loader will write `0` to the relocation slot and continue loading.
+**What it must do:** Look up `name` in the host firmware's exported API and return the address of the symbol. Return `0` if the symbol is not found. Return `UDYNLINK_SYM_DEFERRED` if the symbol is known but should not be resolved yet — the loader will write `0` to the relocation slot and continue loading. The `p_mod` parameter identifies the module being loaded or queried, allowing the host to make per-module resolution decisions.
 
 **Minimal implementation (strcmp chain):**
 
@@ -302,13 +302,14 @@ extern int my_printf(const char *fmt, ...);
 extern void my_delay_ms(uint32_t ms);
 extern uint32_t system_ticks;
 
-uint32_t udynlink_external_resolve_symbol(const char *name) {
+uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const char *name) {
+    (void)p_mod;
     if (!strcmp(name, "printf"))
-        return (uint32_t)(uintptr_t)&my_printf;
+        return (uintptr_t)&my_printf;
     else if (!strcmp(name, "delay_ms"))
-        return (uint32_t)(uintptr_t)&my_delay_ms;
+        return (uintptr_t)&my_delay_ms;
     else if (!strcmp(name, "system_ticks"))
-        return (uint32_t)(uintptr_t)&system_ticks;
+        return (uintptr_t)&system_ticks;
     else
         return 0;
 }
@@ -423,7 +424,8 @@ void init_deps(void) {
 The critical integration point is `udynlink_external_resolve_symbol()`. A dependency-aware host checks dep symbols first, then falls back to function/data resolution and finally to host-native symbols:
 
 ```c
-uintptr_t udynlink_external_resolve_symbol(const char *name) {
+uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const char *name) {
+    (void)p_mod;
     // 1. Dependency declarations: .udynlink.mod.requires.{name}
     if (udynlink_dep_is_dependency(name)) {
         return udynlink_dep_resolve_dependency(&g_dep_mgr, name);
@@ -598,13 +600,14 @@ extern void my_printf(const char *fmt, ...);
 extern void my_delay_ms(uint32_t ms);
 extern void *my_memcpy(void *dst, const void *src, size_t n);
 
-uint32_t udynlink_external_resolve_symbol(const char *name) {
+uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const char *name) {
+    (void)p_mod;
     if (!strcmp(name, "printf"))
-        return (uint32_t)(uintptr_t)&my_printf;
+        return (uintptr_t)&my_printf;
     if (!strcmp(name, "delay_ms"))
-        return (uint32_t)(uintptr_t)&my_delay_ms;
+        return (uintptr_t)&my_delay_ms;
     if (!strcmp(name, "memcpy"))
-        return (uint32_t)(uintptr_t)&my_memcpy;
+        return (uintptr_t)&my_memcpy;
     return 0;
 }
 ```
@@ -633,10 +636,11 @@ static const struct {
     { NULL, NULL }
 };
 
-uint32_t udynlink_external_resolve_symbol(const char *name) {
+uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const char *name) {
+    (void)p_mod;
     for (int i = 0; host_symbols[i].name != NULL; i++) {
         if (!strcmp(host_symbols[i].name, name))
-            return (uint32_t)(uintptr_t)host_symbols[i].addr;
+            return (uintptr_t)host_symbols[i].addr;
     }
     return 0;
 }
@@ -660,7 +664,8 @@ Best for: firmware loading many modules that resolve the same symbols, where you
 
 static udynlink_host_sym_cache_entry_t g_sym_cache[UDYNLINK_HOST_SYM_CACHE_SIZE];
 
-static uintptr_t my_real_resolver(const char *name) {
+static uintptr_t my_real_resolver(const udynlink_module_t *p_mod, const char *name) {
+    (void)p_mod;
     // Your existing resolution logic (strcmp chain, hash table, etc.)
     if (!strcmp(name, "printf"))
         return (uintptr_t)&my_printf;
@@ -669,9 +674,9 @@ static uintptr_t my_real_resolver(const char *name) {
     return 0;
 }
 
-uint32_t udynlink_external_resolve_symbol(const char *name) {
-    return (uint32_t)udynlink_host_sym_cache_lookup(
-        g_sym_cache, UDYNLINK_HOST_SYM_CACHE_SIZE, name, my_real_resolver);
+uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const char *name) {
+    return udynlink_host_sym_cache_lookup(
+        g_sym_cache, UDYNLINK_HOST_SYM_CACHE_SIZE, p_mod, name, my_real_resolver);
 }
 ```
 
@@ -715,14 +720,15 @@ Include the generated header and use `udynlink_resolve_hashed_symbol()`:
 #include "udynlink_hash.h"
 #include "host_syms.h"
 
-uint32_t udynlink_external_resolve_symbol(const char *name) {
+uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const char *name) {
+    (void)p_mod;
     void *addr = udynlink_resolve_hashed_symbol(&g_host_sym_table, name);
     if (addr != NULL)
-        return (uint32_t)(uintptr_t)addr;
+        return (uintptr_t)addr;
 
     // Fallback: try a small set of symbols not in the ELF (e.g. dynamically registered)
     if (!strcmp(name, "runtime_registered_func"))
-        return (uint32_t)(uintptr_t)&runtime_registered_func;
+        return (uintptr_t)&runtime_registered_func;
 
     return 0;
 }
@@ -748,9 +754,10 @@ python3 $(UDYNLINK_DIR)/scripts/mkhostsyms \
 #include "host_syms.h"
 #include <string.h>
 
-uint32_t udynlink_external_resolve_symbol(const char *name) {
+uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const char *name) {
+    (void)p_mod;
     void *addr = udynlink_resolve_hashed_symbol(&g_host_sym_table, name);
-    return addr ? (uint32_t)(uintptr_t)addr : 0;
+    return addr ? (uintptr_t)addr : 0;
 }
 ```
 

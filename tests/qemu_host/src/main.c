@@ -94,7 +94,8 @@ uintptr_t test_resolve_symbol(const char *name) {
 
 extern int _write(int file, char *ptr, int len);
 
-uintptr_t udynlink_external_resolve_symbol(const char *name) {
+uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const char *name) {
+    (void)p_mod;
     if (is_deferred_symbol(name))
         return UDYNLINK_SYM_DEFERRED;
     if (!strcmp(name, "printf"))

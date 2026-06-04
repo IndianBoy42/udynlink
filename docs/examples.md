@@ -80,9 +80,10 @@ int udynlink_external_is_pointer_in_ram(const void *p) {
     return (addr >= 0x20000000 && addr < 0x20010000);
 }
 
-uint32_t udynlink_external_resolve_symbol(const char *name) {
+uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const char *name) {
+    (void)p_mod;
     if (!strcmp(name, "printf"))
-        return (uint32_t)(uintptr_t)&printf;
+        return (uintptr_t)&printf;
     return 0;
 }
 
@@ -176,10 +177,11 @@ static const host_symbol_t host_symbols[] = {
     { NULL, NULL }
 };
 
-uint32_t udynlink_external_resolve_symbol(const char *name) {
+uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const char *name) {
+    (void)p_mod;
     for (const host_symbol_t *s = host_symbols; s->name != NULL; ++s) {
         if (!strcmp(s->name, name)) {
-            return (uint32_t)(uintptr_t)s->addr;
+            return (uintptr_t)s->addr;
         }
     }
     return 0;   /* not found */
@@ -241,9 +243,10 @@ The generated `host_syms.h` contains a fully initialized `udynlink_hash_table_t`
 /*  Hash-based symbol resolution                                              */
 /* -------------------------------------------------------------------------- */
 
-uint32_t udynlink_external_resolve_symbol(const char *name) {
+uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const char *name) {
+    (void)p_mod;
     void *addr = udynlink_resolve_hashed_symbol(&g_host_sym_table, name);
-    return (addr != NULL) ? (uint32_t)(uintptr_t)addr : 0;
+    return (addr != NULL) ? (uintptr_t)addr : 0;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -321,9 +324,10 @@ int udynlink_external_is_pointer_in_ram(const void *p) {
     return (addr >= 0x20000000 && addr < 0x20020000);
 }
 
-uint32_t udynlink_external_resolve_symbol(const char *name) {
-    if (!strcmp(name, "printf"))  return (uint32_t)(uintptr_t)&printf;
-    if (!strcmp(name, "memcpy"))  return (uint32_t)(uintptr_t)&memcpy;
+uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const char *name) {
+    (void)p_mod;
+    if (!strcmp(name, "printf"))  return (uintptr_t)&printf;
+    if (!strcmp(name, "memcpy"))  return (uintptr_t)&memcpy;
     return 0;
 }
 
@@ -404,9 +408,10 @@ static void mock_service(void) {
     printf("mock_service called\n");
 }
 
-uint32_t udynlink_external_resolve_symbol(const char *name) {
+uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const char *name) {
+    (void)p_mod;
     if (!strcmp(name, "my_service"))
-        return (uint32_t)(uintptr_t)&real_service;
+        return (uintptr_t)&real_service;
     return 0;
 }
 
@@ -501,8 +506,9 @@ int udynlink_external_is_pointer_in_ram(const void *p) {
     return ((uintptr_t)p >= 0x20000000 && (uintptr_t)p < 0x20010000);
 }
 
-uint32_t udynlink_external_resolve_symbol(const char *name) {
-    if (!strcmp(name, "printf")) return (uint32_t)(uintptr_t)&printf;
+uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const char *name) {
+    (void)p_mod;
+    if (!strcmp(name, "printf")) return (uintptr_t)&printf;
     return 0;
 }
 
@@ -732,8 +738,8 @@ void udynlink_external_vprintf(const char *s, va_list va) { vprintf(s, va); }
 int udynlink_external_is_pointer_in_ram(const void *p) {
     return ((uintptr_t)p >= 0x20000000 && (uintptr_t)p < 0x20010000);
 }
-uint32_t udynlink_external_resolve_symbol(const char *name) {
-    (void)name; return 0;
+uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const char *name) {
+    (void)p_mod; (void)name; return 0;
 }
 
 int main(void) {
@@ -899,8 +905,9 @@ void udynlink_external_vprintf(const char *s, va_list va) { vprintf(s, va); }
 int udynlink_external_is_pointer_in_ram(const void *p) {
     return ((uintptr_t)p >= 0x20000000 && (uintptr_t)p < 0x20010000);
 }
-uint32_t udynlink_external_resolve_symbol(const char *name) {
-    if (!strcmp(name, "printf")) return (uint32_t)(uintptr_t)&printf;
+uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const char *name) {
+    (void)p_mod;
+    if (!strcmp(name, "printf")) return (uintptr_t)&printf;
     return 0;
 }
 

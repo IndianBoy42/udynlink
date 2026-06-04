@@ -14,6 +14,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdarg.h>
+#include "udynlink_externals.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -266,7 +267,8 @@ __attribute__((weak)) void* wasm_rt_malloc(size_t size);
 __attribute__((weak)) void  wasm_rt_mem_free(void* p);
 __attribute__((weak)) void* wasm_rt_mem_realloc(void* p, size_t size);
 __attribute__((weak)) void  wasm_rt_trap_handler(wasm_rt_trap_t code);
-__attribute__((weak)) void* wasm_rt_resolve_import(const char* module,
+__attribute__((weak)) void* wasm_rt_resolve_import(const udynlink_module_t *p_mod,
+                                                    const char* module,
                                                     const char* name);
 
 /* Default trap page size (64 KiB).  Override with -DWASM_RT_PAGE_SIZE=... */

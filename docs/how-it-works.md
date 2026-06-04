@@ -509,7 +509,7 @@ When the loader encounters an `UDYNLINK_SYM_TYPE_EXTERN` symbol during relocatio
 The loader calls the host-provided callback:
 
 ```c
-uint32_t udynlink_external_resolve_symbol(const char *name);
+uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const char *name);
 ```
 
 The host firmware looks up `name` in its own symbol table and returns the address, or `0` if the symbol is not found. If the symbol cannot be resolved, loading fails with `UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL`.
@@ -678,7 +678,7 @@ extern udynlink_module_t *__udynlink_dep_math
     __asm__(".udynlink.mod.requires.math");
 ```
 
-At link time, this becomes an `UDYNLINK_SYM_TYPE_EXTERN` symbol. At load time, the core loader calls `udynlink_external_resolve_symbol(".udynlink.mod.requires.math")`. A dependency-aware host can resolve this by looking up the module named `math` in its registry.
+At link time, this becomes an `UDYNLINK_SYM_TYPE_EXTERN` symbol. At load time, the core loader calls `udynlink_external_resolve_symbol(p_mod, ".udynlink.mod.requires.math")`. A dependency-aware host can resolve this by looking up the module named `math` in its registry.
 
 ### Resolution Flow
 

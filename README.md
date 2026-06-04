@@ -63,8 +63,9 @@ void *udynlink_external_malloc(size_t size) { return malloc(size); }
 void udynlink_external_free(void *p) { free(p); }
 void udynlink_external_vprintf(const char *s, va_list va) { vprintf(s, va); }
 
-uint32_t udynlink_external_resolve_symbol(const char *name) {
-    if (!strcmp(name, "printf")) return (uint32_t)(uintptr_t)&printf;
+uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const char *name) {
+    (void)p_mod;
+    if (!strcmp(name, "printf")) return (uintptr_t)&printf;
     return 0;
 }
 int udynlink_external_is_pointer_in_ram(const void *p) {

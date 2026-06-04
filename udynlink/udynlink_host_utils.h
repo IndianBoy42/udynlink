@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include "udynlink_externals.h"
 
 #ifndef UDYNLINK_HOST_SYM_CACHE_SIZE
 #define UDYNLINK_HOST_SYM_CACHE_SIZE 16
@@ -17,8 +18,9 @@ typedef struct {
 static inline uintptr_t udynlink_host_sym_cache_lookup(
     udynlink_host_sym_cache_entry_t *cache,
     size_t cache_size,
+    const udynlink_module_t *p_mod,
     const char *name,
-    uintptr_t (*fallback)(const char *name))
+    uintptr_t (*fallback)(const udynlink_module_t *, const char *))
 {
     uint32_t h = 0;
     for (const char *p = name; *p; p++)
@@ -26,7 +28,7 @@ static inline uintptr_t udynlink_host_sym_cache_lookup(
     size_t idx = h % cache_size;
     if (cache[idx].name && strcmp(cache[idx].name, name) == 0)
         return cache[idx].addr;
-    uintptr_t addr = fallback(name);
+    uintptr_t addr = fallback(p_mod, name);
     if (addr) {
         cache[idx].name = name;
         cache[idx].addr = addr;

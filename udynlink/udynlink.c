@@ -5,7 +5,8 @@
 #include <stdarg.h>
 
 __attribute__((weak))
-uintptr_t udynlink_external_resolve_symbol(const char *name) {
+uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const char *name) {
+    (void)p_mod;
     (void)name;
     return 0;
 }
@@ -268,8 +269,8 @@ static size_t get_ram_size_for_header(const udynlink_module_header_t *p_header, 
 
 // Single-tier symbol resolution: host callback only.
 // Returns the resolved address, 0 if unresolved, or UDYNLINK_SYM_DEFERRED.
-static uintptr_t resolve_symbol(const char *name) {
-    uintptr_t sym_addr = udynlink_external_resolve_symbol(name);
+static uintptr_t resolve_symbol(const udynlink_module_t *p_mod, const char *name) {
+    uintptr_t sym_addr = udynlink_external_resolve_symbol(p_mod, name);
     if (sym_addr == UDYNLINK_SYM_DEFERRED) {
         return UDYNLINK_SYM_DEFERRED;
     }
@@ -332,7 +333,7 @@ udynlink_error_t udynlink_load_apply_relocations(udynlink_module_t *p_mod,
                 UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Applying weak relocation for symbol at index %u, name=%s at lot_offset=%u\n", symt_offset, sym.name, lot_offset);
                 *p_rel_location = offset_sym(p_mod, &sym)->val;
                 {
-                    uintptr_t sym_addr = resolve_symbol(sym.name);
+                    uintptr_t sym_addr = resolve_symbol(p_mod, sym.name);
                     if (sym_addr == UDYNLINK_SYM_DEFERRED) {
                         // Keep module's own default, defer override
                         break;
@@ -346,7 +347,7 @@ udynlink_error_t udynlink_load_apply_relocations(udynlink_module_t *p_mod,
             case UDYNLINK_SYM_TYPE_EXTERN:
                 UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Applying extern relocation for symbol at index %u, name=%s at lot_offset=%u\n", symt_offset, sym.name, lot_offset);
                 {
-                    uintptr_t sym_addr = resolve_symbol(sym.name);
+                    uintptr_t sym_addr = resolve_symbol(p_mod, sym.name);
                     if (sym_addr == UDYNLINK_SYM_DEFERRED) {
                         *p_rel_location = 0;
                         break;
@@ -627,7 +628,7 @@ udynlink_sym_t *udynlink_lookup_symbol(const udynlink_module_t *p_mod, const cha
             if (cmp == 0) {
                 offset_sym(p_mod, p_sym);
                 if (p_sym->type == UDYNLINK_SYM_TYPE_WEAK) {
-                    uintptr_t sym_addr = resolve_symbol(name);
+                    uintptr_t sym_addr = resolve_symbol(p_mod, name);
                     if (sym_addr == UDYNLINK_SYM_DEFERRED) {
                         // Keep module's own definition
                     } else if (sym_addr > 0) {
@@ -650,7 +651,7 @@ udynlink_sym_t *udynlink_lookup_symbol(const udynlink_module_t *p_mod, const cha
         if (p_sym->type != UDYNLINK_SYM_TYPE_INTERNAL && !strcmp(p_sym->name, name)) {
             offset_sym(p_mod, p_sym);
             if (p_sym->type == UDYNLINK_SYM_TYPE_WEAK) {
-                uintptr_t sym_addr = resolve_symbol(name);
+                uintptr_t sym_addr = resolve_symbol(p_mod, name);
                 if (sym_addr == UDYNLINK_SYM_DEFERRED) {
                     // Keep module's own definition
                 } else if (sym_addr > 0) {
@@ -726,7 +727,7 @@ static void apply_extern_relocations_impl(udynlink_module_t *p_mod, int incremen
         if (incremental && *p_rel_location != 0)
             continue;
 
-        uintptr_t sym_addr = resolve_symbol(sym.name);
+        uintptr_t sym_addr = resolve_symbol(p_mod, sym.name);
         if (sym_addr == UDYNLINK_SYM_DEFERRED) {
             *p_rel_location = 0;
             continue;
