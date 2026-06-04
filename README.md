@@ -4,18 +4,36 @@
 
 `udynlink` compiles C/C++ code into position-independent binary modules that can be loaded and executed at runtime on ARM Cortex-M MCUs. Modules can run from RAM or flash (execute in place), resolve symbols from the host firmware, and be loaded from contiguous memory or non-contiguous image sources.
 
-**Use cases:** RAM-resident bootloaders, runtime firmware patching, plugin/module systems, scripting language loaders, LGPL-compliant dynamic loading.
+## Design Principles
+
+| Principle | What it means in practice |
+|-----------|--------------------------|
+| **Simplicity** | Minimal API surface: load, call, unload. The core runtime is ~800 lines of C. No DSLs, no code generation, no macro magic beyond what the hardware requires. |
+| **Unopinionated** | No imposed module lifecycle, event loop, threading model, or memory strategy. The host decides when and how to load, call, and unload modules. |
+| **Usage-agnostic** | RAM bootloaders, flash-resident plugins, OTA patching, scripting language FFI, LGPL compliance — all equally first-class. No use case is privileged. |
+| **Flexible** | Three load modes (copy-all, copy-text-data, XIP). Non-contiguous image loading for SD card/SPI flash. Low-level relocation primitives for custom pipelines. Deferred symbols, incremental linking, and direct symbol patching. |
+| **Minimal overhead** | No heap allocation inside the loader when the host provides a buffer. No internal locking. No hidden state. The `udynlink_module_t` struct is 24 bytes. |
+| **Zero-cost optional features** | The dependency system (`udynlink_deps`), hash-based symbol resolution (`udynlink_hash`), call ergonomics (`udynlink_call`), and host symbol cache (`udynlink_host_utils`) are separate headers linked only if used. Hosts that don't use them pay zero code and zero RAM cost. |
+| **Library, not framework** | You call udynlink; udynlink never calls you back except through the five explicit callbacks you implement. No main loop, no registration, no hidden threads. Add it to your build and call the functions you need. |
+
+## Use Cases
+
+- RAM-resident bootloaders and live firmware patching
+- Plugin/module systems for embedded applications
+- Scripting language FFI and native extension loading
+- LGPL-compliant dynamic loading (proprietary host, open modules)
+- WASM2C runtime support (load compiled WebAssembly modules)
 
 ## Documentation
 
-| Guide | Audience | Description |
-|-------|----------|-------------|
-| [How It Works](docs/how-it-works.md) | Everyone | Technical deep-dive: PIC model, LOT/r9 mechanism, relocations, binary format |
-| [Integrating as a Host](docs/integrating-as-host.md) | Firmware developers | Adding udynlink to your project, implementing callbacks, symbol tables, lifecycle |
-| [Writing Modules](docs/writing-modules.md) | Module authors | Creating loadable modules, consuming host symbols, C++ support |
-| [API Reference](docs/api-reference.md) | Everyone | Complete reference for all public functions, structs, macros, and callbacks |
-| [Examples](docs/examples.md) | Everyone | Working code examples for every major feature and use case |
-| [Testing Guide](docs/testing.md) | Contributors | Running tests, adding test cases, adding QEMU platforms, debugging |
+| Guide | Description |
+|-------|-------------|
+| [How It Works](docs/how-it-works.md) | Technical deep-dive: PIC model, LOT/r9 mechanism, relocations, binary format |
+| [Integrating as a Host](docs/integrating-as-host.md) | Adding udynlink to your project, callbacks, symbol tables, lifecycle |
+| [Writing Modules](docs/writing-modules.md) | Creating loadable modules, consuming host symbols, C++ support |
+| [API Reference](docs/api-reference.md) | Complete reference for all public functions, structs, macros, and callbacks |
+| [Examples](docs/examples.md) | Working code examples for every major feature |
+| [Testing Guide](docs/testing.md) | Running tests, adding test cases, adding QEMU platforms |
 
 ## Quick Start: Host Firmware (Loading Modules)
 
@@ -70,7 +88,7 @@ hello(42);
 udynlink_unload_module(&mod);
 ```
 
-See the [Host Integration Guide](docs/integrating-as-host.md) for complete details on callbacks, symbol tables, hash-based resolution, non-contiguous image loading, and error handling.
+For the complete integration guide including hash-based resolution, non-contiguous image loading, deferred symbols, and error handling, see [Integrating as a Host](docs/integrating-as-host.md).
 
 ## Quick Start: Module Development
 
@@ -103,15 +121,54 @@ This produces `mod_hello.bin` and `mod_hello_module_data.h`.
 
 For the complete guide covering C++ modules, data handling, and the full `mkmodule` reference, see [Writing Modules](docs/writing-modules.md).
 
+## Architecture Overview
+
+### Position-Independent Code Model
+
+Modules are compiled with `-fPIE -msingle-pic-base -mno-pic-data-is-text-relative -ffunction-sections -fdata-sections`. Data access uses `r9` as a base register pointing to the **LOT** (Linker Offset Table). Exported functions get an assembly prologue that saves the caller's `r9`, loads `r9` with the module's LOT base, and restores it on return.
+
+The host must use `UDYNLINK_PREPARE_CALL(p_mod)` before calling any module function (or use `UDYNLINK_CALL` which handles this automatically). The `--no-prologue` flag omits the assembly wrapper; the host must set `r9` directly for such modules.
+
+### Three Load Modes
+
+| Mode | RAM usage | Use case |
+|------|-----------|----------|
+| `COPY_ALL` | Header + code + data + BSS | Maximum flexibility; module can be unloaded from flash |
+| `COPY_TEXT_DATA` | Code + data + BSS | Header stays at `base_addr` (e.g., memory-mapped flash) |
+| `XIP` | Data + BSS only | Execute code in place from flash; minimal RAM |
+
+All three modes are validated by every test, at both `-O0` and `-Os`.
+
+### Module Binary Format
+
+```
+[Header 32B] [Relocations] [Symbol Table] [Code] [Data]
+```
+
+The header contains `mod_version`, `udynlink_version`, and `arch_tag` fields for runtime compatibility checking. Relocation types: `R_ARM_GOT_BREL` (LOT), `R_ARM_ABS32`/`R_ARM_TARGET1` (data), `R_ARM_THM_CALL`/`R_ARM_THM_JUMP24` (PC-relative, ignored).
+
+### Optional Layers
+
+All optional features are separate headers that compile and link only if included:
+
+| Header | Provides | Cost when unused |
+|--------|----------|-------------------|
+| `udynlink_call.h` | `udynlink_func_t`, `UDYNLINK_CALL`, `UDYNLINK_CALL_MODULE_FUNC` | Zero (header-only inline) |
+| `udynlink_deps.h` | Cross-module thunks, dependency tracking, circular detection | Zero (separate `.c`, not linked) |
+| `udynlink_hash.h` | GNU hash table + bloom filter for O(1) host symbol resolution | Zero (separate `.h`, not linked) |
+| `udynlink_host_utils.h` | Tiny host-side symbol cache with LRU eviction | Zero (header-only inline) |
+| `udynlink.hpp` | C++ RAII wrappers: `Module`, `Func<Sig>`, `Context` | Zero (header-only, requires C++17) |
+
 ## Status
 
-- All 20 integration tests pass on 6 QEMU platforms (Cortex-M0/M3/M4/M4F/M7/M33)
+- 29 integration tests across 6 QEMU platforms (Cortex-M0/M3/M4/M4F/M7/M33)
 - C and C++ modules supported (no exceptions, no RTTI)
 - ABI versioning and architecture tag validation at load time
 - Non-contiguous image loading for SD card, SPI flash, and custom pipelines
 - Low-level relocation primitives for building custom loading pipelines
-- Fine-grained planning APIs (`udynlink_validate_header`, `udynlink_compute_ram_size`) for pre-allocation
+- Fine-grained planning APIs (`udynlink_validate_header`, `udynlink_compute_ram_size`)
 - Hash-based O(1) symbol resolution
+- WASM2C runtime support
 - Requires [GCC ARM Embedded](https://developer.arm.com/tools-and-software/open-source-software/developer-tools/gnu-toolchain) (`arm-none-eabi-gcc`)
 
 ## Building
@@ -152,38 +209,42 @@ just ci                   # Full CI suite (parallel)
 just test-mps2-single test-globals1   # Single test
 ```
 
-Each test validates all three load modes (COPY_ALL, COPY_TEXT_DATA, XIP) at both `-O0` and `-Os`. See the [Testing Guide](docs/testing.md) for adding test cases, adding platforms, and debugging.
+Each test validates all three load modes at both `-O0` and `-Os`. See the [Testing Guide](docs/testing.md) for adding test cases, adding platforms, and debugging.
 
 ## Platform Test Matrix
 
-| Platform | QEMU Machine | CPU | Status | Notes |
-|----------|-------------|-----|--------|-------|
-| `stm32f429_discovery` | STM32F429I-Discovery | cortex-m4 | All 40 tests pass | Legacy xPack QEMU, fast baseline |
-| `mps2_an386` | mps2-an386 | cortex-m4 | All 40 tests pass | Mainline QEMU |
-| `mps2_an385` | mps2-an385 | cortex-m3 | All 40 tests pass | Mainline QEMU |
-| `mps2_an500` | mps2-an500 | cortex-m7 | All 40 tests pass | Mainline QEMU |
-| `mps2_an505` | mps2-an505 | cortex-m33 | All 40 tests pass | Mainline QEMU, secure boot alias |
-| `olimex_stm32_h405` | olimex-stm32-h405 | cortex-m4f | All 40 tests pass | Hard-float M4F |
-| `microbit` | microbit | cortex-m0 | Builds, `-kernel` broken | Needs raw binary loader |
-| `stm32f103_bluepill` | NUCLEO-F103RB | cortex-m3 | Partial | Flash-RAM call quirk (legacy QEMU) |
-| `stm32f051_discovery` | STM32F0-Discovery | cortex-m0 | Partial | Same quirk |
+| Platform | QEMU Machine | CPU | Status |
+|----------|-------------|-----|--------|
+| `stm32f429_discovery` | STM32F429I-Discovery | cortex-m4 | All tests pass (legacy xPack QEMU) |
+| `mps2_an386` | mps2-an386 | cortex-m4 | All tests pass |
+| `mps2_an385` | mps2-an385 | cortex-m3 | All tests pass |
+| `mps2_an500` | mps2-an500 | cortex-m7 | All tests pass |
+| `mps2_an505` | mps2-an505 | cortex-m33 | All tests pass |
+| `olimex_stm32_h405` | olimex-stm32-h405 | cortex-m4f | All tests pass |
+| `microbit` | microbit | cortex-m0 | Builds only (QEMU `-kernel` limitation) |
+| `stm32f103_bluepill` | NUCLEO-F103RB | cortex-m3 | Partial (legacy QEMU Flash→RAM quirk) |
+| `stm32f051_discovery` | STM32F0-Discovery | cortex-m0 | Partial (same quirk) |
 
 ## Toolchain Requirements
 
-- **arm-none-eabi-gcc** / **arm-none-eabi-g++** / **arm-none-eabi-objcopy**
+- **arm-none-eabi-gcc** / **arm-none-eabi-g++** / **arm-none-eabi-objcopy** (GCC ARM Embedded)
 - **CMake** 3.16+
 - **Python 3** with `pyelftools`, `Jinja2` (managed via `uv` / `pyproject.toml`)
-- **QEMU** for tests:
-  - **Mainline QEMU** (`qemu-system-arm` 9.2.4+): Used for MPS2 and Olimex platforms.
-  - **Legacy xPack QEMU** (`qemu-system-gnuarmeclipse`): Fastest for STM32F429. The xPack project provides both binaries in a single release.
-
-  **Quick setup:**
-  - Run `just setup-qemu` to download the latest xPack release (mainline `qemu-system-arm`) into `tests/`.
-  - Run `just setup-qemu-legacy` to download the last xPack release with `qemu-system-gnuarmeclipse` (7.2.5-1) into `tests/`.
-  - The Justfile will automatically prefer these local copies.
-
-  **Manual setup:** Download from [xpack-dev-tools/qemu-arm-xpack/releases](https://github.com/xpack-dev-tools/qemu-arm-xpack/releases) (latest: 9.2.4-1 for mainline, 7.2.5-1 for legacy) and extract to `tests/`.
+- **QEMU** for tests (see setup below)
 - **[just](https://github.com/casey/just)** for running tests and build commands
+
+### QEMU Setup
+
+Two QEMU variants are used:
+
+- **Mainline QEMU** (`qemu-system-arm` 9.2.4+): MPS2 and Olimex platforms. Usually available via your distro package manager.
+- **Legacy xPack QEMU** (`qemu-system-gnuarmeclipse`): Fastest for STM32F429. Discontinued in recent xPack releases.
+
+**Quick setup:**
+- `just setup-qemu` — download latest xPack release (mainline `qemu-system-arm`) into `tests/`.
+- `just setup-qemu-legacy` — download the last release with `qemu-system-gnuarmeclipse` (7.2.5-1) into `tests/`.
+
+The Justfile automatically prefers these local copies over system-wide installations.
 
 ## License
 

@@ -310,6 +310,13 @@ udynlink_cpp_init(&mod);   // Run __init_array (sets context internally)
 UDYNLINK_PREPARE_CALL(&mod); // Prepare before other calls
 ```
 
+If the host uses the C++ API (`udynlink.hpp`), `udynlink::Module::load()` calls `udynlink_cpp_init()` automatically:
+
+```cpp
+udynlink::Module mod;
+mod.load(hello_cpp_bin);  // auto-calls udynlink_cpp_init()
+```
+
 The toolchain automatically compiles `cpp_init_fini.c` and links it into C++ modules. This file walks `__init_array` and `__preinit_array` to invoke all global constructors.
 
 ### C++ Module Example
@@ -674,7 +681,7 @@ The host loads the module, looks up the service functions, and passes them to co
 
 ### C++ Constructors Not Running
 
-- The host forgot to call `udynlink_cpp_init(&mod)` after loading.
+- The host forgot to call `udynlink_cpp_init(&mod)` after loading. If using the C++ API, `udynlink::Module::load()` does this automatically.
 - The call context must be prepared with `UDYNLINK_PREPARE_CALL(&mod)` **before** calling `udynlink_cpp_init`, because constructors may touch module data.
 
 ### Taking the Address of an Exported Function

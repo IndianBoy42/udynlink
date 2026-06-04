@@ -13,6 +13,7 @@
 - [Embedding Modules in Firmware](#embedding-modules-in-firmware)
 - [Custom Loading Pipeline](#custom-loading-pipeline)
 - [Pre-Computing RAM Requirements](#pre-computing-ram-requirements)
+- [C++ Host with RAII Module and Typed Function Handles](#c-host-with-raii-module-and-typed-function-handles)
 
 ---
 
@@ -970,3 +971,79 @@ udynlink_error_t err = udynlink_load_module_image(
 - **Fail-fast:** Detect out-of-memory conditions before starting the load process.
 
 See also [How It Works](how-it-works.md) for a description of what contributes to RAM usage (LOT, `.data`, `.bss`, code, header).
+
+---
+
+## C++ Host with RAII Module and Typed Function Handles
+
+This example shows how to use the C++ API (`udynlink.hpp`) for type-safe, RAII-managed module loading and calling. The `udynlink::Module` class handles load, C++ init, and unload automatically. The `udynlink::Func<Sig>` template provides compile-time type safety for module function calls.
+
+### Module source (`mod_math.c`)
+
+```c
+#include <stdio.h>
+
+int add(int a, int b) { return a + b; }
+int sub(int a, int b) { return a - b; }
+```
+
+Compile:
+
+```bash
+cd scripts
+python3 mkmodule --gen-c-header --header-path ../host_firmware ../modules/mod_math.c
+```
+
+### Host firmware (`host_cpp.cpp`)
+
+```cpp
+#include "udynlink.hpp"
+#include "mod_math_module_data.h"
+#include <stdio.h>
+
+// External callbacks (required by the C library)
+extern "C" {
+#include "udynlink_externals.h"
+// ... implement the 5 callbacks ...
+}
+
+int main(void) {
+    // Load with RAII — unload happens automatically
+    udynlink::Module mod;
+    udynlink_error_t err = mod.load(mod_math_module_data);
+    if (err != UDYNLINK_OK) {
+        printf("load failed: %d\n", (int)err);
+        return 1;
+    }
+
+    // Resolve typed function handles
+    auto h_add = mod.resolve<int(int, int)>("add");
+    auto h_sub = mod.resolve<int(int, int)>("sub");
+
+    if (h_add && h_sub) {
+        printf("add(3, 4) = %d\n", (*h_add)(3, 4));
+        printf("sub(10, 3) = %d\n", (*h_sub)(10, 3));
+    }
+
+    // Batch calling with Context (sets r9 once for the whole block)
+    if (h_add) {
+        udynlink::Context ctx(*mod.handle());
+        for (int i = 0; i < 100; i++) {
+            (*h_add)(i, 1);  // no per-call r9 save/restore overhead
+        }
+    }
+
+    // mod unloads here automatically
+    return 0;
+}
+```
+
+### Key points
+
+- **`Module::load()`** calls `udynlink_cpp_init()` automatically — safe for both C and C++ modules.
+- **`Module::resolve<Sig>()`** returns `std::optional<Func<Sig>>`. Always check with `if (h)` before calling.
+- **`Func<Sig>::operator()`** saves/restores `r9` on every call, just like `UDYNLINK_CALL()`.
+- **`Context`** eliminates per-call `r9` overhead when calling many functions from the same module in a loop.
+- **`Module`** is movable but not copyable. Use `std::move()` or `swap()` to transfer ownership.
+- You can access the raw C handle via `mod.handle()` to call any C API function.
+- The C++ API is a header-only layer on top of the C API. It adds zero code if you don't include `udynlink.hpp`.

@@ -17,6 +17,8 @@
 - [Convenience Macros](#convenience-macros)
 - [Dependency System](#dependency-system-udynlink_depsh)
 - [Call Convenience Macros](#call-convenience-macros)
+- [Host Symbol Cache](#host-symbol-cache-udynlink_host_utilsh)
+- [C++ API](#c-api-udynlinkudynlinkhpp)
 - [External Callbacks](#external-callbacks)
 
 ---
@@ -336,6 +338,20 @@ Bits [15:7] — Reserved
 | Macro | Value | Description |
 |-------|-------|-------------|
 | `UDYNLINK_LOADER_ABI_VERSION` | `UDYNLINK_MAKE_VERSION(3, 0)` | The ABI version of the current loader. Modules with a higher `udynlink_version` are rejected. |
+
+### No-Prologue Flag
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `UDYNLINK_ARCH_FLAG_NO_PROLOGUE` | `0x80` | Bit in `arch_tag` indicating the module was built with `--no-prologue`. |
+
+### `udynlink_module_has_no_prologue`
+
+```c
+static inline int udynlink_module_has_no_prologue(const udynlink_module_header_t *p_header);
+```
+
+Returns non-zero if the module was built with `--no-prologue` (the `UDYNLINK_ARCH_FLAG_NO_PROLOGUE` bit is set in `arch_tag`). No-prologue modules omit the assembly wrapper for exported functions; the host must set `r9` directly via `UDYNLINK_PREPARE_CALL()` or use `UDYNLINK_CALL()` before calling any module function.
 
 ---
 
@@ -1317,6 +1333,188 @@ One-shot macro: looks up the symbol, calls the function (with automatic `r9` sav
 ```c
 int r;
 udynlink_error_t err = UDYNLINK_CALL_MODULE_FUNC(&mod, "add", int, (1, 2), &r);
+```
+
+### `UDYNLINK_SET_R9`
+
+```c
+#define UDYNLINK_SET_R9(p_mod) ...
+```
+
+Directly sets the `r9` register to the module's RAM base without saving the previous value. This is a lower-level alternative to `UDYNLINK_PREPARE_CALL()` (which is identical in implementation) — the distinction is semantic: use `UDYNLINK_SET_R9` when you are managing `r9` yourself (e.g., inside a `Context` object or a custom save/restore sequence), and `UDYNLINK_PREPARE_CALL` when setting `r9` as a one-shot before a call.
+
+---
+
+## Host Symbol Cache (`udynlink_host_utils.h`)
+
+An optional inline header that provides a tiny LRU-eviction symbol cache for speeding up repeated calls to `udynlink_external_resolve_symbol`. Hosts that export many symbols benefit from avoiding the O(N) string comparison on every resolution.
+
+### Configuration
+
+| Macro | Default | Description |
+|-------|---------|-------------|
+| `UDYNLINK_HOST_SYM_CACHE_SIZE` | `16` | Number of cache entries. Must be a power of 2 for the hash-based index. |
+
+### `udynlink_host_sym_cache_entry_t`
+
+```c
+typedef struct {
+    const char *name;
+    uintptr_t addr;
+} udynlink_host_sym_cache_entry_t;
+```
+
+A single cache entry mapping a symbol name to its resolved address.
+
+### `udynlink_host_sym_cache_lookup`
+
+```c
+static inline uintptr_t udynlink_host_sym_cache_lookup(
+    udynlink_host_sym_cache_entry_t *cache,
+    size_t cache_size,
+    const char *name,
+    uintptr_t (*fallback)(const char *name));
+```
+
+Looks up a symbol in the cache. On a miss, calls `fallback(name)` and inserts the result. Uses a simple hash index for O(1) average lookup.
+
+**Parameters:**
+- `cache` — Array of `udynlink_host_sym_cache_entry_t` entries (at least `cache_size` elements).
+- `cache_size` — Number of entries in `cache` (typically `UDYNLINK_HOST_SYM_CACHE_SIZE`).
+- `name` — Symbol name to resolve.
+- `fallback` — Function to call on cache miss (typically your full symbol resolver).
+
+**Return value:** The resolved address, or `0` if not found.
+
+### `udynlink_host_sym_cache_invalidate`
+
+```c
+static inline void udynlink_host_sym_cache_invalidate(
+    udynlink_host_sym_cache_entry_t *cache,
+    size_t cache_size);
+```
+
+Clears all cache entries by zeroing the array. Call after unloading a module that contributed symbols to the cache.
+
+---
+
+## C++ API (`udynlink/udynlink.hpp`)
+
+An optional C++ header that provides type-safe, RAII wrappers around the C API. It requires C++17 (for `std::optional`) and GCC or Clang (for statement-expression `r9` management). Include it after `udynlink.h` and `udynlink_call.h` (it includes both automatically).
+
+### `udynlink::Func<Sig>`
+
+```cpp
+template<typename R, typename... Args>
+class Func<R(Args...)>;
+```
+
+Typed function handle for calling module functions from C++. Resolve once with `Module::resolve()` or the `Func` constructor, then call many times via `operator()`. On invocation, `r9` is saved, set to the module's `ram_base`, and restored after the call — matching the `UDYNLINK_CALL()` contract from the C API.
+
+**Lifetime warning:** `Func` holds an unowned reference to the `udynlink_module_t`. If the `Module` is unloaded or destroyed while any `Func` still references it, invoking that `Func` causes undefined behaviour.
+
+#### Constructors
+
+| Constructor | Description |
+|-------------|-------------|
+| `Func()` | Default: constructs a disengaged (null) handle. |
+| `Func(const udynlink_module_t &mod, const char *name)` | Resolve a symbol by name. If not found, the handle remains disengaged. |
+| `Func(const udynlink_module_t &mod, uintptr_t addr)` | Construct from a pre-resolved address. |
+
+#### Methods
+
+| Method | Description |
+|--------|-------------|
+| `R operator()(Args... args) const` | Invoke the function with `r9` save/restore. If disengaged (`addr == 0`), returns `R()`. |
+| `explicit operator bool() const` | Returns `true` if the symbol was resolved successfully. |
+| `uintptr_t address() const` | Returns the raw resolved address. |
+
+**Example:**
+
+```cpp
+auto add = mod.resolve<int(int, int)>("add");
+if (!add) { /* symbol not found */ }
+int r = (*add)(2, 3);
+```
+
+### `udynlink::Context`
+
+```cpp
+class Context;
+```
+
+RAII wrapper that binds `r9` to a single module. When calling multiple functions from the same module in a tight loop, per-call `r9` writes are redundant. `Context` saves the previous `r9` on construction, writes the module's `ram_base`, and restores the original `r9` on destruction.
+
+**Not interrupt-safe.** If an ISR calls into a different module while a `Context` is active, `r9` will be wrong. Use `Context` only in non-preemptive code paths, or disable interrupts around the block.
+
+| Method | Description |
+|--------|-------------|
+| `explicit Context(const udynlink_module_t &mod)` | Save previous `r9`, write new `ram_base`. |
+| `~Context()` | Restore the previous `r9`. |
+| `void rebind(const udynlink_module_t &mod)` | Re-bind to a different module (mid-loop switch). The original saved `r9` is untouched. |
+| `const udynlink_module_t *module() const` | Returns the currently bound module. |
+
+Non-copyable, non-movable.
+
+**Example:**
+
+```cpp
+udynlink::Context ctx(*mod.handle());
+auto add = mod.resolve<int(int, int)>("add");
+for (int i = 0; i < 1000; i++) {
+    (*add)(i, i);  // no per-call r9 write
+}
+// ~Context restores r9 automatically
+```
+
+### `udynlink::Module`
+
+```cpp
+class Module;
+```
+
+RAII wrapper around a loaded udynlink module. Handles load, automatic C++ init, and unload in a single class. On successful `load()`, `udynlink_cpp_init()` is called unconditionally (safe no-op for C modules, since it only runs `__init_array` constructors if the module exports that symbol).
+
+#### Constructors / Assignment
+
+| Operation | Description |
+|-----------|-------------|
+| `Module()` | Default: empty (not loaded) handle. |
+| `Module(Module &&other)` | Move-construct. Source becomes empty. |
+| `Module &operator=(Module &&other)` | Move-assign. Unloads current module first. |
+| `~Module()` | Unloads the module if still loaded. |
+
+Non-copyable.
+
+#### Methods
+
+| Method | Description |
+|--------|-------------|
+| `udynlink_error_t load(const void *base_addr, void *load_addr, size_t load_size, udynlink_load_mode_t mode)` | Full load. Auto-calls `udynlink_cpp_init()`. If already loaded, unloads first. |
+| `udynlink_error_t load(const void *base_addr)` | Convenience: auto-allocate, `COPY_ALL` mode. |
+| `udynlink_error_t unload()` | Explicit unload. Double-unload is a no-op (returns `UDYNLINK_OK`). |
+| `bool is_loaded() const` | Returns `true` if currently loaded. |
+| `template<typename Sig> std::optional<Func<Sig>> resolve(const char *name) const` | Resolve a typed function handle. Returns `std::nullopt` on failure. |
+| `void cpp_init()` | Explicitly run C++ constructors. Rarely needed; `load()` calls it automatically. |
+| `const udynlink_module_t *handle() const` | Raw C handle (const). |
+| `udynlink_module_t *handle()` | Raw C handle (mutable). |
+| `void swap(Module &other)` | Swap contents with another `Module`. |
+
+ADL-findable `swap(Module &, Module &)` is also provided.
+
+**Example:**
+
+```cpp
+udynlink::Module mod;
+udynlink_error_t err = mod.load(module_data);
+if (err != UDYNLINK_OK) { /* handle error */ }
+
+auto add = mod.resolve<int(int, int)>("add");
+if (add) {
+    int r = (*add)(2, 3);
+}
+
+// mod unloads automatically when it goes out of scope
 ```
 
 ---

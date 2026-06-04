@@ -17,6 +17,7 @@ This guide is for firmware developers who want to integrate the udynlink micro d
 - [Non-Contiguous Image Loading](#non-contiguous-image-loading)
 - [Thread Safety and Concurrency](#thread-safety-and-concurrency)
 - [Error Handling and Diagnostics](#error-handling-and-diagnostics)
+- [C++ API](#c-api-udynlinkudynlinkhpp)
 
 ---
 
@@ -823,6 +824,24 @@ if (udynlink_resolve_func(&mod, "process_data", &h) == UDYNLINK_OK) {
 }
 ```
 
+Or use the C++ API for type safety and RAII:
+
+```cpp
+#include "udynlink.hpp"
+
+udynlink::Module mod;
+udynlink_error_t err = mod.load(module_data);
+if (err != UDYNLINK_OK) { /* handle error */ }
+
+auto process = mod.resolve<int(int)>("process_data");
+if (process) {
+    int result = (*process)(42);
+}
+// mod unloads automatically when it goes out of scope
+```
+
+See [C++ API](#c-api-udynlinkhpp) below for the full C++ interface.
+
 ### Unloading a Module
 
 ```c
@@ -1194,6 +1213,94 @@ At `UDYNLINK_DEBUG_INFO`, the loader prints the module name, RAM allocation deta
 **Problem:** Deferred symbol is not detected by the module (`if (func != NULL)` is always true).
 
 **Solution:** The host is providing a fallback stub for the deferred symbol via `udynlink_external_resolve_symbol`. Remove the stub, or return `UDYNLINK_SYM_DEFERRED` from the resolver so the LOT slot is initially `0`.
+
+---
+
+## C++ API (`udynlink/udynlink.hpp`)
+
+For C++ host firmware, `udynlink.hpp` provides type-safe, RAII wrappers that eliminate the most common pitfalls (forgetting `UDYNLINK_PREPARE_CALL`, forgetting `udynlink_cpp_init`, forgetting to unload). It requires C++17 and GCC or Clang.
+
+### Module: RAII Lifecycle
+
+`udynlink::Module` manages the entire lifecycle — load, C++ init, and unload — in a single class:
+
+```cpp
+#include "udynlink.hpp"
+
+udynlink::Module mod;
+udynlink_error_t err = mod.load(module_data);  // auto-allocate, COPY_ALL
+if (err != UDYNLINK_OK) { /* handle error */ }
+
+// mod unloads automatically in ~Module()
+```
+
+The convenience `load(base_addr)` overload assumes `COPY_ALL` with auto-allocation. The full `load(base_addr, load_addr, load_size, mode)` overload is also available for custom RAM and load mode selection.
+
+`load()` unconditionally calls `udynlink_cpp_init()` — a no-op for C modules — so you never forget it. If the module is already loaded when `load()` is called, it unloads the previous instance first.
+
+### Func: Typed Function Handles
+
+`udynlink::Func<Sig>` resolves a symbol once and provides a callable handle with compile-time type safety. On each invocation, `r9` is saved, set to the module's `ram_base`, and restored — equivalent to `UDYNLINK_CALL()`:
+
+```cpp
+auto add = mod.resolve<int(int, int)>("add");
+if (!add) { /* symbol not found */ return; }
+int r = (*add)(2, 3);
+```
+
+`Module::resolve<Sig>()` returns `std::optional<Func<Sig>>`, so you must check the result before calling. The `Func` objects outlive `resolve()` calls but **must not outlive the `Module`** they were resolved from (they hold an unowned reference to the `udynlink_module_t`).
+
+### Context: Batch Calling
+
+When calling many functions from the same module in a loop, per-call `r9` writes are redundant. `udynlink::Context` sets `r9` once on construction and restores it on destruction:
+
+```cpp
+auto add = mod.resolve<int(int, int)>("add");
+auto sub = mod.resolve<int(int, int)>("sub");
+
+{
+    udynlink::Context ctx(*mod.handle());
+    for (int i = 0; i < 1000; i++) {
+        (*add)(i, i);  // no per-call r9 save/restore
+        (*sub)(i, 1);
+    }
+}
+// r9 is restored to the pre-Context value when ctx goes out of scope
+```
+
+**Warning:** `Context` is not interrupt-safe. If an ISR calls into a different module while a `Context` is active, `r9` will be wrong. Use it only in non-preemptive code paths or with interrupts disabled.
+
+### Full Example
+
+```cpp
+#include "udynlink.hpp"
+#include "mod_sensor_module_data.h"
+
+void run_sensor_module() {
+    udynlink::Module mod;
+    udynlink_error_t err = mod.load(mod_sensor_module_data);
+    if (err != UDYNLINK_OK) {
+        printf("load failed: %d\n", (int)err);
+        return;
+    }
+
+    auto init = mod.resolve<void(void)>("sensor_init");
+    auto read = mod.resolve<int(void)>("sensor_read");
+
+    if (init) (*init)();
+    if (read) {
+        int val = (*read)();
+        printf("sensor value: %d\n", val);
+    }
+}
+```
+
+### C++ API and the Design Principles
+
+The C++ API follows the same principles as the C API:
+- **Zero-cost if unused:** `udynlink.hpp` is a header-only layer. If you don't include it, it compiles to nothing.
+- **Unopinionated:** You can mix C and C++ APIs freely. `Module::handle()` gives you the raw `udynlink_module_t*` for use with any C function.
+- **Library, not framework:** The C++ types are plain value types with no hidden threads, registries, or global state.
 
 ---
 

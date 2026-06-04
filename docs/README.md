@@ -1,11 +1,27 @@
 # udynlink Documentation
 
+## Design Principles
+
+All of udynlink is guided by seven principles. When evaluating a feature or change, check it against these:
+
+| Principle | What it means |
+|-----------|---------------|
+| **Simplicity** | Minimal API surface: load, call, unload. No DSLs, no code generation, no macro magic. |
+| **Unopinionated** | No imposed lifecycle, event loop, threading model, or memory strategy. |
+| **Usage-agnostic** | Bootloaders, plugins, OTA patching, scripting FFI, LGPL compliance — all equally first-class. |
+| **Flexible** | Three load modes, non-contiguous image loading, low-level relocation primitives, deferred symbols. |
+| **Minimal overhead** | No heap allocation when the host provides a buffer. No hidden state. `udynlink_module_t` is 24 bytes. |
+| **Zero-cost optional features** | Dependency system, hash resolution, call ergonomics, symbol cache — separate headers, zero cost if unused. |
+| **Library, not framework** | You call udynlink; it never calls you back except through the five callbacks you implement. |
+
+## Guides
+
 | Guide | Description |
 |-------|-------------|
-| [How It Works](how-it-works.md) | Technical deep-dive: PIC model, LOT/r9 mechanism, relocations, binary format, ABI versioning, cross-module thunks |
-| [Integrating as a Host](integrating-as-host.md) | Adding udynlink to your firmware, implementing callbacks, symbol tables, lifecycle, thread safety, dependency system |
+| [How It Works](how-it-works.md) | Technical deep-dive: PIC model, LOT/r9 mechanism, relocations, binary format, ABI versioning |
+| [Integrating as a Host](integrating-as-host.md) | Adding udynlink to your firmware, implementing callbacks, symbol tables, lifecycle, thread safety, dependency system, non-contiguous loading, C++ API |
 | [Writing Modules](writing-modules.md) | Creating loadable C/C++ modules, consuming symbols, cross-module calls, mkmodule reference, dependency declarations |
-| [API Reference](api-reference.md) | Complete reference for all public functions, structs, macros, and callbacks |
+| [API Reference](api-reference.md) | Complete reference for all public functions, structs, macros, callbacks, and C++ API |
 | [Examples](examples.md) | Working code examples for every major feature |
 | [Testing Guide](testing.md) | Running tests, adding test cases and platforms, debugging |
 

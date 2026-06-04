@@ -120,6 +120,8 @@ int r = UDYNLINK_CALL(&h, int, (42));
 
 `UDYNLINK_CALL` saves the caller's `r9`, invokes `UDYNLINK_PREPARE_CALL`, calls the function, and restores `r9` before returning.
 
+For C++ hosts, `udynlink.hpp` provides typed `Func<Sig>` handles and an RAII `Context` that manages `r9` over an entire block — see [C++ API](integrating-as-host.md#c-api-udynlinkhpp) in the host integration guide.
+
 ### Why Remove the Fixed-Address Approach
 
 Earlier versions of udynlink (and the original project) relied on either a callback at `0x1c` or a fixed RAM word at `0x20000000` (`UDYNLINK_LOT_BASE_ADDR`). Both approaches had drawbacks:
