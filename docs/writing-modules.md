@@ -131,6 +131,8 @@ int public_func(int x) {
 }
 ```
 
+> **How are exported functions preserved?** The toolchain links with `--gc-sections`, which strips any function not reachable from an entry point or a `KEEP()` directive. Exported functions survive because `mkmodule` generates an assembly prologue wrapper for each one and places it in a special `.text_nogc` section. The linker script contains `KEEP(*(.text_nogc))`, so the wrappers — and the real function bodies they reference — are never garbage-collected. `static` functions, which get no wrapper, are eligible for removal if nothing calls them. With `--no-prologue`, the toolchain uses `-Wl,--undefined=<sym>` for each exported symbol instead. You do not need `__attribute__((used))` on exported functions; the wrapper mechanism already keeps them alive. For the full technical details, see [How It Works — Interaction with --gc-sections](how-it-works.md#interaction-with---gc-sections).
+
 ### Global Variables
 
 Non-static global variables are also exported symbols. The host can look them up with `udynlink_lookup_symbol`:
