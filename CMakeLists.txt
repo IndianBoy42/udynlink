@@ -38,6 +38,11 @@ target_include_directories(udynlink_deps PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
+# Scripts directory: available to both FetchContent and installed consumers
+set(udynlink_SCRIPTS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/scripts" CACHE PATH
+    "Path to udynlink scripts (mkhostsyms, mkmodule, etc.)"
+)
+
 # Install support
 include(GNUInstallDirs)
 install(TARGETS udynlink
@@ -91,6 +96,21 @@ write_basic_package_version_file(
 install(FILES
     ${CMAKE_CURRENT_BINARY_DIR}/udynlinkConfig.cmake
     ${CMAKE_CURRENT_BINARY_DIR}/udynlinkConfigVersion.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/udynlink
+)
+
+# Make helper functions available at build time (FetchContent consumers)
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/udynlinkGenerateHostSyms.cmake")
+
+# Install scripts and CMake helpers
+install(DIRECTORY scripts/
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/udynlink/scripts
+    PATTERN "__pycache__" EXCLUDE
+    PATTERN "codemap.md" EXCLUDE
+)
+
+install(FILES
+    cmake/udynlinkGenerateHostSyms.cmake
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/udynlink
 )
 

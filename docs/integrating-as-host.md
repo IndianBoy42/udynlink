@@ -832,6 +832,86 @@ uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const
 }
 ```
 
+### CMake Integration
+
+When consuming udynlink via CMake (`add_subdirectory`, `FetchContent`, or `find_package`), a helper function `udynlink_generate_host_syms()` is available. The variable `udynlink_SCRIPTS_DIR` points to the scripts directory.
+
+#### Recommended: Offline Generation with Staleness Check
+
+Because `mkhostsyms` needs the linked firmware ELF (for symbol addresses), but the generated header must be compiled **into** that same firmware, this is a chicken-and-egg problem. The recommended pattern is **offline generation**: run the tool manually (or in a script), commit the generated header, and add a CI verification step to catch staleness.
+
+**Step 1:** Generate the header once, manually:
+
+```bash
+# After building your firmware
+python3 ${udynlink_SCRIPTS_DIR}/mkhostsyms \
+    --elf build/my_firmware.elf \
+    --output src/host_syms.h
+
+# Commit the generated header
+git add src/host_syms.h
+```
+
+**Step 2:** Use it in your CMake build:
+
+```cmake
+add_executable(firmware
+    src/main.c
+    src/host_symbols.c   # includes host_syms.h
+)
+target_include_directories(firmware PRIVATE src)
+target_link_libraries(firmware PRIVATE udynlink::udynlink)
+```
+
+**Step 3 (Optional):** Add a CI staleness check:
+
+```cmake
+# Verify committed header matches current ELF
+udynlink_generate_host_syms(
+    ELF firmware
+    OUTPUT ${CMAKE_BINARY_DIR}/check_host_syms.h
+)
+add_custom_target(verify_host_syms
+    COMMAND ${CMAKE_COMMAND} -E compare_files
+        ${CMAKE_SOURCE_DIR}/src/host_syms.h
+        ${CMAKE_BINARY_DIR}/check_host_syms.h
+    DEPENDS ${CMAKE_BINARY_DIR}/check_host_syms.h
+    COMMENT "Verifying host symbol hash table is up to date"
+)
+```
+
+This target fails the build if the committed header is out of date — add it to your CI pipeline.
+
+#### FetchContent Example
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(udynlink
+    GIT_REPOSITORY https://github.com/your-org/udynlink.git
+    GIT_TAG        v0.1.0
+)
+FetchContent_MakeAvailable(udynlink)
+
+# udynlink_SCRIPTS_DIR and udynlink_generate_host_syms() are now available
+
+add_executable(firmware src/main.c src/host_symbols.c)
+target_include_directories(firmware PRIVATE src)
+target_link_libraries(firmware PRIVATE udynlink::udynlink)
+```
+
+#### `udynlink_generate_host_syms()` Reference
+
+```cmake
+udynlink_generate_host_syms(
+    ELF <target_or_path>     # Executable target or path to host ELF
+    OUTPUT <header_path>     # Output C header path
+    [FILTER <regex>]         # Only include symbols matching regex
+    [DEPENDS <deps...>]      # Additional dependencies for the custom command
+)
+```
+
+When `ELF` is a CMake target name, it uses `$<TARGET_FILE:target>` as the ELF path and adds the target as a dependency automatically.
+
 **Performance tradeoffs:**
 
 | Pattern | Lookup Time | RAM Overhead | Maintenance |

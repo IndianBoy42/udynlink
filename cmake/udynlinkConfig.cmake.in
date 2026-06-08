@@ -2,4 +2,22 @@
 
 include("${CMAKE_CURRENT_LIST_DIR}/udynlinkTargets.cmake")
 
+# Scripts directory for mkhostsyms, mkmodule, etc.
+# After install: relative to <prefix>/lib/cmake/udynlink/ -> <prefix>/share/udynlink/scripts/
+# For FetchContent: set in CMakeLists.txt via CACHE
+if(NOT udynlink_SCRIPTS_DIR)
+  get_filename_component(_udynlink_cmake_dir "${CMAKE_CURRENT_LIST_DIR}" ABSOLUTE)
+  get_filename_component(_udynlink_prefix "${_udynlink_cmake_dir}/../../.." ABSOLUTE)
+  set(udynlink_SCRIPTS_DIR "${_udynlink_prefix}/share/udynlink/scripts")
+endif()
+
+# Load helper functions
+include("${CMAKE_CURRENT_LIST_DIR}/udynlinkGenerateHostSyms.cmake" OPTIONAL RESULT_VARIABLE _udynlink_gen_mod)
+if(NOT _udynlink_gen_mod)
+  # Fallback: look for it alongside the scripts dir
+  if(EXISTS "${udynlink_SCRIPTS_DIR}/../cmake/udynlinkGenerateHostSyms.cmake")
+    include("${udynlink_SCRIPTS_DIR}/../cmake/udynlinkGenerateHostSyms.cmake")
+  endif()
+endif()
+
 check_required_components(udynlink)
