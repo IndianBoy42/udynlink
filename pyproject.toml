@@ -20,5 +20,10 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.pytest.ini_options]
+markers = [
+    "integration: tests requiring the ARM cross-compiler (arm-none-eabi-gcc)",
+]
+
 [tool.uv]
 package = false

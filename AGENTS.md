@@ -133,6 +133,10 @@ just target-info cortex-m4f    # Show target details
 # Validation
 just validate-all-targets      # Compile hello.c for all 9 targets
 just ci                        # Full CI suite (MPS2 + AN385 + AN500 + AN505 + H405)
+
+# Python tests
+just test-py                   # Python unit tests only (no ARM toolchain needed)
+just test-py-all               # All Python tests including integration (needs arm-none-eabi-gcc)
 ```
 
 ### Build the test host firmware
@@ -266,5 +270,5 @@ The `.gitignore` and test harness generate these artifacts; do not commit them:
 
 | # | Task | Priority | Notes |
 |---|------|----------|-------|
-| 1 | Add unit tests for Python toolchain | Low | Only integration tests via QEMU currently exist |
+| 1 | Add unit tests for mkmodule | Low | mkhostsyms now has tests; mkmodule still only tested via QEMU |
 | 2 | Migrate STM32F429 tests to mainline QEMU | Medium | Depends on suitable MPS2-level board support in mainline QEMU for M4 |

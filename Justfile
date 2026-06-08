@@ -507,6 +507,14 @@ ci-quick:
     just compile-check
     just validate-all-targets
 
+# Run Python unit tests (mkhostsyms, etc.)
+test-py:
+    uv run --with pytest pytest tests/py -v -m "not integration"
+
+# Run Python tests including integration tests (requires arm-none-eabi-gcc)
+test-py-all:
+    uv run --with pytest pytest tests/py -v
+
 # =============================================================================
 # Help
 # =============================================================================
