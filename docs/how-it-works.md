@@ -521,9 +521,9 @@ The host may also return `UDYNLINK_SYM_DEFERRED` (the sentinel value `(uint32_t)
 
 Deferred symbols can be resolved later via `udynlink_link_symbol()`, `udynlink_link_incremental()`, or `udynlink_relink_all()`.
 
-### Hash-Based O(1) Resolution
+### Hash-Based and Trie-Based O(1)/O(k) Resolution
 
-For hosts with large symbol tables, the `scripts/mkhostsyms` tool can read a host firmware ELF and generate a C header with a const GNU hash table. The host implements `udynlink_external_resolve_symbol` as a hash table lookup for O(1) resolution. See the [Host Guide](integrating-as-host.md) for details.
+For hosts with large symbol tables, the `scripts/mkhostsyms` tool can read a host firmware ELF and generate a C header with a const GNU hash table (default, `--format gnu-hash`) or a compact search trie (`--format trie`). The hash table gives O(1) average-case lookup; the trie gives O(k) worst-case lookup where k is the symbol name length, with a more compact representation for symbol sets with shared prefixes. See the [Host Guide](integrating-as-host.md) for details.
 
 ---
 

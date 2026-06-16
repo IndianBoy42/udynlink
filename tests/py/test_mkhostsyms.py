@@ -38,6 +38,10 @@ read_host_symbols = mkhostsyms.read_host_symbols
 build_gnu_hash_table = mkhostsyms.build_gnu_hash_table
 emit_c_header = mkhostsyms.emit_c_header
 BLOOM_SHIFT = mkhostsyms.BLOOM_SHIFT
+TrieFormat = mkhostsyms.TrieFormat
+UDYNLINK_TRIE_NONE = TrieFormat.NONE
+UDYNLINK_TRIE_FLAG_LEAF = TrieFormat.FLAG_LEAF
+UDYNLINK_TRIE_FLAG_HAS_CHILD = TrieFormat.FLAG_HAS_CHILD
 
 # ---------------------------------------------------------------------------
 # Helpers for ARM cross-compiler detection
@@ -513,5 +517,266 @@ class TestEndToEndWithFilter:
         result = subprocess.run(compile_cmd, capture_output=True, text=True)
         assert result.returncode == 0, (
             f"Filtered header failed to compile:\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+
+
+# ===================================================================
+# Trie format tests
+# ===================================================================
+
+
+def _trie_lookup(table, name):
+    """Pure-Python reimplementation of udynlink_resolve_trie_symbol."""
+    if table["num_nodes"] == 0:
+        return None
+    next_level = table["root_child"]
+    matched_idx = UDYNLINK_TRIE_NONE
+    for c in name:
+        cur = next_level
+        matched_idx = UDYNLINK_TRIE_NONE
+        while cur != UDYNLINK_TRIE_NONE:
+            node = table["nodes"][cur]
+            node_ch = node["ch_flags"] & 0xFF
+            if node_ch == ord(c):
+                matched_idx = cur
+                next_level = node["child"]
+                break
+            if node_ch > ord(c):
+                return None
+            cur = node["sibling"]
+        if matched_idx == UDYNLINK_TRIE_NONE:
+            return None
+    if matched_idx != UDYNLINK_TRIE_NONE and (
+        table["nodes"][matched_idx]["ch_flags"] & UDYNLINK_TRIE_FLAG_LEAF
+    ):
+        return table["leaf_addrs"][table["nodes"][matched_idx]["leaf_index"]]
+    return None
+
+
+class TestTrieBuildEmpty:
+    def test_empty(self):
+        fmt = TrieFormat()
+        table = fmt.build([])
+        assert table["num_nodes"] == 0
+        assert table["num_leaves"] == 0
+        assert table["root_child"] == UDYNLINK_TRIE_NONE
+        assert table["nodes"] == []
+        assert table["leaf_addrs"] == []
+
+
+class TestTrieBuildSingle:
+    def test_single_symbol(self):
+        symbols = [("my_func", 0x0800)]
+        fmt = TrieFormat()
+        table = fmt.build(symbols)
+        assert table["num_nodes"] == 7
+        assert table["num_leaves"] == 1
+        assert table["names"] == ["my_func"]
+        assert table["leaf_addrs"] == [0x0800]
+
+    def test_single_lookup(self):
+        symbols = [("my_func", 0x0800)]
+        fmt = TrieFormat()
+        table = fmt.build(symbols)
+        assert _trie_lookup(table, "my_func") == 0x0800
+        assert _trie_lookup(table, "my_fun") is None
+        assert _trie_lookup(table, "other") is None
+
+
+class TestTrieBuildMultiple:
+    @pytest.fixture()
+    def table(self):
+        symbols = [
+            ("my_func", 0x0800),
+            ("another_func", 0x0900),
+            ("helper", 0x0A00),
+        ]
+        return TrieFormat().build(symbols)
+
+    def test_lookup_all(self, table):
+        assert _trie_lookup(table, "my_func") == 0x0800
+        assert _trie_lookup(table, "another_func") == 0x0900
+        assert _trie_lookup(table, "helper") == 0x0A00
+
+    def test_lookup_miss(self, table):
+        assert _trie_lookup(table, "nonexistent") is None
+        assert _trie_lookup(table, "my_fun") is None
+        assert _trie_lookup(table, "helpers") is None
+
+    def test_siblings_sorted(self, table):
+        """Root-level siblings must be sorted by character."""
+        cur = table["root_child"]
+        chars = []
+        while cur != UDYNLINK_TRIE_NONE:
+            node = table["nodes"][cur]
+            chars.append(node["ch_flags"] & 0xFF)
+            cur = node["sibling"]
+        assert chars == sorted(chars)
+
+    def test_leaf_flags(self, table):
+        """Every leaf node must have the LEAF flag, non-leaves must not."""
+        for node in table["nodes"]:
+            if node["leaf_index"] != UDYNLINK_TRIE_NONE:
+                assert node["ch_flags"] & UDYNLINK_TRIE_FLAG_LEAF
+            if node["ch_flags"] & UDYNLINK_TRIE_FLAG_LEAF:
+                assert node["leaf_index"] != UDYNLINK_TRIE_NONE
+
+    def test_total_leaf_count(self, table):
+        assert table["num_leaves"] == 3
+
+    def test_prefix_sharing(self):
+        """Symbols sharing a prefix should share trie nodes."""
+        symbols = [("abc", 1), ("abd", 2)]
+        table = TrieFormat().build(symbols)
+        # 'a'(1) → 'b'(2) → 'c'/'d' siblings(2) = 4 nodes
+        assert table["num_nodes"] == 4
+
+    def test_no_prefix_sharing(self):
+        """Completely different symbols should not share nodes."""
+        symbols = [("abc", 1), ("xyz", 2)]
+        table = TrieFormat().build(symbols)
+        # 3 + 3 = 6 nodes (no shared prefix)
+        assert table["num_nodes"] == 6
+
+
+class TestTrieBuildPrefix:
+    """One symbol is a prefix of another."""
+
+    def test_prefix_is_leaf(self):
+        symbols = [("foo", 0x100), ("foobar", 0x200)]
+        table = TrieFormat().build(symbols)
+        assert _trie_lookup(table, "foo") == 0x100
+        assert _trie_lookup(table, "foobar") == 0x200
+        assert _trie_lookup(table, "foob") is None
+
+    def test_prefix_not_separate(self):
+        """The 'foo' node should be both leaf and have children."""
+        symbols = [("foo", 0x100), ("foobar", 0x200)]
+        table = TrieFormat().build(symbols)
+        # Navigate: root → f → o1 → o2 (leaf for "foo", has child for "foobar")
+        cur = table["root_child"]
+        found_f = None
+        while cur != UDYNLINK_TRIE_NONE:
+            if (table["nodes"][cur]["ch_flags"] & 0xFF) == ord("f"):
+                found_f = cur
+                break
+            cur = table["nodes"][cur]["sibling"]
+        assert found_f is not None
+        o1 = table["nodes"][found_f]["child"]
+        assert (table["nodes"][o1]["ch_flags"] & 0xFF) == ord("o")
+        o2 = table["nodes"][o1]["child"]
+        assert (table["nodes"][o2]["ch_flags"] & 0xFF) == ord("o")
+        assert table["nodes"][o2]["ch_flags"] & UDYNLINK_TRIE_FLAG_LEAF
+        assert table["nodes"][o2]["ch_flags"] & UDYNLINK_TRIE_FLAG_HAS_CHILD
+
+
+class TestTrieEmit:
+    @pytest.fixture()
+    def sample_table(self):
+        symbols = [("my_func", 0x0800), ("helper", 0x0A00)]
+        return TrieFormat().build(symbols)
+
+    @pytest.fixture()
+    def header_path(self, tmp_path):
+        return tmp_path / "host_syms.h"
+
+    def test_output_contains_arrays(self, sample_table, header_path):
+        TrieFormat().emit(sample_table, str(header_path))
+        text = header_path.read_text()
+        assert "g_host_trie_nodes[]" in text
+        assert "g_host_trie_leaf_addrs[]" in text
+
+    def test_output_contains_struct(self, sample_table, header_path):
+        TrieFormat().emit(sample_table, str(header_path))
+        text = header_path.read_text()
+        assert "udynlink_trie_table_t g_host_sym_table" in text
+
+    def test_includes_trie_header(self, sample_table, header_path):
+        TrieFormat().emit(sample_table, str(header_path))
+        text = header_path.read_text()
+        assert '#include "udynlink_trie.h"' in text
+
+    def test_include_guard(self, sample_table, header_path):
+        TrieFormat().emit(sample_table, str(header_path))
+        text = header_path.read_text()
+        guard = "HOST_SYMS_HOST_SYMS_H"
+        assert f"#ifndef {guard}" in text
+        assert f"#define {guard}" in text
+
+
+class TestTrieEmitEmptyTable:
+    def test_produces_valid_file(self, tmp_path):
+        table = TrieFormat().build([])
+        header_path = tmp_path / "empty_syms.h"
+        TrieFormat().emit(table, str(header_path))
+        text = header_path.read_text()
+        assert "#ifndef" in text
+        assert "#endif" in text
+
+
+@pytest.mark.integration
+@skip_no_arm_gcc
+class TestTrieEndToEnd:
+    def test_generated_header_compiles(self, tmp_path):
+        src = tmp_path / "test.c"
+        elf = tmp_path / "test.elf"
+        _write_test_c(src)
+        _compile_arm_elf(str(src), str(elf))
+
+        symbols = read_host_symbols(str(elf))
+        table = TrieFormat().build(symbols)
+
+        header_path = tmp_path / "host_syms.h"
+        TrieFormat().emit(table, str(header_path))
+
+        udynlink_include_dir = os.path.join(_REPO_ROOT, "udynlink")
+        compile_cmd = [
+            _ARM_GCC,
+            "-mcpu=cortex-m4",
+            "-mthumb",
+            "-fsyntax-only",
+            f"-I{udynlink_include_dir}",
+            str(header_path),
+        ]
+        result = subprocess.run(compile_cmd, capture_output=True, text=True)
+        assert result.returncode == 0, (
+            f"Generated trie header failed to compile:\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+
+    def test_consumer_compiles(self, tmp_path):
+        src = tmp_path / "test.c"
+        elf = tmp_path / "test.elf"
+        _write_test_c(src)
+        _compile_arm_elf(str(src), str(elf))
+
+        symbols = read_host_symbols(str(elf))
+        table = TrieFormat().build(symbols)
+
+        header_path = tmp_path / "host_syms.h"
+        TrieFormat().emit(table, str(header_path))
+
+        consumer_path = tmp_path / "consumer.c"
+        consumer_path.write_text(
+            '#include "host_syms.h"\n'
+            "void *test_lookup(void) {\n"
+            '    return udynlink_resolve_trie_symbol(&g_host_sym_table, "my_func");\n'
+            "}\n"
+        )
+
+        udynlink_include_dir = os.path.join(_REPO_ROOT, "udynlink")
+        compile_cmd = [
+            _ARM_GCC,
+            "-mcpu=cortex-m4",
+            "-mthumb",
+            "-fsyntax-only",
+            f"-I{udynlink_include_dir}",
+            f"-I{tmp_path}",
+            str(consumer_path),
+        ]
+        result = subprocess.run(compile_cmd, capture_output=True, text=True)
+        assert result.returncode == 0, (
+            f"Trie consumer C file failed to compile:\n"
             f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )

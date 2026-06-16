@@ -970,6 +970,60 @@ Performs O(1) symbol lookup in a pre-built GNU hash table.
 
 ---
 
+## Trie-Based Symbol Resolution
+
+### `udynlink_resolve_trie_symbol`
+
+```c
+void *udynlink_resolve_trie_symbol(const udynlink_trie_table_t *table,
+                                     const char *name);
+```
+
+Performs O(k) symbol lookup in a pre-built search trie, where k is the length of the symbol name.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `table` | `const udynlink_trie_table_t *` | Pointer to an initialized trie table structure. |
+| `name` | `const char *` | Symbol name to resolve. |
+
+**Return value:**
+
+- Pointer to the symbol's address if found.
+- `NULL` if the symbol is not in the table.
+
+**Note:** The trie table is typically generated offline by the `mkhostsyms --format trie` script from the host firmware ELF. See [Host with Trie-Based Resolution](examples.md#host-with-trie-based-resolution) for usage.
+
+### `udynlink_trie_node_t`
+
+```c
+typedef struct {
+    uint16_t ch_flags;    /* bits [7:0] = character, bit 8 = LEAF, bit 9 = HAS_CHILD */
+    uint16_t sibling;     /* index of next sibling, or UDYNLINK_TRIE_NONE */
+    uint16_t child;       /* index of first child, or UDYNLINK_TRIE_NONE */
+    uint16_t leaf_index;  /* index into leaf_addrs if LEAF, else UDYNLINK_TRIE_NONE */
+} udynlink_trie_node_t;
+```
+
+A single node in the search trie. Each node is 8 bytes. Sibling lists are sorted by character for early-exit optimization.
+
+### `udynlink_trie_table_t`
+
+```c
+typedef struct {
+    size_t num_nodes;
+    size_t num_leaves;
+    uint16_t root_child;
+    const udynlink_trie_node_t *nodes;
+    const uintptr_t *leaf_addrs;
+} udynlink_trie_table_t;
+```
+
+Top-level trie table structure. `root_child` is the index of the first node at the root level; `leaf_addrs` maps leaf indices to symbol addresses.
+
+---
+
 ## Utility Functions
 
 ### `udynlink_error_msg`

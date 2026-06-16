@@ -46,7 +46,7 @@ Follow this checklist to integrate udynlink into your firmware:
 4. **Set up the LOT base** before calling any module function using `UDYNLINK_PREPARE_CALL()` (`udynlink_cpp_init()` sets it internally, so you only need to re-set it before other module calls).
 5. **Build a host symbol table** — decide how your firmware will resolve symbols requested by modules.
 6. **Write module loading/unloading code** — call `udynlink_load_module()`, manage handles, and call `udynlink_unload_module()` when done. **Remember to zero-initialize the module handle before the first load.**
-7. **(Optional) Set up hash-based symbol resolution** — use `scripts/mkhostsyms` for O(1) lookup when you export many symbols.
+7. **(Optional) Set up hash-based or trie-based symbol resolution** — use `scripts/mkhostsyms` for O(1) hash or O(k) trie lookup when you export many symbols.
 8. **(Optional) Implement non-contiguous image loading** — if loading modules from SD card, SPI flash, decompressed buffers, or any source where the image sections are not contiguous in memory.
 
 ---
@@ -94,6 +94,7 @@ For bare-metal projects without CMake, copy these files into your source tree:
 - `udynlink/udynlink.h`
 - `udynlink/udynlink_externals.h`
 - `udynlink/udynlink_hash.h`
+- `udynlink/udynlink_trie.h`
 
 Add the `.c` files to your build and ensure the `udynlink/` directory is in your include path.
 
@@ -757,7 +758,7 @@ uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const
 
 ## Hash-Based Symbol Resolution
 
-If your firmware exports many symbols, linear search becomes slow. The `scripts/mkhostsyms` tool generates a **precomputed GNU hash table** with a Bloom filter, giving O(1) average-case lookup time.
+If your firmware exports many symbols, linear search becomes slow. The `scripts/mkhostsyms` tool generates a **precomputed GNU hash table** with a Bloom filter, giving O(1) average-case lookup time. Use the `--format gnu-hash` option (the default).
 
 ### When to Use
 
@@ -771,6 +772,13 @@ Run `mkhostsyms` against your compiled host firmware ELF:
 
 ```bash
 python3 scripts/mkhostsyms --elf build/my_firmware.elf --output src/host_syms.h
+```
+
+For a trie-based table instead:
+
+```bash
+python3 scripts/mkhostsyms --format trie --elf build/my_firmware.elf --output src/host_syms.h
+```
 ```
 
 Optional flags:
@@ -882,6 +890,53 @@ add_custom_target(verify_host_syms
 
 This target fails the build if the committed header is out of date — add it to your CI pipeline.
 
+---
+
+## Trie-Based Symbol Resolution
+
+The `scripts/mkhostsyms` tool also supports a **compact search trie** format via `--format trie`. Each trie node is 8 bytes (four `uint16_t` fields), and symbol names are encoded directly in the trie structure — no separate string table is needed for lookup.
+
+### When to Use
+
+- Your firmware exports a moderate number of symbols (~10–200) with shared prefixes (e.g., `hal_uart_init`, `hal_spi_init`, `hal_gpio_read`).
+- You want deterministic O(k) lookup where k = symbol name length, without the Bloom filter overhead.
+- You prefer a more compact representation than the hash table for symbol sets with common prefixes.
+
+### How to Generate
+
+```bash
+python3 scripts/mkhostsyms --format trie --elf build/my_firmware.elf --output src/host_syms.h
+```
+
+The generated `host_syms.h` contains:
+- A `g_host_trie_nodes[]` array of `udynlink_trie_node_t` entries.
+- A `g_host_trie_leaf_addrs[]` array of symbol addresses.
+- A pre-initialized `udynlink_trie_table_t g_host_sym_table` struct.
+
+### How to Use at Runtime
+
+```c
+#include "udynlink.h"
+#include "udynlink_trie.h"
+#include "host_syms.h"
+
+uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const char *name) {
+    (void)p_mod;
+    void *addr = udynlink_resolve_trie_symbol(&g_host_sym_table, name);
+    return addr ? (uintptr_t)addr : 0;
+}
+```
+
+### Trie Structure
+
+Each node stores a character, flags (leaf / has-child), sibling index, child index, and leaf index — all in 8 bytes as four `uint16_t` values. The lookup walks the trie character-by-character, scanning sorted sibling lists with early exit. No hash computation, no string comparison, no Bloom filter.
+
+| Pattern | Lookup Time | Flash Overhead | Maintenance |
+|---------|-------------|----------------|-------------|
+| `strcmp` chain | O(n) | Minimal | Manual |
+| Search trie | O(k) | ~8 bytes/node | Regenerate on every ELF change |
+| GNU hash table | O(1) avg | Bloom + buckets + strtab | Regenerate on every ELF change |
+
 #### FetchContent Example
 
 ```cmake
@@ -911,14 +966,6 @@ udynlink_generate_host_syms(
 ```
 
 When `ELF` is a CMake target name, it uses `$<TARGET_FILE:target>` as the ELF path and adds the target as a dependency automatically.
-
-**Performance tradeoffs:**
-
-| Pattern | Lookup Time | RAM Overhead | Maintenance |
-|---------|-------------|--------------|-------------|
-| `strcmp` chain | O(n) | Minimal | Manual |
-| Static array | O(n) | String table | Semi-manual |
-| GNU hash table | O(1) avg | Bloom filter + buckets | Regenerate on every ELF change |
 
 ---
 

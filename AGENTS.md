@@ -63,7 +63,7 @@ All user-facing documentation lives under `docs/` and is summarized in `docs/REA
 - **[just](https://github.com/casey/just)** for running tests and build commands
 
 **Optional tools:**
-- **`scripts/mkhostsyms`** — reads a host firmware ELF and generates a C header with a const GNU hash table for O(1) symbol resolution
+- **`scripts/mkhostsyms`** — reads a host firmware ELF and generates a C header with a const GNU hash table (`--format gnu-hash`, default) or search trie (`--format trie`) for O(1)/O(k) symbol resolution
 
 ## Build & Test Commands
 
@@ -165,6 +165,7 @@ The platform is selected via `-DUDYNLINK_PLATFORM=<name>` (default: `stm32f429_d
 | `udynlink_deps.h` | Optional (separate .c) | Cross-module thunks, dependency tracking, circular detection, `UDYNLINK_REQUIRES` | Modules that call other modules |
 | `udynlink_thunk.h` | Optional (separate .c) | Thunk pool, gateway/stub allocation, `udynlink_thunk_make_call()`, `udynlink_external_find_stub()` | Creating callable function pointers for module symbols without r9 management |
 | `udynlink_hash.h` | Optional (inline) | GNU hash table + bloom filter for O(1) host symbol resolution | Hosts exporting many symbols |
+| `udynlink_trie.h` | Optional (inline) | Compact search trie for O(k) host symbol resolution | Hosts wanting prefix-sharing or no Bloom overhead |
 | `udynlink_host_utils.h` | Optional (inline) | Tiny host-side symbol cache with LRU eviction | Speeding up repeated `udynlink_external_resolve_symbol` calls |
 | `udynlink.hpp` | Optional (C++17 inline) | `Module` (RAII lifecycle), `Func<Sig>` (typed function handle), `Context` (RAII r9 manager) | C++ hosts wanting type safety and automatic cleanup |
 

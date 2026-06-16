@@ -32,10 +32,17 @@ This repository is the **eh2k fork** of the original udynlink project. It adds C
 
 ### Hash-Based Symbol Resolution (O(1))
 - New files: `udynlink/udynlink_hash.h` (hash table struct + lookup declaration + ~60-line GNU hash + bloom filter lookup implementation)
-- New tool: `scripts/mkhostsyms` — Python tool that reads a host firmware ELF, generates a C header with const hash table data for O(1) symbol resolution
+- New tool: `scripts/mkhostsyms` — Python tool that reads a host firmware ELF, generates a C header with const hash table data for O(1) symbol resolution (default, `--format gnu-hash`)
 - The hash table struct `udynlink_hash_table_t` contains: bloom filter, buckets, hash values, symbol addresses, and string table
 - Lookup function: `udynlink_resolve_hashed_symbol()` — O(1) amortized, replaces the O(N) strcmp resolution chain
 - No changes to existing `udynlink.h` / `udynlink.c` / `udynlink_externals.h` for this feature; it is an optional additive capability
+
+### Trie-Based Symbol Resolution (O(k))
+- New files: `udynlink/udynlink_trie.h` (trie node/table structs + ~20-line lookup implementation)
+- `scripts/mkhostsyms --format trie` generates a compact search trie — each node is 8 bytes (4 × `uint16_t`)
+- Symbols with shared prefixes (e.g., `hal_uart_*`, `hal_spi_*`) share ancestor nodes, reducing total storage
+- Lookup function: `udynlink_resolve_trie_symbol()` — O(k) worst-case where k = name length; no hash computation or string comparison
+- The `mkhostsyms` tool uses a `SymbolTableFormat` abstract base class; adding new formats requires subclassing and registering in the `FORMATS` dict
 
 ### Cross-Module Dependency System (`udynlink_deps`)
 - New files: `udynlink/udynlink_deps.h` (public API) and `udynlink/udynlink_deps.c` (implementation)

@@ -3,11 +3,15 @@
 import argparse
 import os
 import re
-import struct
 import sys
+from abc import ABC, abstractmethod
 
 from elftools.elf.elffile import ELFFile
 from elftools.elf.sections import SymbolTableSection
+
+# ---------------------------------------------------------------------------
+# Shared utilities
+# ---------------------------------------------------------------------------
 
 BLOOM_SHIFT = 26
 
@@ -34,7 +38,7 @@ def read_host_symbols(elf_path, filter_re=None):
                 bind = symbol['st_info']['bind']
                 stype = symbol['st_info']['type']
                 shndx = symbol['st_shndx']
-                vis = symbol['st_other']['visibility']
+                vis = symbol['other']['visibility']
                 name = str(symbol.name)
                 value = int(symbol['st_value'])
                 if not name or name.startswith("$"):
@@ -55,155 +59,202 @@ def read_host_symbols(elf_path, filter_re=None):
                 symbols.append((name, value))
     return symbols
 
-def build_gnu_hash_table(symbols, nbuckets=None):
-    nsyms = len(symbols)
-    if nsyms == 0:
-        return {
-            'nbuckets': 1,
-            'symoffset': 0,
-            'bloom_size': 1,
-            'bloom_shift': BLOOM_SHIFT,
-            'bloom': [0],
-            'buckets': [0],
-            'hash_values': [],
-            'sym_addrs': [],
-            'strtab': b'',
-            'strtab_offsets': [],
-            'names': [],
-        }
+# ---------------------------------------------------------------------------
+# Format registry
+# ---------------------------------------------------------------------------
 
-    if nbuckets is None:
-        nbuckets = next_power_of_2(max(nsyms // 4, 1))
+class SymbolTableFormat(ABC):
+    name: str = ""
+    description: str = ""
 
-    bloom_size = next_power_of_2(max(nsyms // 2, 1))
-    if bloom_size < 1:
-        bloom_size = 1
+    def add_args(self, parser):
+        pass
 
-    sym_addrs = [s[1] for s in symbols]
-    names = [s[0] for s in symbols]
+    @abstractmethod
+    def build(self, symbols, **kwargs):
+        ...
 
-    hashes = [gnu_hash(n) for n in names]
+    @abstractmethod
+    def includes(self):
+        ...
 
-    local_count = 0
-    global_indices = []
-    for i, h in enumerate(hashes):
-        global_indices.append(i)
+    @abstractmethod
+    def emit_arrays(self, f, data):
+        ...
 
-    global_indices.sort(key=lambda i: hashes[i] % nbuckets)
+    @abstractmethod
+    def emit_struct(self, f, data):
+        ...
 
-    symoffset = local_count
-
-    bloom = [0] * bloom_size
-    for h in hashes:
-        h1 = h
-        h2 = h1 >> BLOOM_SHIFT
-        idx = (h1 // 32) % bloom_size
-        mask = (1 << (h1 % 32)) | (1 << (h2 % 32))
-        bloom[idx] |= mask
-
-    buckets = [0] * nbuckets
-    hash_values = [0] * len(global_indices)
-
-    for pos, gi in enumerate(global_indices):
-        h = hashes[gi]
-        bucket = h % nbuckets
-        if buckets[bucket] == 0:
-            buckets[bucket] = pos + symoffset
-
-    for pos in range(len(global_indices)):
-        gi = global_indices[pos]
-        h = hashes[gi]
-        hv = h & 0xFFFFFFFE
-        if pos + 1 < len(global_indices):
-            gi_next = global_indices[pos + 1]
-            if hashes[gi] % nbuckets == hashes[gi_next] % nbuckets:
-                pass
-            else:
-                hv |= 1
-        else:
-            hv |= 1
-        hash_values[pos] = hv
-
-    strtab = bytearray()
-    strtab_offsets = [0] * nsyms
-    for i, name in enumerate(names):
-        strtab_offsets[i] = len(strtab)
-        strtab += name.encode('utf-8') + b'\0'
-
-    return {
-        'nbuckets': nbuckets,
-        'symoffset': symoffset,
-        'bloom_size': bloom_size,
-        'bloom_shift': BLOOM_SHIFT,
-        'bloom': bloom,
-        'buckets': buckets,
-        'hash_values': hash_values,
-        'sym_addrs': sym_addrs,
-        'strtab': bytes(strtab),
-        'strtab_offsets': strtab_offsets,
-        'names': names,
-        'global_indices': global_indices,
-    }
-
-def emit_c_header(table, output_path, guard_name=None):
-    if guard_name is None:
+    @staticmethod
+    def _default_guard(output_path):
         base = os.path.basename(output_path).upper().replace('.', '_').replace('-', '_')
-        guard_name = "HOST_SYMS_%s" % base
+        return "HOST_SYMS_%s" % base
 
-    with open(output_path, "wt") as f:
-        f.write("#ifndef %s\n" % guard_name)
-        f.write("#define %s\n\n" % guard_name)
-        f.write("#include <stdint.h>\n")
-        f.write("#include <stddef.h>\n")
-        f.write('#include "udynlink_hash.h"\n\n')
-
-        f.write("static const uint32_t g_host_hash_bloom[] = {\n    ")
-        for i, v in enumerate(table['bloom']):
+    @staticmethod
+    def _write_array(f, name, values, fmt, per_line=4, type_name="const uint32_t"):
+        f.write("static %s %s[] = {\n    " % (type_name, name))
+        for i, v in enumerate(values):
             if i > 0:
-                f.write(",\n    " if i % 4 == 0 else ", ")
-            f.write("0x%08X" % v)
+                f.write(",\n    " if i % per_line == 0 else ", ")
+            f.write(fmt % v)
         f.write("\n};\n\n")
 
-        f.write("static const uint32_t g_host_hash_buckets[] = {\n    ")
-        for i, v in enumerate(table['buckets']):
+    @staticmethod
+    def _write_byte_array(f, name, values, per_line=16):
+        f.write("static const char %s[] = {\n    " % name)
+        for i, b in enumerate(values):
             if i > 0:
-                f.write(",\n    " if i % 8 == 0 else ", ")
-            f.write("0x%08X" % v)
-        f.write("\n};\n\n")
-
-        f.write("static const uint32_t g_host_hash_values[] = {\n    ")
-        for i, v in enumerate(table['hash_values']):
-            if i > 0:
-                f.write(",\n    " if i % 4 == 0 else ", ")
-            f.write("0x%08X" % v)
-        f.write("\n};\n\n")
-
-        f.write("static const uintptr_t g_host_sym_addrs[] = {\n    ")
-        for i, v in enumerate(table['sym_addrs']):
-            if i > 0:
-                f.write(",\n    " if i % 4 == 0 else ", ")
-            f.write("0x%08X" % v)
-        f.write("\n};\n\n")
-
-        f.write("static const char g_host_strtab[] = {\n    ")
-        for i, b in enumerate(table['strtab']):
-            if i > 0:
-                f.write(",\n    " if i % 16 == 0 else ", ")
+                f.write(",\n    " if i % per_line == 0 else ", ")
             f.write("0x%02X" % b)
         f.write("\n};\n\n")
 
-        f.write("static const size_t g_host_strtab_offsets[] = {\n    ")
-        for i, v in enumerate(table['strtab_offsets']):
-            if i > 0:
-                f.write(",\n    " if i % 4 == 0 else ", ")
-            f.write("0x%08X" % v)
-        f.write("\n};\n\n")
+    def emit(self, data, output_path, guard_name=None):
+        if guard_name is None:
+            guard_name = self._default_guard(output_path)
 
+        with open(output_path, "wt") as f:
+            f.write("#ifndef %s\n" % guard_name)
+            f.write("#define %s\n\n" % guard_name)
+            f.write("#include <stdint.h>\n")
+            f.write("#include <stddef.h>\n")
+            for inc in self.includes():
+                f.write('#include "%s"\n' % inc)
+            f.write("\n")
+
+            self.emit_arrays(f, data)
+            self.emit_struct(f, data)
+
+            f.write("#endif\n")
+
+    def get_build_kwargs(self, args):
+        return {}
+
+
+class GnuHashFormat(SymbolTableFormat):
+    name = "gnu-hash"
+    description = "GNU hash table with Bloom filter for O(1) lookup"
+
+    def add_args(self, parser):
+        parser.add_argument('--nbuckets', type=int, default=None,
+                            help='Number of hash buckets (default: auto)')
+        parser.add_argument('--bloom-size', type=int, default=None,
+                            help='Bloom filter size in 32-bit words (default: auto)')
+
+    def includes(self):
+        return ["udynlink_hash.h"]
+
+    def build(self, symbols, nbuckets=None, bloom_size=None):
+        nsyms = len(symbols)
+        if nsyms == 0:
+            return {
+                'nbuckets': 1,
+                'symoffset': 0,
+                'bloom_size': 1,
+                'bloom_shift': BLOOM_SHIFT,
+                'bloom': [0],
+                'buckets': [0],
+                'hash_values': [],
+                'sym_addrs': [],
+                'strtab': b'',
+                'strtab_offsets': [],
+                'names': [],
+            }
+
+        if nbuckets is None:
+            nbuckets = next_power_of_2(max(nsyms // 4, 1))
+
+        computed_bloom_size = next_power_of_2(max(nsyms // 2, 1))
+        if computed_bloom_size < 1:
+            computed_bloom_size = 1
+
+        sym_addrs = [s[1] for s in symbols]
+        names = [s[0] for s in symbols]
+        hashes = [gnu_hash(n) for n in names]
+
+        local_count = 0
+        global_indices = list(range(nsyms))
+        global_indices.sort(key=lambda i: hashes[i] % nbuckets)
+        symoffset = local_count
+
+        bloom_sz = bloom_size if bloom_size is not None else computed_bloom_size
+        bloom_sz = next_power_of_2(bloom_sz)
+
+        bloom = self._build_bloom(hashes, bloom_sz)
+        buckets, hash_values = self._build_chains(hashes, global_indices, nbuckets, symoffset)
+
+        strtab = bytearray()
+        strtab_offsets = [0] * nsyms
+        for i, name in enumerate(names):
+            strtab_offsets[i] = len(strtab)
+            strtab += name.encode('utf-8') + b'\0'
+
+        return {
+            'nbuckets': nbuckets,
+            'symoffset': symoffset,
+            'bloom_size': bloom_sz,
+            'bloom_shift': BLOOM_SHIFT,
+            'bloom': bloom,
+            'buckets': buckets,
+            'hash_values': hash_values,
+            'sym_addrs': sym_addrs,
+            'strtab': bytes(strtab),
+            'strtab_offsets': strtab_offsets,
+            'names': names,
+            'global_indices': global_indices,
+        }
+
+    @staticmethod
+    def _build_bloom(hashes, bloom_size):
+        bloom = [0] * bloom_size
+        for h in hashes:
+            h2 = h >> BLOOM_SHIFT
+            idx = (h // 32) % bloom_size
+            mask = (1 << (h % 32)) | (1 << (h2 % 32))
+            bloom[idx] |= mask
+        return bloom
+
+    @staticmethod
+    def _build_chains(hashes, global_indices, nbuckets, symoffset):
+        buckets = [0] * nbuckets
+        hash_values = [0] * len(global_indices)
+
+        for pos, gi in enumerate(global_indices):
+            h = hashes[gi]
+            bucket = h % nbuckets
+            if buckets[bucket] == 0:
+                buckets[bucket] = pos + symoffset
+
+        for pos in range(len(global_indices)):
+            gi = global_indices[pos]
+            h = hashes[gi]
+            hv = h & 0xFFFFFFFE
+            if pos + 1 < len(global_indices):
+                gi_next = global_indices[pos + 1]
+                if hashes[gi] % nbuckets != hashes[gi_next] % nbuckets:
+                    hv |= 1
+            else:
+                hv |= 1
+            hash_values[pos] = hv
+
+        return buckets, hash_values
+
+    def emit_arrays(self, f, data):
+        self._write_array(f, "g_host_hash_bloom", data['bloom'], "0x%08X", per_line=4)
+        self._write_array(f, "g_host_hash_buckets", data['buckets'], "0x%08X", per_line=8)
+        self._write_array(f, "g_host_hash_values", data['hash_values'], "0x%08X", per_line=4)
+        self._write_array(f, "g_host_sym_addrs", data['sym_addrs'], "0x%08X", per_line=4,
+                          type_name="const uintptr_t")
+        self._write_byte_array(f, "g_host_strtab", data['strtab'])
+        self._write_array(f, "g_host_strtab_offsets", data['strtab_offsets'], "0x%08X", per_line=4,
+                          type_name="const size_t")
+
+    def emit_struct(self, f, data):
         f.write("static const udynlink_hash_table_t g_host_sym_table = {\n")
-        f.write("    .nbuckets = %u,\n" % table['nbuckets'])
-        f.write("    .symoffset = %u,\n" % table['symoffset'])
-        f.write("    .bloom_size = %u,\n" % table['bloom_size'])
-        f.write("    .bloom_shift = %u,\n" % table['bloom_shift'])
+        f.write("    .nbuckets = %u,\n" % data['nbuckets'])
+        f.write("    .symoffset = %u,\n" % data['symoffset'])
+        f.write("    .bloom_size = %u,\n" % data['bloom_size'])
+        f.write("    .bloom_shift = %u,\n" % data['bloom_shift'])
         f.write("    .bloom = g_host_hash_bloom,\n")
         f.write("    .buckets = g_host_hash_buckets,\n")
         f.write("    .hash_values = g_host_hash_values,\n")
@@ -212,15 +263,156 @@ def emit_c_header(table, output_path, guard_name=None):
         f.write("    .strtab_offsets = g_host_strtab_offsets,\n")
         f.write("};\n\n")
 
-        f.write("#endif\n")
+    def get_build_kwargs(self, args):
+        kwargs = {}
+        if hasattr(args, 'nbuckets') and args.nbuckets is not None:
+            kwargs['nbuckets'] = args.nbuckets
+        if hasattr(args, 'bloom_size') and args.bloom_size is not None:
+            kwargs['bloom_size'] = args.bloom_size
+        return kwargs
+
+
+class TrieFormat(SymbolTableFormat):
+    name = "trie"
+    description = "Compact search trie for O(k) lookup and prefix-friendly structure"
+
+    NONE = 0xFFFF
+    FLAG_LEAF = 0x0100
+    FLAG_HAS_CHILD = 0x0200
+
+    def includes(self):
+        return ["udynlink_trie.h"]
+
+    def build(self, symbols, **kwargs):
+        if not symbols:
+            return {
+                'num_nodes': 0,
+                'num_leaves': 0,
+                'root_child': self.NONE,
+                'nodes': [],
+                'leaf_addrs': [],
+                'names': [s[0] for s in symbols],
+            }
+
+        root = {}
+        leaf_addrs = []
+        names = [s[0] for s in symbols]
+
+        for name, addr in symbols:
+            leaf_idx = len(leaf_addrs)
+            leaf_addrs.append(addr)
+
+            current = root
+            for i, ch in enumerate(name):
+                if ch not in current:
+                    current[ch] = {'ch': ch, 'is_leaf': False,
+                                   'leaf_index': self.NONE,
+                                   'children': {}}
+                node = current[ch]
+                if i == len(name) - 1:
+                    node['is_leaf'] = True
+                    node['leaf_index'] = leaf_idx
+                else:
+                    current = node['children']
+
+        flat_nodes = []
+
+        def _emit_level(level_dict):
+            if not level_dict:
+                return []
+            indices = []
+            for ch in sorted(level_dict.keys()):
+                node = level_dict[ch]
+                idx = len(flat_nodes)
+                flat_nodes.append(None)
+                indices.append(idx)
+
+                child_indices = _emit_level(node['children'])
+
+                flags = 0
+                if node['is_leaf']:
+                    flags |= self.FLAG_LEAF
+                if child_indices:
+                    flags |= self.FLAG_HAS_CHILD
+
+                child_idx = child_indices[0] if child_indices else self.NONE
+                flat_nodes[idx] = (ord(ch), flags, child_idx,
+                                   self.NONE, node['leaf_index'])
+
+            for i in range(len(indices) - 1):
+                idx = indices[i]
+                ch_v, flags_v, child_v, _, leaf_v = flat_nodes[idx]
+                flat_nodes[idx] = (ch_v, flags_v, child_v, indices[i + 1], leaf_v)
+
+            return indices
+
+        root_child_indices = _emit_level(root)
+        root_child = root_child_indices[0] if root_child_indices else self.NONE
+
+        nodes_list = [{'ch_flags': n[1] | (n[0] & 0xFF),
+                       'sibling': n[3], 'child': n[2],
+                       'leaf_index': n[4]} for n in flat_nodes]
+
+        return {
+            'num_nodes': len(nodes_list),
+            'num_leaves': len(leaf_addrs),
+            'root_child': root_child,
+            'nodes': nodes_list,
+            'leaf_addrs': leaf_addrs,
+            'names': names,
+        }
+
+    def emit_arrays(self, f, data):
+        f.write("static const udynlink_trie_node_t g_host_trie_nodes[] = {\n")
+        for i, n in enumerate(data['nodes']):
+            f.write("    {0x%04X, 0x%04X, 0x%04X, 0x%04X}"
+                    % (n['ch_flags'], n['sibling'], n['child'], n['leaf_index']))
+            f.write(",\n" if i < len(data['nodes']) - 1 else "\n")
+        f.write("};\n\n")
+
+        self._write_array(f, "g_host_trie_leaf_addrs", data['leaf_addrs'], "0x%08X", per_line=4,
+                          type_name="const uintptr_t")
+
+    def emit_struct(self, f, data):
+        f.write("static const udynlink_trie_table_t g_host_sym_table = {\n")
+        f.write("    .num_nodes = %u,\n" % data['num_nodes'])
+        f.write("    .num_leaves = %u,\n" % data['num_leaves'])
+        f.write("    .root_child = 0x%04X,\n" % data['root_child'])
+        f.write("    .nodes = g_host_trie_nodes,\n")
+        f.write("    .leaf_addrs = g_host_trie_leaf_addrs,\n")
+        f.write("};\n\n")
+
+
+FORMATS = {fmt.name: fmt for fmt in [GnuHashFormat(), TrieFormat()]}
+
+# ---------------------------------------------------------------------------
+# Backward-compatible public API
+# ---------------------------------------------------------------------------
+
+def build_gnu_hash_table(symbols, nbuckets=None):
+    return FORMATS['gnu-hash'].build(symbols, nbuckets=nbuckets)
+
+def emit_c_header(table, output_path, guard_name=None):
+    return FORMATS['gnu-hash'].emit(table, output_path, guard_name=guard_name)
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description='Generate GNU hash table C header from host firmware ELF')
+    parser = argparse.ArgumentParser(
+        description='Generate symbol table C header from host firmware ELF')
     parser.add_argument('--elf', required=True, help='Host firmware ELF file')
     parser.add_argument('--output', required=True, help='Output C header path')
-    parser.add_argument('--nbuckets', type=int, default=None, help='Number of hash buckets (default: auto)')
-    parser.add_argument('--bloom-size', type=int, default=None, help='Bloom filter size in 32-bit words (default: auto)')
-    parser.add_argument('--filter', default=None, help='Only include symbols matching regex')
+    parser.add_argument('--filter', default=None,
+                        help='Only include symbols matching regex')
+    parser.add_argument('--format', default='gnu-hash',
+                        choices=list(FORMATS.keys()),
+                        help='Output format (default: gnu-hash)')
+
+    for fmt in FORMATS.values():
+        fmt.add_args(parser)
+
     args = parser.parse_args()
 
     if not os.path.isfile(args.elf):
@@ -232,21 +424,12 @@ def main():
     if not symbols:
         print("Warning: no symbols found in ELF file '%s'" % args.elf)
 
-    table = build_gnu_hash_table(symbols, nbuckets=args.nbuckets)
-    if args.bloom_size is not None:
-        table['bloom_size'] = next_power_of_2(args.bloom_size)
-        bloom = [0] * table['bloom_size']
-        for name, _ in symbols:
-            h = gnu_hash(name)
-            h1 = h
-            h2 = h1 >> BLOOM_SHIFT
-            idx = (h1 // 32) % table['bloom_size']
-            mask = (1 << (h1 % 32)) | (1 << (h2 % 32))
-            bloom[idx] |= mask
-        table['bloom'] = bloom
-
-    emit_c_header(table, args.output)
-    print("Generated hash table header '%s' with %d symbols" % (args.output, len(symbols)))
+    fmt = FORMATS[args.format]
+    kwargs = fmt.get_build_kwargs(args)
+    table = fmt.build(symbols, **kwargs)
+    fmt.emit(table, args.output)
+    print("Generated %s header '%s' with %d symbols" % (
+        fmt.name, args.output, len(symbols)))
 
 if __name__ == '__main__':
     main()
