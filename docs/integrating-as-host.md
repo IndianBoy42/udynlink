@@ -1248,6 +1248,8 @@ For `COPY_TEXT_DATA` and `XIP`, the metadata (header, relocation table, symbol t
 
 ## Thread Safety and Concurrency
 
+> **For RTOS / multithreaded hosts:** see the dedicated [Thread Safety: Modules in Multithreaded Hosts](thread-safety.md) guide for the full execution-vs-lifecycle model, same-module multi-thread analysis, and nested-call rules. This section covers bare-metal and lifecycle synchronization; the dedicated guide extends it to FreeRTOS/Zephyr task preemption and shared-instance concurrency.
+
 ### No Internal Synchronization
 
 udynlink performs **no thread safety checks or synchronization itself**. There are no locks, atomics, or interrupt-disabling wrappers inside the library. This is intentional: every byte of overhead matters on Cortex-M targets, and many simple use cases never need concurrency.
