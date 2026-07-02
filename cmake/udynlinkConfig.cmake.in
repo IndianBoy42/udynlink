@@ -12,12 +12,19 @@ if(NOT udynlink_SCRIPTS_DIR)
 endif()
 
 # Load helper functions
-include("${CMAKE_CURRENT_LIST_DIR}/udynlinkGenerateHostSyms.cmake" OPTIONAL RESULT_VARIABLE _udynlink_gen_mod)
-if(NOT _udynlink_gen_mod)
-  # Fallback: look for it alongside the scripts dir
-  if(EXISTS "${udynlink_SCRIPTS_DIR}/../cmake/udynlinkGenerateHostSyms.cmake")
-    include("${udynlink_SCRIPTS_DIR}/../cmake/udynlinkGenerateHostSyms.cmake")
+# Backend-driven: host-syms generator + module builder, both optional so a
+# minimal install (targets only) still configures cleanly.
+set(_udynlink_helpers
+  udynlinkGenerateHostSyms.cmake
+  udynlinkAddModule.cmake)
+foreach(_h IN LISTS _udynlink_helpers)
+  include("${CMAKE_CURRENT_LIST_DIR}/${_h}" OPTIONAL RESULT_VARIABLE _loaded)
+  if(NOT _loaded)
+    # Fallback: look alongside the scripts dir (in-tree / FetchContent layout)
+    if(EXISTS "${udynlink_SCRIPTS_DIR}/../cmake/${_h}")
+      include("${udynlink_SCRIPTS_DIR}/../cmake/${_h}")
+    endif()
   endif()
-endif()
+endforeach()
 
 check_required_components(udynlink)

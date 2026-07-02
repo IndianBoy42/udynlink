@@ -118,6 +118,8 @@ python3 mkmodule --target cortex-m4 --gen-c-header mod_hello.c
 
 This produces `mod_hello.bin` and `mod_hello_module_data.h`.
 
+**Or via CMake:** if your host firmware is CMake-based, consume udynlink via `add_subdirectory`/`FetchContent`/`find_package` and build the module as a target with `udynlink_add_module(mod_hello SOURCES mod_hello.c GENERATE_HEADER)` — see [Building Modules with CMake](docs/writing-modules.md#building-modules-with-cmake).
+
 **3. The host loads and calls your module** (see Quick Start: Host above)
 
 For the complete guide covering C++ modules, data handling, and the full `mkmodule` reference, see [Writing Modules](docs/writing-modules.md).

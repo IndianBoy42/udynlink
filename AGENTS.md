@@ -90,10 +90,13 @@ Additional flags:
 - `--mod-version <ver>` — module ABI version (default: `1.0`)
 - `--udynlink-version <ver>` — loader ABI version (default: `3.0`)
 - `--no-prologue` — omit assembly prologue wrappers; sets `UDYNLINK_ARCH_FLAG_NO_PROLOGUE` in the module header
+- `--workdir <dir>` — directory for intermediate files (`*.o`, `*.elf`, `*.s`) and the default `.bin` output, keeping the source tree clean (default: next to source; also via `UDYNLINK_WORKDIR` env var)
 
 For C++ sources (`.cpp`/`.cxx`), the toolchain automatically adds `-fno-exceptions -fno-rtti -fno-use-cxa-atexit` and compiles `cpp_init_fini.c` for `__init_array` support.
 
 The compiler prefix can be overridden via the `UDYNLINK_CC_PREFIX` environment variable (default: `arm-none-eabi-`).
+
+**Building via CMake (downstream projects):** a host firmware that consumes udynlink via `add_subdirectory`/`FetchContent`/`find_package` can build a module as a CMake target with `udynlink_add_module(<name> SOURCES ... GENERATE_HEADER)`. It produces a custom target `<name>` (→ `<name>.bin` in the build tree) and an `udynlink::module::<name>` INTERFACE library a firmware target links to consume the generated `*_module_data.h` with correct rebuild ordering. The helper (`cmake/udynlinkAddModule.cmake`) is installed alongside `udynlinkGenerateHostSyms.cmake`. See `docs/writing-modules.md` → "Building Modules with CMake".
 
 ### Run all tests (via `just` — recommended)
 

@@ -954,6 +954,8 @@ target_include_directories(firmware PRIVATE src)
 target_link_libraries(firmware PRIVATE udynlink::udynlink)
 ```
 
+In the same configuration, `udynlink_add_module(<name> SOURCES ...)` is also available for building a loadable module your host firmware consumes; it produces a `udynlink::module::<name>` INTERFACE library that propagates the module build ordering and the generated `*_module_data.h` include directory in one `target_link_libraries` line. See [Building Modules with CMake](writing-modules.md#building-modules-with-cmake).
+
 #### `udynlink_generate_host_syms()` Reference
 
 ```cmake

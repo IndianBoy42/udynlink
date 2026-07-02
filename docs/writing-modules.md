@@ -14,6 +14,7 @@ This guide is for module authors who want to write C or C++ code that can be loa
 - [Target Selection and Cross-Compilation](#target-selection-and-cross-compilation)
 - [The mkmodule Command Reference](#the-mkmodule-command-reference)
 - [Building and Distributing Modules](#building-and-distributing-modules)
+- [Building Modules with CMake](#building-modules-with-cmake)
 - [Common Patterns](#common-patterns)
 - [Common Pitfalls and Troubleshooting](#common-pitfalls-and-troubleshooting)
 
@@ -528,11 +529,13 @@ Source files are compiled with:
 | `--no-verbose` | Do not print executed commands. |
 | `--no-debug` | Do not print debug output. |
 | `--no-prologue` | Skip the assembly prologue/wrapper on exported functions. The host must use `UDYNLINK_PREPARE_CALL()` to set `r9` before every call. |
+| `--workdir <dir>` | Directory for intermediate files (`*.o`, `*.elf`, `*.s`) and the default `.bin` output, keeping the source tree clean. Default: next to the source file. |
 
 ### Environment Variables
 
 | Variable | Description |
 |----------|-------------|
+| `UDYNLINK_WORKDIR` | Default value for `--workdir`. Set to route intermediate files out of the source tree. |
 | `UDYNLINK_CC_PREFIX` | Compiler prefix. Default: `arm-none-eabi-`. |
 
 ## Building and Distributing Modules
@@ -574,6 +577,66 @@ Use `udynlink_get_ram_requirements()` to compute the exact size before loading.
 2. **Use `static`** for internal functions and variables. They are stripped from the symbol table and do not get wrappers.
 3. **Enable dead-code elimination**: the toolchain already links with `--gc-sections`, so unused functions are removed automatically.
 4. **Avoid large global buffers** in `.bss` or `.data` if RAM is tight.
+
+## Building Modules with CMake
+
+When your host firmware is built with CMake and you consume udynlink via `add_subdirectory`, `FetchContent`, or `find_package`, you can build a loadable module as a CMake target with a single `udynlink_add_module()` call. This wraps `mkmodule` so you get correct rebuild ordering, generated-header consumption, and clean output in the build tree — no source-tree pollution.
+
+### Signature
+
+```cmake
+udynlink_add_module(<name>
+  SOURCES <src...>            # one or more C/C++ sources (required)
+  [TARGET <target>]          # mkmodule --target (default: cortex-m4)
+  [MCPU <cpu>]               # mkmodule --mcpu override
+  [PUBLIC_SYMBOLS <a,b,...>] # mkmodule --public-symbols (comma list)
+  [OPT_LEVEL <0|s|2|3|z>]    # -O (default: s)
+  [MODULE_NAME <name>]       # --module-name (default: <name>)
+  [BUILD_FLAGS <flags>]      # --build-flags (extra compiler flags)
+  [MOD_VERSION <ver>]        # --mod-version (default: 1.0)
+  [UDYNLINK_VERSION <ver>]   # --udynlink-version (default: 3.0)
+  [NO_PROLOGUE]              # --no-prologue
+  [PC_REL]                   # --pc-rel
+  [NO_LONG_CALLS]            # --no-long-calls
+  [DISASM]                   # --disasm
+  [OUTPUT_DIR <dir>]         # where the .bin is written (default: ${CMAKE_CURRENT_BINARY_DIR})
+  [GENERATE_HEADER]          # also emit <name>_module_data.h
+  [HEADER_OUTPUT_DIR <dir>]  # header dir (default: OUTPUT_DIR)
+  [DEPENDS <dep...>]         # extra build-graph deps (targets or files)
+)
+```
+
+This creates two CMake targets:
+
+- **`<name>`** — a custom target (part of `ALL`) that produces `${OUTPUT_DIR}/<name>.bin`. Intermediate files (`*.o`, `*.elf`, `*.s`) land under `${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/<name>.mkmodule`, never beside your sources.
+- **`udynlink::module::<name>`** — an INTERFACE library. Linking your firmware against it pulls in the module's build ordering and (with `GENERATE_HEADER`) the directory containing `<name>_module_data.h` as an include directory.
+
+### Full Example (FetchContent)
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(udynlink
+    GIT_REPOSITORY https://github.com/your-org/udynlink.git
+    GIT_TAG        v0.1.0
+)
+FetchContent_MakeAvailable(udynlink)
+
+# Build the module; generate mod_hello.bin and mod_hello_module_data.h
+# in the build tree (no source-tree pollution).
+udynlink_add_module(mod_hello
+    SOURCES src/mod_hello.c
+    TARGET cortex-m4
+    GENERATE_HEADER)
+
+add_executable(firmware src/main.c)
+target_link_libraries(firmware PRIVATE
+    udynlink::module::mod_hello   # build ordering + mod_hello_module_data.h include dir
+    udynlink::udynlink)           # core linker runtime
+```
+
+The firmware target now `#include "mod_hello_module_data.h"` and pass `mod_hello_module_data` to `udynlink_load_module()`.
+
+> **Rebuild granularity:** `mkmodule` lists your `.c`/`.cpp` sources as build dependencies, but it does not emit GCC `.d` depfiles, so headers `#include`d by a module source are **not** tracked transitively. Editing a header a module consumes does not automatically rebuild the module — `touch` the source or rebuild explicitly. This is a pre-existing `mkmodule` limitation, not a regression introduced by the CMake helper.
 
 ## Common Patterns
 

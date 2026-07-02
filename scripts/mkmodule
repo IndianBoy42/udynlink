@@ -46,8 +46,9 @@ def assemble(src_name, args):
 sym_renames = {}
 
 def compile(src_name, args, public_symbols, macros=[]):
-    path, fname, ext = split_fname(src_name)
-    main_obj = os.path.join(path, fname + ".o")
+    out_dir = args.workdir if args.workdir else os.path.dirname(src_name)
+    _, fname, _ = split_fname(src_name)
+    main_obj = os.path.join(out_dir, fname + ".o")
     object_files = []
     # Prepare compilation
     extra = "" if args.pc_rel else "-mno-pic-data-is-text-relative"
@@ -67,7 +68,7 @@ def compile(src_name, args, public_symbols, macros=[]):
     object_files += [main_obj]
 
     if src_name.endswith(".cpp") or src_name.endswith(".cxx"):
-        libc_obj = os.path.join(path, "cpp_init_fini.o")
+        libc_obj = os.path.join(out_dir, "cpp_init_fini.o")
         compile_data = {
             "input": os.path.dirname(os.path.abspath(__file__)) + "/cpp_init_fini.c",
             "extra": extra + " -x c ",
@@ -96,7 +97,8 @@ def compile(src_name, args, public_symbols, macros=[]):
             os.rename(objname, temp_obj)
             sym_renames.clear()
             sym_renames.update({n: get_wrapped_name(n) for n in global_funcs })
-            print("sym_renames", to_json(sym_renames))
+            if not args.no_debug:
+                print("sym_renames", to_json(sym_renames))
             rename_symbols(temp_obj, objname, sym_renames, args)
             # Generate ASM for prologue
             debug("Generating ASM file for public function prologues", args)
@@ -525,6 +527,9 @@ parser.add_argument("--target", dest="target", default=targets.DEFAULT_TARGET, h
 parser.add_argument("--mod-version", dest="mod_version", default="1.0", help="Module ABI version (default: 1.0)")
 parser.add_argument("--udynlink-version", dest="udynlink_version", default="3.0", help="Loader ABI version (default: 3.0)")
 parser.add_argument("--no-prologue", dest="no_prologue", action="store_true", help="Skip assembly prologue generation for exported functions (default: false)")
+parser.add_argument("--workdir", dest="workdir", default=None,
+    help="Directory for intermediate files (*.o, *.elf, *.s) and the default .bin output (default: next to source). "
+         "Also via UDYNLINK_WORKDIR env var.")
 
 args, rest = parser.parse_known_args()
 
@@ -550,6 +555,13 @@ args.template = target_meta["template"]
 args.fpu_flag = " -mfpu=" + target_meta["fpu"] if target_meta.get("fpu") else ""
 args.float_abi_flag = " -mfloat-abi=" + target_meta["float_abi"] if target_meta.get("float_abi") else ""
 
+
+# Intermediate files (objects, prologues, ELF) land in --workdir when set so the
+# build tree stays clean (read-only / FetchContent'd source trees work too).
+if not args.workdir:
+    args.workdir = os.environ.get("UDYNLINK_WORKDIR")
+if args.workdir:
+    os.makedirs(args.workdir, exist_ok=True)
 # No dependency list in ABI v3.0+
 args.dep_list = []
 
@@ -569,8 +581,11 @@ if args.name is None:
     args.name = name
 
 if args.bin_name is None:
-    path, _ = os.path.splitext(sources[0])
-    args.bin_name = path + ".bin"
+    if args.workdir:
+        args.bin_name = os.path.join(args.workdir, args.name + ".bin")
+    else:
+        path, _ = os.path.splitext(sources[0])
+        args.bin_name = path + ".bin"
 
 if args.build_flags is not None:
     compile_cmd = args.build_flags + " " + compile_cmd
@@ -578,8 +593,8 @@ if args.build_flags is not None:
 public_symbols = {}
 if args.public_symbols is not None:
     public_symbols = set(args.public_symbols.split(","))
-
-output, objects = change_ext(sources[0], '.elf'), []
+output = os.path.join(args.workdir, (args.name if args.name else split_fname(sources[0])[1]) + ".elf") if args.workdir else change_ext(sources[0], '.elf')
+objects = []
 for s in sources:
     objects.extend(compile(s, args, public_symbols, macros=macros))
 if args.stop_after_compile:
