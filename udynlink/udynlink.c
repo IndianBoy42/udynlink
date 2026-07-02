@@ -372,6 +372,81 @@ exit:
     return res;
 }
 
+// Rebase every module-internal absolute pointer in an already-loaded (and
+// recently moved) module by the given code/data deltas.  Mirrors the
+// relocation walk in udynlink_load_apply_relocations but, instead of the
+// load-time formula, adds the move delta exactly once per slot so that
+// repeated relocates compose.  EXTERN slots (host-absolute) and
+// host-overridden weak slots are left untouched; module-internal slots
+// (INTERNAL/EXPORTED/WEAK-default) and the additive R_ARM_ABS32 /
+// code-base data-section pointers are shifted by the matching delta.
+static udynlink_error_t rebase_module_pointers(udynlink_module_t *p_mod,
+                                               uintptr_t code_delta,
+                                               uintptr_t data_delta,
+                                               uintptr_t old_code,
+                                               uintptr_t old_data) {
+    const udynlink_module_header_t *p_header = p_mod->p_header;
+    const uint32_t *p_rels = get_relocs_pointer(p_mod);
+    uint32_t *p_lot = (uint32_t *)p_mod->p_ram;
+    uint32_t *p_data = (uint32_t *)get_data_pointer(p_mod);
+    uint16_t num_lot = p_header->num_lot;
+
+    for (size_t i = 0; i < p_header->num_rels; i++) {
+        uint32_t lot_offset = p_rels[i * 2];
+        uint32_t symt_offset = p_rels[i * 2 + 1];
+
+        // R_ARM_ABS32 data-section pointer: an absolute .data address after
+        // load; a single additive delta rebases it.
+        if (symt_offset & (1u << 31)) {
+            uint32_t *p = p_data + (lot_offset - num_lot);
+            *p += (uint32_t)data_delta;
+            continue;
+        }
+        // Code-base data-section pointer: an absolute .code address after load.
+        if (symt_offset & (1u << 30)) {
+            uint32_t *p = p_data + (lot_offset - num_lot);
+            *p += (uint32_t)code_delta;
+            continue;
+        }
+
+        udynlink_sym_t sym;
+        if (get_sym_at_raw(get_sym_table_pointer(p_header), symt_offset, &sym) == NULL)
+            continue; // defensive: rebase must never fail mid-move
+
+        uint32_t *p_rel = (lot_offset < num_lot) ? p_lot + lot_offset
+                                                 : p_data + (lot_offset - num_lot);
+
+        switch (sym.type) {
+            case UDYNLINK_SYM_TYPE_INTERNAL:
+            case UDYNLINK_SYM_TYPE_EXPORTED:
+                *p_rel += (sym.location == UDYNLINK_SYM_LOCATION_CODE)
+                              ? (uint32_t)code_delta : (uint32_t)data_delta;
+                break;
+
+            case UDYNLINK_SYM_TYPE_WEAK: {
+                // Detect module-default vs host-override: the default is the
+                // module's own (pre-move) code/data base + section offset.
+                uintptr_t default_old = (sym.location == UDYNLINK_SYM_LOCATION_CODE)
+                                            ? old_code : old_data;
+                default_old += sym.val;
+                if (*p_rel == (uint32_t)default_old)
+                    *p_rel += (sym.location == UDYNLINK_SYM_LOCATION_CODE)
+                                  ? (uint32_t)code_delta : (uint32_t)data_delta;
+                // else: host override — preserve host-absolute address.
+                break;
+            }
+
+            case UDYNLINK_SYM_TYPE_EXTERN:
+            case UDYNLINK_SYM_TYPE_MODULE_NAME:
+                // Host-absolute or no-op: leave untouched.
+                break;
+        }
+    }
+
+    (void)old_code; (void)old_data; // referenced via default_old above
+    return UDYNLINK_OK;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Image builders
 
@@ -583,6 +658,86 @@ size_t udynlink_get_ram_size(const udynlink_module_t *p_mod) {
         tot_size += get_code_offset_from_header(p_header) + p_header->code_size;
     }
     return tot_size;
+}
+
+udynlink_error_t udynlink_relocate_module(udynlink_module_t *p_mod,
+                                          void *new_ram, size_t new_size) {
+    if ((p_mod == NULL) || (p_mod->p_header == NULL)) {
+        UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, error_codes[(int)UDYNLINK_ERR_INVALID_MODULE]);
+        return UDYNLINK_ERR_INVALID_MODULE;
+    }
+
+    udynlink_load_mode_t mode = UDYNLINK_LOAD_GET_MODE(p_mod);
+    size_t ram_size = udynlink_get_ram_size(p_mod);
+
+    if (ram_size == 0)
+        return UDYNLINK_OK; // nothing in RAM to move
+
+    // Provision the destination buffer.  Malloc before freeing the old region
+    // so an adjacent heap block can't be clobbered by the copy and malloc
+    // cannot recycle the old block (use-after-free).
+    void *dest;
+    uint8_t old_foreign = UDYNLINK_LOAD_IS_FOREIGN_RAM(p_mod);
+    if (new_ram == NULL) {
+        UDYNLINK_LOAD_CLR_FOREIGN_RAM(p_mod);
+        dest = udynlink_external_malloc(ram_size);
+        if (dest == NULL) {
+            UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, error_codes[(int)UDYNLINK_ERR_LOAD_OUT_OF_MEMORY]);
+            return UDYNLINK_ERR_LOAD_OUT_OF_MEMORY;
+        }
+        UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Relocate: auto-allocated %u bytes at %p\n", (unsigned)ram_size, dest);
+    } else {
+        UDYNLINK_LOAD_SET_FOREIGN_RAM(p_mod);
+        if (new_size < ram_size) {
+            UDYNLINK_DEBUG(UDYNLINK_DEBUG_ERROR, error_codes[(int)UDYNLINK_ERR_LOAD_RAM_LEN_LOW]);
+            return UDYNLINK_ERR_LOAD_RAM_LEN_LOW;
+        }
+        dest = new_ram;
+    }
+
+    // Capture old state before mutating the handle.
+    uint8_t *old_p_ram = (uint8_t *)p_mod->p_ram;
+    uintptr_t old_code = (uintptr_t)get_code_pointer(p_mod);
+    uintptr_t old_data = (uintptr_t)get_data_pointer(p_mod);
+
+    // No-op shortcut: caller passed the same buffer (avoid self-overlap copy).
+    if (dest == old_p_ram) {
+        if (old_foreign == 0)
+            udynlink_external_free(old_p_ram);
+        return UDYNLINK_OK;
+    }
+
+    // The data/LOT/bss block moves with the region base.  In XIP the code lives
+    // in flash and is not in the moved block; in COPY_ALL/COPY_TEXT_DATA the
+    // code is inside the block and moves with it.
+    uintptr_t data_delta = (uintptr_t)dest - (uintptr_t)old_p_ram;
+    uintptr_t code_delta = (mode == UDYNLINK_LOAD_MODE_XIP) ? 0 : data_delta;
+
+    // Copy the whole region (no overlap: dest != old, and malloc-before-free).
+    memcpy(dest, old_p_ram, ram_size);
+
+    // Update the handle AFTER the copy so the copy used the old pointers.
+    p_mod->p_ram = dest;
+    if (mode == UDYNLINK_LOAD_MODE_COPY_ALL) {
+        // In COPY_ALL the header lives right after the LOT inside the block.
+        const udynlink_module_header_t *p_header = p_mod->p_header;
+        p_mod->p_header = (const udynlink_module_header_t *)
+            ((uint8_t *)dest + p_header->num_lot * sizeof(uint32_t));
+    }
+    // COPY_TEXT_DATA and XIP: p_header points at the unmoved source metadata.
+
+    rebase_module_pointers(p_mod, code_delta, data_delta, old_code, old_data);
+
+    // Free the old region if the loader owned it.  Foreign old buffers stay
+    // caller-owned — the test harness frees its own.
+    if (old_foreign == 0) {
+        udynlink_external_free(old_p_ram);
+        UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Relocate: freed old region at %p\n", old_p_ram);
+    }
+
+    UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Relocated module to %p (code_delta=0x%X, data_delta=0x%X)\n",
+                   dest, (uint32_t)code_delta, (uint32_t)data_delta);
+    return UDYNLINK_OK;
 }
 
 const char *udynlink_get_module_name(const udynlink_module_t *p_mod) {

@@ -420,6 +420,19 @@ If a module references the same symbol multiple times (for example, an array whe
 
 Branch and call instructions in Thumb-2 are PC-relative. They do not need runtime relocation because the offset from the caller to the callee is the same regardless of where the module is loaded. `mkmodule` ignores these relocations, and the loader does not process them.
 
+### In-Place Relocation (Rebasing a Loaded Module)
+
+`udynlink_relocate_module()` moves an already-loaded module's contiguous RAM region to a new buffer in the **same load mode**, preserving runtime state (mutated `.data`/`.bss`, already-resolved extern slots, weak overrides). It is the state-preserving alternative to unload+reload (which resets state and re-runs all relocations).
+
+After copying the whole RAM block to the destination, the loader walks the same relocation table the load-time pass uses, but instead of recomputing each slot from the original formula it **adds a move delta** to every module-internal absolute pointer. Two deltas are involved:
+
+- **`data_delta`** = `dest - old_ram_base`. The LOT/.data/.bss block moves with the region base, so every internal pointer into that block (LOT entries for data symbols, `R_ARM_ABS32` data-section pointers, `.data`-resident weak defaults) shifts by `data_delta`.
+- **`code_delta`** = `data_delta` for `COPY_ALL`/`COPY_TEXT_DATA` (the code lives inside the moved block), and `0` for `XIP` (the code stays in flash). Internal pointers into code (LOT entries for code symbols, bit-30 code-base pointers, `.data`-resident function pointers) shift by `code_delta`.
+
+Slots that are **not** rebased: EXTERN slots (host-absolute addresses) and weak slots that the host overrode at load time (host-absolute). For a weak slot, the loader compares the current value against the module's own old code/data base + symbol offset; a match means the module's own default still lives there (rebase it), otherwise the host override is preserved (leave it). The additive `R_ARM_ABS32` and bit-30 slots are absolutes after the one-time load transform, so a single `+= delta` rebases them.
+
+Each delta applies exactly once per call, so successive relocates compose (each call shifts by its own delta). The invalidation contract is documented in the [API reference](api-reference.md#udynlink_relocate_module): cached symbol addresses and cross-module thunks/deps gateways embed the old `ram_base` and must be rebuilt after a relocate.
+
 ---
 
 ## Three Load Modes

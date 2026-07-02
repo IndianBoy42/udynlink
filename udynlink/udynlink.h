@@ -553,6 +553,45 @@ udynlink_error_t udynlink_load_apply_relocations(udynlink_module_t *p_mod,
  *       will corrupt internal state. The host must provide synchronization.
  */
 udynlink_error_t udynlink_unload_module(udynlink_module_t *p_mod);
+/**
+ * @brief Relocate an already-loaded module's RAM region to a new buffer.
+ *
+ * Copies the module's entire contiguous RAM region (LOT, in-RAM code, .data,
+ * .bss, and — for COPY_ALL — the in-RAM metadata) to @p new_ram, then rebases
+ * every internal absolute pointer (LOT entries for module code/data symbols,
+ * R_ARM_ABS32 data-section pointers, code-base data-section pointers, weak
+ * module-default slots) by the move delta. EXTERN slots and host-overridden
+ * weak slots are left untouched (they hold host-absolute addresses). Runtime
+ * .data/.bss values and already-resolved extern slots are preserved.
+ *
+ * The load mode is unchanged. For XIP the code stays in flash (code-delta 0);
+ * only the LOT/data/bss RAM block moves.
+ *
+ * @param[out] p_mod      Loaded module handle (must already be loaded).
+ * @param[in]  new_ram    Destination RAM buffer, or NULL to auto-allocate via
+ *                        udynlink_external_malloc(udynlink_get_ram_size(p_mod)).
+ * @param[in]  new_size   Size of the buffer at @p new_ram (ignored when NULL);
+ *                        must be >= udynlink_get_ram_size(p_mod).
+ *
+ * @return ::UDYNLINK_OK on success, or
+ *         ::UDYNLINK_ERR_INVALID_MODULE (p_mod NULL/not loaded),
+ *         ::UDYNLINK_ERR_LOAD_RAM_LEN_LOW (caller buffer too small),
+ *         ::UDYNLINK_ERR_LOAD_OUT_OF_MEMORY (auto-alloc returned NULL).
+ *
+ * @note A module's RAM size is fixed per mode; @p new_size may be larger
+ *       than needed (extra space unused) but never smaller than required.
+ * @note Invalidation contract (inherent to moving code/data in RAM): every
+ *       symbol address previously returned to the host by
+ *       udynlink_lookup_symbol()/udynlink_get_symbol_value() is STALE after a
+ *       successful relocate — re-resolve before calling. Cross-module thunks
+ *       and dependency gateways (udynlink_thunk/udynlink_deps) embed the old
+ *       ram_base as a literal and must be torn down and rebuilt after
+ *       relocate. Do not relocate a module while it is executing or while r9
+ *       points at it. Not thread-safe; host must serialize with load/unload.
+ */
+udynlink_error_t udynlink_relocate_module(udynlink_module_t *p_mod,
+                                          void *new_ram, size_t new_size);
+
 
 /**
  * @brief Run C++ global constructors for a loaded module.

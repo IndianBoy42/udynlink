@@ -74,6 +74,8 @@ This repository is the **eh2k fork** of the original udynlink project. It adds C
 - Query functions: `udynlink_get_ram_requirements()` (wrapper around `udynlink_compute_ram_size()`)
 - New test: `tests/test-streaming-load/` renamed to exercise `udynlink_load_module_image()` for all load modes plus planning/validation APIs
 - `uintptr_t` cleanup: all raw `(uint32_t)ptr` casts replaced with `(uint32_t)(uintptr_t)ptr` to suppress 64-bit host warnings
+- New API: `udynlink_relocate_module()` moves an already-loaded module's RAM region to a new buffer in the same load mode, preserving runtime state (mutated `.data`/`.bss`, resolved extern slots, weak overrides) by rebasing every internal absolute pointer; EXTERN slots and host-overridden weak slots are left untouched. For XIP the code stays in flash.
+- New test: `tests/test-relocate/` — validates state-preserving RAM relocation across all three load modes (foreign + auto-alloc provision paths, XIP code-unmoved invariant).
 
 ## Changelog Summary (eh2k fork)
 - `[12]` 2024-12-01: `--gc-sections` + readonly data & reloc optimizations

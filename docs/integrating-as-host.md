@@ -1064,6 +1064,22 @@ if (err != UDYNLINK_OK) {
 - Free the auto-allocated RAM.
 - Zero out the module handle.
 
+
+### Relocating a Loaded Module (State Preservation)
+
+`udynlink_relocate_module()` moves an already-loaded module's RAM region to a new buffer in the same load mode, **preserving runtime state** (mutated globals, already-resolved extern slots, weak overrides). It avoids the unload+reload cycle, which would reset `.data`/`.bss` to initial values and re-resolve every extern from scratch.
+
+```c
+// Move the module to a caller-supplied buffer (e.g. after heap defragmentation)
+void *buf = my_alloc(udynlink_get_ram_size(&mod));
+udynlink_relocate_module(&mod, buf, udynlink_get_ram_size(&mod));
+
+// Or let the loader allocate internally (it frees the old loader-owned region)
+udynlink_relocate_module(&mod, NULL, 0);
+```
+
+Do not relocate a module while it is executing or while `r9` points at it.
+
 ### Load Modes
 
 | Mode | Behavior | RAM Needed | Use Case |

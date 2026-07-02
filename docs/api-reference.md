@@ -629,6 +629,42 @@ Unloads a module, freeing its RAM and clearing its handle.
 
 ---
 
+### `udynlink_relocate_module`
+
+```c
+udynlink_error_t udynlink_relocate_module(udynlink_module_t *p_mod,
+                                          void *new_ram, size_t new_size);
+```
+
+Relocates an already-loaded module's RAM region to a new buffer in the **same load mode**, preserving runtime state (mutated `.data`/`.bss`, already-resolved extern LOT slots, weak overrides). The entire contiguous RAM region (LOT, in-RAM code, `.data`, `.bss`, and — for `COPY_ALL` — the in-RAM metadata) is copied to `new_ram`, then every module-internal absolute pointer is rebased by the move delta. EXTERN slots and host-overridden weak slots hold host-absolute addresses and are left untouched.
+
+For XIP the code stays in flash (code-delta 0); only the LOT/data/bss RAM block moves. The load mode is unchanged.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `p_mod` | `udynlink_module_t *` | Loaded module handle (must already be loaded). |
+| `new_ram` | `void *` | Destination buffer, or `NULL` to auto-allocate via `udynlink_external_malloc(udynlink_get_ram_size(p_mod))`. |
+| `new_size` | `size_t` | Size of `new_ram` (ignored when `NULL`); must be `>= udynlink_get_ram_size(p_mod)`. |
+
+**Return value:**
+
+- `UDYNLINK_OK` on success.
+- `UDYNLINK_ERR_INVALID_MODULE` if `p_mod` is `NULL` or not loaded.
+- `UDYNLINK_ERR_LOAD_RAM_LEN_LOW` if `new_ram` is non-`NULL` and `new_size < udynlink_get_ram_size(p_mod)`.
+- `UDYNLINK_ERR_LOAD_OUT_OF_MEMORY` if `new_ram` is `NULL` and the auto-allocation returned `NULL`.
+
+**Thread safety:** Not thread-safe. The host must serialize with load/unload. Do not relocate a module while it is executing or while `r9` points at it.
+
+**Notes:**
+
+- A module's RAM size is fixed per mode; `new_size` may be larger than needed (extra space unused) but never smaller than required.
+- **Invalidation contract:** every symbol address previously returned to the host by `udynlink_lookup_symbol()` / `udynlink_get_symbol_value()` is **stale** after a successful relocate — re-resolve before calling. Cross-module thunks and dependency gateways (`udynlink_thunk` / `udynlink_deps`) embed the old `ram_base` as a literal and must be torn down and rebuilt after relocate.
+- When `new_ram` is `NULL`, the loader frees the old loader-owned region after copying; when `new_ram` is non-`NULL` (foreign), the old foreign buffer is left caller-owned.
+
+---
+
 ## Linking Functions
 
 ### `udynlink_link_incremental`

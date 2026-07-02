@@ -60,6 +60,7 @@ Core C library implementing a micro dynamic linker for ARM Cortex-M MCUs. Handle
 - `udynlink_get_image_size(const void*)`: Computes total size of a module blob from its header.
 - `udynlink_get_text_pointer(const udynlink_module_t*)`: Returns pointer to the module's `.text` section in memory.
 - `udynlink_module_image_t`, `udynlink_load_module_image()`, `udynlink_image_from_memory()`, `udynlink_validate_header()`, `udynlink_compute_ram_size()`: Non-contiguous image loading primitives replacing the old streaming I/O API.
+- `udynlink_relocate_module(p_mod, new_ram, new_size)`: Moves an already-loaded module's RAM region to a new buffer in the same load mode, preserving runtime state (mutated `.data`/`.bss`, resolved extern slots, weak overrides) by rebasing every internal absolute pointer. EXTERN slots and host-overridden weak slots are left untouched. For XIP the code stays in flash.
 
 ## Non-Contiguous Image API
 - `udynlink_module_image_t`: Descriptor with per-section pointers (`p_header`, `p_relocations`, `p_symtab`, `p_deps_strtab`, `p_code`, `p_data`). Enables loading from SD card, SPI flash, decompressed buffers, or any source where sections are not contiguous.
