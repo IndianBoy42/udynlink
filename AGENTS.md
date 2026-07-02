@@ -47,6 +47,7 @@ All user-facing documentation lives under `docs/` and is summarized in `docs/REA
 | `docs/api-reference.md` | Complete reference for all public functions, structs, macros, and callbacks |
 | `docs/examples.md` | Working code examples for every major feature |
 | `docs/testing.md` | Running tests, adding test cases and platforms, debugging **MUST READ before testing** |
+| `docs/host-testing.md` | Testing module logic on the host machine without QEMU/ARM tools; mocking patterns, CMake helper, and vendored template |
 
 > **Always keep documentation in sync.** If you change code, public APIs, test behavior, build commands, or toolchain requirements, update the corresponding `docs/*.md` file(s) before finishing the task. `AGENTS.md` itself must also be updated if build/test commands, architecture constraints, or the platform matrix change.
 

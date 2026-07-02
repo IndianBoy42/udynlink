@@ -102,6 +102,7 @@ install(FILES
 # Make helper functions available at build time (FetchContent consumers)
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/udynlinkGenerateHostSyms.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/udynlinkAddModule.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/udynlinkAddHostTest.cmake")
 
 # Install scripts and CMake helpers
 install(DIRECTORY scripts/
@@ -112,6 +113,7 @@ install(DIRECTORY scripts/
 install(FILES
     cmake/udynlinkGenerateHostSyms.cmake
     cmake/udynlinkAddModule.cmake
+    cmake/udynlinkAddHostTest.cmake
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/udynlink
 )
 

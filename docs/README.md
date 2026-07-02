@@ -24,6 +24,7 @@ All of udynlink is guided by seven principles. When evaluating a feature or chan
 | [API Reference](api-reference.md) | Complete reference for all public functions, structs, macros, callbacks, and C++ API |
 | [Examples](examples.md) | Working code examples for every major feature |
 | [Testing Guide](testing.md) | Running tests, adding test cases and platforms, debugging |
+| [Host Testing](host-testing.md) | Testing module logic on your development machine without QEMU or ARM tools; mocking patterns and templates |
 
 ## Internal Notes
 

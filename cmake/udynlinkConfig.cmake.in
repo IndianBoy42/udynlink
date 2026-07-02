@@ -16,7 +16,8 @@ endif()
 # minimal install (targets only) still configures cleanly.
 set(_udynlink_helpers
   udynlinkGenerateHostSyms.cmake
-  udynlinkAddModule.cmake)
+  udynlinkAddModule.cmake
+  udynlinkAddHostTest.cmake)
 foreach(_h IN LISTS _udynlink_helpers)
   include("${CMAKE_CURRENT_LIST_DIR}/${_h}" OPTIONAL RESULT_VARIABLE _loaded)
   if(NOT _loaded)
