@@ -188,51 +188,71 @@ def process(output, args):
     syms = get_symbols_in_elf(output)
     rels = get_relocations_in_elf(output)
     print_list(syms,"syms   :", args)
-    print_list(rels,"rels   :", args)
-    sym_map = RejectingDict()
-    for s, d in syms.items():
-        if not s or s == "$t" or s == "$d":
+    # Symbols are identified by (symtab section index, symbol index) — NOT by
+    # name.  GCC's local constant-pool labels (.LC0, .LC1, ...) are reused in
+    # every translation unit of a multi-TU module: they share a name but have
+    # distinct st_value/st_shndx.  Keying by name would collapse them and make
+    # every reference resolve to the last-written symbol's address, corrupting
+    # PIC code at runtime.  See the ``.LC0`` collision regression test.
+    def _sym_key(sd):
+        """Unique identity of a symbol: its (symtab section, symbol index)."""
+        return (sd["symtab"], sd["idx"])
+    sym_data = {_sym_key(sd): sd for sd in syms}
+    sym_map = {}
+    seen_nonlocal_names = set()
+    for sd in syms:
+        name = sd["name"]
+        if not name or name == "$t" or name == "$d":
             continue
-        if d["bind"] == "STB_GLOBAL":
-            defined = d["section"] != "SHN_UNDEF"
+        key = _sym_key(sd)
+        if sd["bind"] == "STB_GLOBAL":
+            if name in seen_nonlocal_names:
+                error("Duplicate global symbol '%s' in module" % name)
+            seen_nonlocal_names.add(name)
+            defined = sd["section"] != "SHN_UNDEF"
             if defined:
-                sym_map[s] = "exported"
-                debug("Added symbol '%s' (%s) to list of exported symbols" % (s, syms[s]["type"]), args)
+                sym_map[key] = "exported"
+                debug("Added symbol '%s' (%s) to list of exported symbols" % (name, sd["type"]), args)
             else:
-                sym_map[s] = "external"
-                debug("Added symbol '%s' (%s) to list of external symbols" % (s, syms[s]["type"]), args)
-        elif d["bind"] == "STB_WEAK":
+                sym_map[key] = "external"
+                debug("Added symbol '%s' (%s) to list of external symbols" % (name, sd["type"]), args)
+        elif sd["bind"] == "STB_WEAK":
             # Defined weak symbols are classified as "weak" so the loader can
             # apply the module's own address as a default and optionally patch
             # it with a host override.  Undefined weak symbols are treated as
             # "external" (still fail if unresolved — unlike ELF they do not
             # silently resolve to NULL).
-            defined = d["section"] != "SHN_UNDEF"
+            if name in seen_nonlocal_names:
+                error("Duplicate weak symbol '%s' in module" % name)
+            seen_nonlocal_names.add(name)
+            defined = sd["section"] != "SHN_UNDEF"
             if defined:
-                sym_map[s] = "weak"
-                debug("Added symbol '%s' (%s) to list of weak symbols" % (s, syms[s]["type"]), args)
+                sym_map[key] = "weak"
+                debug("Added symbol '%s' (%s) to list of weak symbols" % (name, sd["type"]), args)
             else:
-                sym_map[s] = "external"
-                debug("Added symbol '%s' (%s) to list of external symbols" % (s, syms[s]["type"]), args)
+                sym_map[key] = "external"
+                debug("Added symbol '%s' (%s) to list of external symbols" % (name, sd["type"]), args)
         else:
-            if d["type"] == "STT_FILE":
+            if sd["type"] == "STT_FILE":
                 continue
-            sym_map[s] = "local"
-            debug("Added symbol '%s' (%s) to list of local symbols" % (s, syms[s]["type"]), args)
-    print_list([s for s in sym_map if sym_map[s] == "exported"], "Exported :", args)
-    print_list([s for s in sym_map if sym_map[s] == "external"], "External :", args)
-    print_list([s for s in sym_map if sym_map[s] == "weak"],   "Weak     :", args)
-    print_list([s for s in sym_map if sym_map[s] == "local"],   "Locals   :", args)
+            sym_map[key] = "local"
+            debug("Added symbol '%s' (%s) to list of local symbols" % (name, sd["type"]), args)
+    def _key_name(key):
+        return sym_data[key]["name"]
+    print_list([_key_name(k) for k in sym_map if sym_map[k] == "exported"], "Exported :", args)
+    print_list([_key_name(k) for k in sym_map if sym_map[k] == "external"], "External :", args)
+    print_list([_key_name(k) for k in sym_map if sym_map[k] == "weak"],   "Weak     :", args)
+    print_list([_key_name(k) for k in sym_map if sym_map[k] == "local"],   "Locals   :", args)
 
     # Reclassify .udynlink.mod.requires.* symbols as external.
     # These are emitted by UDYNLINK_REQUIRES() as definitions with value 0
     # (to survive --gc-sections) but semantically they are dependency
     # declarations that must be resolved by the host at load time.
-    for s in list(sym_map.keys()):
-        if s.startswith(".udynlink.mod.requires.") and sym_map[s] == "exported":
-            debug("Reclassified dependency symbol '%s' from exported to external" % s, args)
-            del sym_map[s]
-            sym_map[s] = "external"
+    for key in list(sym_map.keys()):
+        name = sym_data[key]["name"]
+        if name.startswith(".udynlink.mod.requires.") and sym_map[key] == "exported":
+            debug("Reclassified dependency symbol '%s' from exported to external" % name, args)
+            sym_map[key] = "external"
 
     # Detect and omit empty init-array sentinel symbols from the symbol table.
     # These four symbols are emitted by the linker script even for C modules
@@ -241,15 +261,18 @@ def process(output, args):
     # We keep them in sym_map so relocation processing doesn't crash, but skip
     # them when building slist_all unless they are actually referenced by a
     # relocation (e.g. in a C++ module that uses cpp_init_fini.c).
-    init_array_names = [
+    init_array_names = {
         "__init_array_start",
         "__init_array_end",
         "__preinit_array_start",
         "__preinit_array_end",
-    ]
-    empty_init_array_syms = set()
-    init_syms = {n: syms.get(n) for n in init_array_names}
-    if all(init_syms[n] for n in init_array_names):
+    }
+    empty_init_keys = set()
+    init_syms = {}
+    for sd in syms:
+        if sd["name"] in init_array_names and sd["name"] not in init_syms:
+            init_syms[sd["name"]] = sd
+    if init_array_names <= set(init_syms):
         # All four exist. Check criteria for "empty array".
         all_empty = True
         common_value = None
@@ -264,69 +287,80 @@ def process(output, args):
                 all_empty = False
                 break
         if all_empty:
-            empty_init_array_syms.update(init_array_names)
+            empty_init_keys = {_sym_key(init_syms[n]) for n in init_array_names}
             debug("Detected empty init-array sentinels; will omit from symbol table unless referenced by relocations", args)
+
+    def _reloc_key(r):
+        return (r["symtab"], r["sym_idx"])
 
     # Process relocations
     set_debug_col('yellow')
     debug("%s Examining relocations %s" % ('-' * 10, '-' * 10), args)
     local_relocs, foreign_relocs, rlist, ignored = [], [], [], {}
     for r in rels:
-        s, t = r["name"], r["type"]
-        try:
-            offset, value = r["offset"], syms[s]["value"]
-        except KeyError:
-            if not ignored.get(s, False):
-                warn("Ingoring unknown symbol '%s' in relocation list" % s)
-                ignored[s] = True
+        name, t = r["name"], r["type"]
+        sd = sym_data.get(_reloc_key(r))
+        if sd is None:
+            if not ignored.get(name, False):
+                warn("Ingoring unknown symbol '%s' in relocation list" % name)
+                ignored[name] = True
             continue
+        key = _reloc_key(r)
+        offset, value = r["offset"], sd["value"]
         if t == "R_ARM_THM_CALL" or t == "R_ARM_THM_JUMP24":  # PC-relative, safe to ignore
-            debug("Ignoring relocation R_ARM_THM_CALL for symbol '%s' of type '%s'" % (s, syms[s]["type"]), args)
+            debug("Ignoring relocation R_ARM_THM_CALL for symbol '%s' of type '%s'" % (name, sd["type"]), args)
             continue
         elif t == "R_ARM_GOT_BREL":
-            if sym_map[s] == "local" or sym_map[s] == "exported" or sym_map[s] == "weak":
-                debug("Found local relocation for symbol '%s' (offset is %X, value is %x)" % (s, offset, value), args)
-                local_relocs.append((s, offset, value))
-            elif sym_map[s] == "external":
-                debug("Found foreign relocation for symbol '%s' (offset is %X)" % (s, offset), args)
-                foreign_relocs.append((s, offset, value))
+            if sym_map[key] == "local" or sym_map[key] == "exported" or sym_map[key] == "weak":
+                debug("Found local relocation for symbol '%s' (offset is %X, value is %x)" % (name, offset, value), args)
+                local_relocs.append((key, name, offset, value))
+            elif sym_map[key] == "external":
+                debug("Found foreign relocation for symbol '%s' (offset is %X)" % (name, offset), args)
+                foreign_relocs.append((key, name, offset, value))
             else:
-                error("Unknown relocation '%s' for symbol '%s'" % (t, s))
+                error("Unknown relocation '%s' for symbol '%s'" % (t, name))
             rlist.append(r)
         elif t != "R_ARM_ABS32" and t != "R_ARM_TARGET1":
-            error("Unknown relocation type '%s' for symbol '%s'" % (t, s))
-    # Establish a mapping between symbol names and their positions in LOT using rlist above
-    # The mapping is arbitrary, but that's more than enough
-    # There's a single mapping for any symbol, even if there are multiple relocations for the symbol
-    reloc_name_to_idx, lot_entries = {}, 0
-    for e in rlist:
-        if not (e["name"] in reloc_name_to_idx):
-            reloc_name_to_idx[e["name"]] = lot_entries
+            error("Unknown relocation type '%s' for symbol '%s'" % (t, name))
+    # Establish a mapping between each distinct symbol and its LOT slot.
+    # Identity is the symbol key (symtab, idx), so two same-named local
+    # symbols (e.g. .LC0 from different TUs) get distinct LOT slots.
+    reloc_key_to_lot, lot_entries = {}, 0
+    for r in rlist:
+        key = _reloc_key(r)
+        if key not in reloc_key_to_lot:
+            reloc_key_to_lot[key] = lot_entries
             lot_entries += 1
+
+    # referenced_keys: symbols referenced by any relocation that must appear
+    # in the emitted symbol table (GOT_BREL finds referenced by rlist above;
+    # ABS32 to a named non-.data symbol also needs a symt entry).
+    referenced_keys = set(reloc_key_to_lot)
 
     # Data relocations deal with R_ARM_ABS32 relocs
     delta_off, data_relocs = lot_entries, []
     for r in rels:
-        s, t = r["name"], r["type"]
-        try:
-            offset, value = r["offset"], r["value"]
-        except KeyError:
-            if not ignored.get(s, False):
-                warn("Ignoring unknown symbol '%s' in relocation list" % s)
-                ignored[s] = True
+        name, t = r["name"], r["type"]
+        sd = sym_data.get(_reloc_key(r))
+        if sd is None:
+            if not ignored.get(name, False):
+                warn("Ignoring unknown symbol '%s' in relocation list" % name)
+                ignored[name] = True
             continue
+        key = _reloc_key(r)
         if t == "R_ARM_ABS32" or t == "R_ARM_TARGET1":
-            check(offset % 4 == 0, "%s offset mod 4 '%x' is not a multiple of 4" % (s, offset))
-            check((offset - len(code_sect)) % 4 == 0, "%s code_sect mod 4 '%x-%x' is not a multiple of 4" % (s, offset, len(code_sect)))
+            offset, value = r["offset"], r["value"]
+            check(offset % 4 == 0, "%s offset mod 4 '%x' is not a multiple of 4" % (name, offset))
+            check((offset - len(code_sect)) % 4 == 0, "%s code_sect mod 4 '%x-%x' is not a multiple of 4" % (name, offset, len(code_sect)))
             offset = int((offset - len(code_sect)) / 4)
-            check(offset >= 0, "Offset of R_ARM_ABS32 symbols '%s' should be positive or 0!" % s)
-            data_relocs.append((s, delta_off + offset, value))
-            debug("Found data relocation for symbol '%s' (offset is %X, value is %x)" % (s, delta_off + offset, value), args)
-            if s != ".data" and not s in reloc_name_to_idx:
-                reloc_name_to_idx[s] = delta_off + offset
-    print_list([l["name"] for l in rlist], "Final LOT relocation list:", args)
-    print_list([l[0] for l in data_relocs], "Final data relocation list:", args)
-    debug("Symbol positions in LOT: " + str(reloc_name_to_idx), args)
+            check(offset >= 0, "Offset of R_ARM_ABS32 symbols '%s' should be positive or 0!" % name)
+            data_relocs.append((key, name, delta_off + offset, value))
+            debug("Found data relocation for symbol '%s' (offset is %X, value is %x)" % (name, delta_off + offset, value), args)
+            if name != ".data":
+                referenced_keys.add(key)
+    print_list([r["name"] for r in rlist], "Final LOT relocation list:", args)
+    print_list([rl[1] for rl in data_relocs], "Final data relocation list:", args)
+    debug("Symbol positions in LOT: " + str({(sym_data[k]["name"], k): v for k, v in reloc_key_to_lot.items()}), args)
 
     # Apply initial LOT relocations in .code
     set_debug_col('green')
@@ -334,11 +368,11 @@ def process(output, args):
     # Apply local relocations: for each reloc, patch the binary to refer to the corresponding
     # offset in the LOT
     for r in local_relocs + foreign_relocs:
-        sym, offset, value = r
+        key, name, offset, value = r
         old = struct.unpack_from("<I", code_sect, offset)[0]
-        new = reloc_name_to_idx[sym] * 4
+        new = reloc_key_to_lot[key] * 4
         struct.pack_into("<I", code_sect, offset, new)
-        debug("Patched location %08X (old = %08X, new = %08X) for symbol '%s'" % (offset, old, new, sym), args)
+        debug("Patched location %08X (old = %08X, new = %08X) for symbol '%s'" % (offset, old, new, name), args)
 
     # Prepare image
     # The image starts with a header that looks like this:
@@ -348,7 +382,7 @@ def process(output, args):
     # | sign         | 4            | Signature for module (always 'UDLM')  |
     # | totlot       | 2            | Number of LOT entries                 |
     # | totrels      | 2            | Total number of relocations           |
-    # | symtsize     | 4            | Size of symbol table, bytes (align 4) |
+    # | symtsize     | 4            | Size of symbol table, bytes (align 4)|
     # | codesize     | 4            | Size of code, bytes (align 4)         |
     # | datasize     | 4            | Size of data, bytes (align 4)         |
     # | bsssize      | 4            | Size of bss, bytes (align 4)          |
@@ -365,7 +399,10 @@ def process(output, args):
     debug("%s Building image %s" % ('-' * 10, '-' * 10), args)
     img = bytearray("UDLM".encode('ascii'))  # Signature (4b)
     # The first entry in the symbol table is always the module name
-    slist_all = [s for s in sym_map if ((s in reloc_name_to_idx) or sym_map[s] == "external" or sym_map[s] == "exported" or sym_map[s] == "weak") and not (s in empty_init_array_syms and s not in reloc_name_to_idx)]
+    slist_all = [k for k in sym_map
+                 if ((k in referenced_keys) or sym_map[k] == "external"
+                     or sym_map[k] == "exported" or sym_map[k] == "weak")
+                 and not (k in empty_init_keys and k not in referenced_keys)]
     img += struct.pack("<H", args.mod_version_val)    # Module ABI version (2b)
     img += struct.pack("<H", args.udynlink_version_val)  # Loader ABI version (2b)
     img += struct.pack("<H", args.arch_tag_val)        # Architecture tag (2b)
@@ -374,10 +411,10 @@ def process(output, args):
     # Build symbol list: module name at index 0, then named symbols sorted
     # lexicographically for O(log n) binary search in udynlink_lookup_symbol,
     # then local (nameless) symbols at the end.
-    named = sorted([s for s in slist_all if sym_map[s] != "local"])
-    local = [s for s in slist_all if sym_map[s] == "local"]
+    named = sorted([k for k in slist_all if sym_map[k] != "local"], key=_key_name)
+    local = [k for k in slist_all if sym_map[k] == "local"]
     slist = [args.name] + named + local
-    symt_mapping = {s: i for i, s in enumerate(slist)}
+    symt_mapping = {k: i for i, k in enumerate(slist)}
 
     relocated = {}
     realocs, total_relocs = bytearray(), 0
@@ -386,40 +423,43 @@ def process(output, args):
     # all others so that the core loader resolves them first, allowing
     # the host's dependency system to auto-load required modules before
     # it processes function EXTERN relocations for the same module.
-    dep_prefix = lambda r: (0 if r[0].startswith(".udynlink.mod.requires.") else 1)
+    dep_prefix = lambda r: (0 if r[1].startswith(".udynlink.mod.requires.") else 1)
     ordered_relocs = sorted(local_relocs + foreign_relocs + data_relocs, key=dep_prefix)
 
     for r in ordered_relocs:
-        sym, offset, value = r
-        if sym == ".text": 
+        key, name, offset, value = r
+        if name == ".text":
             value = (1 << 30) | value #flag -> not a symt index
-        elif sym == ".data": 
+        elif name == ".data":
             # R_ARM_ABS32 data relocation
             # *offset += &data - value
             data_offset = (offset - delta_off) * 4
             value = (1 << 31) | value #flag -> not a symt index
         else:
-            if not r in data_relocs:
-                offset = reloc_name_to_idx[sym]
-            value = symt_mapping[sym]
-            if relocated.get(f"{sym}{offset}{value}", False):
+            if r not in data_relocs:
+                offset = reloc_key_to_lot[key]
+            value = symt_mapping[key]
+            if relocated.get(f"{key}{offset}{value}", False):
                 continue
 
         debug("Relocation (%s) type: %s { lot: 0x%08X, symt: 0x%08X }  written." % (
-            sym, 
+            name,
             "foreign" if r in foreign_relocs else "local", offset, value), args)
-        relocated[f"{sym}{offset}{value}"] = True
+        relocated[f"{key}{offset}{value}"] = True
         realocs += struct.pack("<II", offset, value)
         total_relocs += 1
     debug("== RelocationTable, entries: %d" % total_relocs, args)
     img += struct.pack("<H", total_relocs)  # Total number of relocations (2b)
     img += struct.pack("<H", 0)              # Reserved (2b, was num_deps)
-    
+
+    def _sym_name(s):
+        return args.name if s == args.name else sym_data[s]["name"]
+
     symt_len = len(slist) * 8 + 4 # 2 4-byte entry for each symbol: (offset to name, offset in image) + initial word which is the number of entries
     for i, s in enumerate(slist):
         if i == 0 or sym_map[s] != "local":
-            symt_len += len(s) + 1
-    
+            symt_len += len(_sym_name(s)) + 1
+
     symt_len = round_to(symt_len, 4)
     img += struct.pack("<I", symt_len)  # Size of symbol table in bytes (4b)
     img += struct.pack("<I", len(code_sect))  # Size of code section (4b)
@@ -427,7 +467,7 @@ def process(output, args):
     img += struct.pack("<I", len(bss_sect))  # Size of bss section (4b)
     # Write relocations: (lot off, symy off) pairs
     img += realocs
-    
+
     debug("== SymbolTable, entries: (%d), bytes %d" % (len(slist), symt_len), args)
     # Write actual symbol table
     off = len(slist) * 8 + 4
@@ -441,7 +481,9 @@ def process(output, args):
             #     31: always 0, except for the last entry marker (which is 0xFFFFFFFF)
             #     30: 1 if in code section, 0 if in data section
             #     29-27: type (0 = local, 1 = exported, 2 = external, 3 = module name, 4 = weak). Local symbols do NOT have a name (offset is 0).
-            defined_in_code = sect_idx_mapping[syms[s]["section"]] == sectname_code
+            sd = sym_data[s]
+            name = sd["name"]
+            defined_in_code = sect_idx_mapping[sd["section"]] == sectname_code
             if sym_map[s] == "local":
                 type_data = 0
             elif sym_map[s] == "exported":
@@ -451,7 +493,7 @@ def process(output, args):
             else:  # external
                 type_data = 2
             type_data |= 8 if defined_in_code else 0
-            val = syms[s]["value"]
+            val = sd["value"]
             # Symbols that are not in the code section (and are defined in the module) will have their value offseted with the
             # start of the .data section in the image
             val_offset = 0 if (sym_map[s] == "external" or defined_in_code) else len(code_sect)
@@ -461,16 +503,17 @@ def process(output, args):
             val = val - val_offset
             s_off = (off if sym_map[s] != "local" else 0) | (type_data << 27)
         else:  # module name
+            name = args.name
             val, s_off = 0, (3 << 27) | off
         img += struct.pack("<II", s_off, val)
-        debug("%02d: Symbol '%s', %s { offset: 0x%08X, value 0x%08X }" % 
-              (i, s, debug_hint, s_off, val), args)
+        debug("%02d: Symbol '%s', %s { offset: 0x%08X, value 0x%08X }" %
+              (i, name, debug_hint, s_off, val), args)
         if i == 0 or sym_map[s] != "local":  # local symbols don't have a name in the offset table
-            off = off + len(s) + 1
+            off = off + len(name) + 1
     # Pass 2: write actual symbols
     for i, s in enumerate(slist):
         if i == 0 or sym_map[s] != "local":
-            img += (s + '\0').encode('utf-8')
+            img += (_sym_name(s) + '\0').encode('utf-8')
     # Round to a multiple of 4
     if len(img) % 4 > 0:
         img += ('\0' * (4 - len(img) % 4)).encode('utf-8')

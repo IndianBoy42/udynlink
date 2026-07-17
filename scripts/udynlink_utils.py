@@ -114,17 +114,30 @@ def get_arg_parser(desc):
 # ELF manipulation
 ################################################################################
 
-# Iterate through the input ELF, returning all the symbols found
-# and the associated data
 def get_symbols_in_elf(obj):
-    syms = {}
+    """Return all symbols in the ELF as a list of per-symbol dicts.
+
+    The list preserves duplicates: GCC emits local constant-pool labels
+    (``.LC0``, ``.LC1``, ...) in every translation unit, and a linked ELF
+    legitimately contains several symbols that share a name but differ in
+    ``st_value`` / ``st_shndx``.  Keying by name (as a dict would) silently
+    collapses them, which corrupts PIC relocations in multi-TU modules —
+    see the ``.LC0`` collision regression.
+
+    Each entry carries ``idx`` (the symbol's index within its symbol table
+    section) and ``symtab`` (the section index of that symbol table).  The
+    pair ``("symtab", idx)`` uniquely identifies a symbol even when the ELF
+    happens to carry more than one symtab.
+    """
+    syms = []
     with open(obj, "rb") as f:
         elf = ELFFile(f)
-        for section in elf.iter_sections():
+        for sec_idx, section in enumerate(elf.iter_sections()):
             if not isinstance(section, SymbolTableSection):
                 continue
-            for symbol in section.iter_symbols():
+            for idx, symbol in enumerate(section.iter_symbols()):
                 sdata = {}
+                sdata["name"] = str(symbol.name)
                 sdata["type"] = symbol['st_info']['type']
                 sdata["bind"] = symbol['st_info']['bind']
                 sdata["size"] = symbol['st_size']
@@ -135,8 +148,11 @@ def get_symbols_in_elf(obj):
                 except:
                     pass
                 sdata["value"] = int(symbol['st_value'])
-                syms[str(symbol.name)] = sdata
+                sdata["idx"] = idx
+                sdata["symtab"] = sec_idx
+                syms.append(sdata)
     return syms
+
 
 def get_public_functions_in_object(obj):
     """Return public (global or weak) function symbols.
@@ -145,7 +161,7 @@ def get_public_functions_in_object(obj):
     module can reach them via the renamed local implementation.  The wrapper
     is emitted as a .weak symbol so the host can override it if desired.
     """
-    return [s for s, d in get_symbols_in_elf(obj).items() if d["type"] == "STT_FUNC" and d["bind"] in ("STB_GLOBAL", "STB_WEAK")]
+    return [s["name"] for s in get_symbols_in_elf(obj) if s["type"] == "STT_FUNC" and s["bind"] in ("STB_GLOBAL", "STB_WEAK")]
 
 def get_weak_functions_in_object(obj):
     """Return only STB_WEAK function symbols.
@@ -153,10 +169,10 @@ def get_weak_functions_in_object(obj):
     These need .weak (not .globl) in the assembly prologue so the ELF
     binding is preserved correctly.
     """
-    return [s for s, d in get_symbols_in_elf(obj).items() if d["type"] == "STT_FUNC" and d["bind"] == "STB_WEAK"]
+    return [s["name"] for s in get_symbols_in_elf(obj) if s["type"] == "STT_FUNC" and s["bind"] == "STB_WEAK"]
 
 def get_local_symbols_in_object(obj):
-    return [s for s, d in get_symbols_in_elf(obj).items() if d["bind"] == "STB_LOCAL" and s.startswith(".")]
+    return [s["name"] for s in get_symbols_in_elf(obj) if s["bind"] == "STB_LOCAL" and s["name"].startswith(".")]
 
 def get_dependency_symbols_in_object(obj):
     """Return .udynlink.mod.requires.* extern symbols.
@@ -165,8 +181,8 @@ def get_dependency_symbols_in_object(obj):
     alive through --gc-sections so the dependency system can detect them
     at load time.
     """
-    return [s for s, d in get_symbols_in_elf(obj).items()
-            if s.startswith(".udynlink.mod.requires.")]
+    return [s["name"] for s in get_symbols_in_elf(obj)
+            if s["name"].startswith(".udynlink.mod.requires.")]
 
 def get_relocations_in_elf(obj):
     rels = []
@@ -175,7 +191,8 @@ def get_relocations_in_elf(obj):
         for section in elf.iter_sections():
             if not isinstance(section, RelocationSection):
                 continue
-            symtable = elf.get_section(section['sh_link'])
+            symtab_idx = section['sh_link']
+            symtable = elf.get_section(symtab_idx)
             for rel in section.iter_relocations():
                 if rel['r_info_sym'] == 0:
                     continue
@@ -183,6 +200,13 @@ def get_relocations_in_elf(obj):
                 rdata["offset"] = int(rel['r_offset'])
                 rdata["info"] = rel['r_info']
                 rdata["type"] = describe_reloc_type(rel['r_info_type'], elf)
+                # Unique identity of the referenced symbol: the pair
+                # (symtab section index, symbol index within it).  Two
+                # relocations that reference same-named local symbols
+                # (e.g. .LC0 from different TUs) MUST keep distinct slots,
+                # so identity is never keyed by name alone.
+                rdata["sym_idx"] = rel['r_info_sym']
+                rdata["symtab"] = symtab_idx
                 symbol = symtable.get_symbol(rel['r_info_sym'])
                 if symbol['st_name'] == 0:
                     symsec = elf.get_section(symbol['st_shndx'])
@@ -210,3 +234,4 @@ def get_section_in_elf(obj, section_name):
         else:
             error("Section '%s' not found" % section_name)
     return sect
+
