@@ -88,7 +88,7 @@ def keep_current_dir(func):
 # Return the output and the exit code
 def run_cmd(cmd, show_output=False, timeout=None, quiet_on_error=False):
     safe_print("Executing '%s' " % cmd)
-    child = subprocess.Popen(cmd.split(' '), stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    child = subprocess.Popen(cmd.split(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     try:
         out, _ = child.communicate(timeout = timeout)
     except subprocess.TimeoutExpired:
@@ -182,8 +182,9 @@ def test_one(full_path, opt):
         return False, "No modules!"
     for m in test_data["modules"]:
         srcs = " ".join(m)
-        compile_cmd = '%s ../../scripts/mkmodule --disasm --gen-c-header --header-path .%s%%s%%s' % (sys.executable, module_target_flag)
-        cmd = compile_cmd % ("" if opt else "-O3 ", srcs)
+        extra_module_args = test_data.get("mkmodule_args", "")
+        compile_cmd = '%s ../../scripts/mkmodule --disasm --gen-c-header --header-path .%s%%s%%s %%s' % (sys.executable, module_target_flag)
+        cmd = compile_cmd % ("" if opt else "-O3 ", extra_module_args, srcs)
         res, out = run_cmd(cmd, show_output=False)
         out = out.decode()
         if not res:

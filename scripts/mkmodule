@@ -85,7 +85,7 @@ def compile(src_name, args, public_symbols, macros=[]):
     # Collect exported symbols and (optionally) generate prologue wrappers
     if not args.no_prologue:
         for objname in [] + object_files:
-            global_funcs = [s for s in get_public_functions_in_object(objname) if len(public_symbols) == 0 or s in public_symbols or s == "__init_array"]
+            global_funcs = [s for s in get_public_functions_in_object(objname) if (len(public_symbols) == 0 or s in public_symbols or s == "__init_array") and not (args.strip_mangled_syms and is_cxx_mangled(s) and s not in public_symbols)]
             weak_funcs = [s for s in get_weak_functions_in_object(objname) if s in global_funcs]
             dep_syms = get_dependency_symbols_in_object(objname)
             if dep_syms:
@@ -116,7 +116,7 @@ def compile(src_name, args, public_symbols, macros=[]):
     else:
         # No prologue: collect exported symbols so the linker can keep them alive
         for objname in [] + object_files:
-            global_funcs = [s for s in get_public_functions_in_object(objname) if len(public_symbols) == 0 or s in public_symbols or s == "__init_array"]
+            global_funcs = [s for s in get_public_functions_in_object(objname) if (len(public_symbols) == 0 or s in public_symbols or s == "__init_array") and not (args.strip_mangled_syms and is_cxx_mangled(s) and s not in public_symbols)]
             if not hasattr(args, 'exported_syms'):
                 args.exported_syms = set()
             args.exported_syms.update(global_funcs)
@@ -289,6 +289,37 @@ def process(output, args):
         if all_empty:
             empty_init_keys = {_sym_key(init_syms[n]) for n in init_array_names}
             debug("Detected empty init-array sentinels; will omit from symbol table unless referenced by relocations", args)
+
+    # ── C++ symbol-table filtering (opt-in) ────────────────────────────────
+    # Each enabled flag demotes eligible *defined* symbols (currently
+    # 'exported' or 'weak') to 'local' (nameless INTERNAL). They keep their
+    # value so relocations resolve, but lose their name (and, for weaks, the
+    # host-override path). Externs, the module name, dependency declarations,
+    # and anything in --public-symbols are never demoted.
+    def _should_demote(sd, sym_class, public_symbols, args):
+        if sym_class not in ("exported", "weak"):
+            return False
+        name = sd["name"]
+        if name in public_symbols:
+            return False
+        if args.strip_hidden_syms and sd["visibility"] in ("STV_HIDDEN", "STV_INTERNAL"):
+            return True
+        if args.strip_non_public_syms and len(public_symbols) > 0:
+            return True
+        if args.strip_mangled_syms and is_cxx_mangled(name):
+            return True
+        if args.strip_weak_sym_names and sym_class == "weak":
+            return True
+        return False
+
+    demoted = 0
+    for key in list(sym_map.keys()):
+        cls = sym_map[key]
+        if _should_demote(sym_data[key], cls, public_symbols, args):
+            debug("Filter: demoting '%s' (%s) to internal (nameless)" % (sym_data[key]["name"], cls), args)
+            sym_map[key] = "local"
+            demoted += 1
+    debug("Filter: demoted %d defined symbol(s) to internal" % demoted, args)
 
     def _reloc_key(r):
         return (r["symtab"], r["sym_idx"])
@@ -573,6 +604,23 @@ parser.add_argument("--no-prologue", dest="no_prologue", action="store_true", he
 parser.add_argument("--workdir", dest="workdir", default=None,
     help="Directory for intermediate files (*.o, *.elf, *.s) and the default .bin output (default: next to source). "
          "Also via UDYNLINK_WORKDIR env var.")
+parser.add_argument("--strip-hidden-syms", dest="strip_hidden_syms",
+    action="store_true",
+    help="Demote defined symbols whose ELF visibility is STV_HIDDEN/STV_INTERNAL "
+    "to nameless internal entries. (pair with '-fvisibility=hidden "
+    "-fvisibility-inlines-hidden') in --build-flags.")
+parser.add_argument("--strip-non-public-syms", dest="strip_non_public_syms",
+    action="store_true",
+    help="When --public-symbols is set, demote every defined symbol not in "
+    "the list to nameless internal. NOP without --public-symbols.")
+parser.add_argument("--strip-mangled-syms", dest="strip_mangled_syms",
+    action="store_true",
+    help="Demote Itanium-mangled (_Z*) defined symbols not in --public-symbols "
+    "to nameless internal, and skip their prologue wrapping.")
+parser.add_argument("--strip-weak-sym-names", dest="strip_weak_sym_names",
+    action="store_true",
+    help="Demote all defined STB_WEAK symbols not in --public-symbols to "
+    "nameless internal. Loses host-override capability for those weaks.")
 
 args, rest = parser.parse_known_args()
 

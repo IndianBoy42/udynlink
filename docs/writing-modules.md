@@ -364,6 +364,75 @@ udynlink_cpp_init(&mod);
 // Now safe to call exported functions
 ```
 
+### Controlling C++ Symbol-Table Size
+
+Heavily templated C++ modules emit a symbol table that can exceed the size of the module's code and data. Most of those symbols are name-mangled C++ internals (vtables, inline/template instantiations, internal helpers promoted to global by the compiler) that the host never looks up and the loader never needs to resolve by name. `mkmodule` ships four opt-in flags that demote these from the named pool to nameless internal entries without breaking any documented behavior (host `udynlink_lookup_symbol` on intended exports, load-time extern/weak resolution, cross-module deps). All four are pure `mkmodule` changes; the loader and binary format are untouched.
+
+The default behavior with no flag set is byte-for-byte unchanged, so existing modules stay small. Pick the flag that matches your export convention.
+
+| Flag | Demotes | When to use |
+|------|---------|-------------|
+| `--strip-hidden-syms` | Defined symbols with ELF visibility `STV_HIDDEN`/`STV_INTERNAL`. | The default C++ workflow. Pair with `-fvisibility=hidden -fvisibility-inlines-hidden` in `--build-flags` and mark real exports with `__attribute__((visibility("default")))`. Demotes vtables, inline instantiations, and any helper your compiler did not auto-statics. |
+| `--strip-mangled-syms` | All defined `extern "C"`-not-marked symbols whose name starts with `_Z` (Itanium-mangled C++). Also skips the prologue wrapper for them, so the renamed name no longer carries the mangled name as a suffix. | When your module exposes only `extern "C"` entry points and you do not bother with visibility attributes. Demotes every C++ internal; keeps the `extern "C"` API. |
+| `--strip-non-public-syms` | Every defined symbol not listed in `--public-symbols`. | When you already pass `--public-symbols <list>`. Closes the latent table-size gap (see `--public-symbols` above). |
+| `--strip-weak-sym-names` | Every defined `STB_WEAK` symbol not in `--public-symbols`. | Vtables, inline instantiations, and any linkonce-odr definition emitted weak by GCC. Note: this loses the host-override path for those weak names — only use it when you do not need a host-side override of the symbol by name. |
+
+Symbols listed in `--public-symbols` are never demoted, regardless of which flag is set. Dependency declarations (`.udynlink.mod.requires.*`), the module name, and unresolved externs are also never demoted.
+
+Example — hidden-visibility workflow:
+
+```bash
+python3 mkmodule \
+  --build-flags='-fvisibility=hidden -fvisibility-inlines-hidden' \
+  --strip-hidden-syms \
+  mod_cpp_filter.cpp
+```
+
+Example — `extern "C"`-only workflow:
+
+```bash
+python3 mkmodule --strip-mangled-syms mod_cpp_filter.cpp
+```
+
+#### How demotion works
+
+Each flag demotes an eligible *defined* symbol from `exported`/`weak` to `internal` (nameless in the emitted symbol table). The symbol keeps its address, so relocations (`R_ARM_GOT_BREL`, `R_ARM_ABS32`) still resolve to the module's own value. Only the *name* is dropped from the binary. Consequences, all verified against the loader:
+
+- `udynlink_lookup_symbol(p_mod, name, &sym)` returns `NULL` for a demoted name — the binary search of named entries no longer finds it.
+- `udynlink_external_resolve_symbol(p_mod, name)` is never called for a demoted symbol — the loader only queries the host for `external`/`weak` entries.
+- Intra-module `bl` calls, function pointers taken inside the module, and virtual dispatch via vtables **keep working** — these go through PC-relative calls or LOT/data relocations patched with the module's own value, none of which needs the name.
+
+The four flags differ only in *which* defined symbols get demoted and what host/module capability is forfeited.
+
+#### Dead-code elimination is separate
+
+The toolchain already links with `--gc-sections` (paired with `-ffunction-sections -fdata-sections`), so **unused code and data are removed before the symbol table is even built**. GC roots are the `.text_nogc` section (`KEEP(*(.text_nogc))` in `scripts/code_before_data.ld`, which holds the prologue wrappers), `__init_array` (C++ global constructors), the entry point, and `-Wl,--undefined=` symbols. Anything unreachable from those roots is dropped at link time.
+
+The bloat these four flags address is **live-but-unneeded names**: symbols whose code survives GC (because something references it) but whose name the host never needs. `--gc-sections` does not strip names from the symbol table — that is exactly the gap these flags close.
+
+Only `--strip-mangled-syms` interacts with GC, as a side effect: it runs in `compile()` (before `link()`) and skips prologue-wrapper generation for mangled symbols. The wrapper normally lives in `.text_nogc` (a GC root) and references the renamed function body, keeping it alive. With the wrapper skipped, a mangled global that nothing else references becomes unreachable and `--gc-sections` drops its **body too** — a bonus code-size reduction beyond the name stripping. The other three flags run in `process()` (after linking) and only touch names, never code bytes.
+
+#### Host and module impact per flag
+
+| Flag | Module side | Host side | Forfeits |
+|------|-------------|-----------|----------|
+| `--strip-hidden-syms` | Adopt the visibility model: hide by default, mark exports `visibility("default")`. Requires `-fvisibility=hidden -fvisibility-inlines-hidden` in `--build-flags`. | No code change. Host still finds the `extern "C"` exports marked `default". | Nothing spec-valid: `STV_HIDDEN` symbols are non-interposable by ELF spec, so stripping their name violates no linker contract. |
+| `--strip-mangled-syms` | Use `extern "C"` for every export (already the documented convention). No visibility attributes or `--public-symbols` list needed; works in default mode. | No code change. Host finds `extern "C"` exports; mangled lookups return `NULL`. | Ability to call a C++ method by mangled name from the host. Workaround: an `extern "C"` wrapper. |
+| `--strip-non-public-syms` | Pass `--public-symbols <list>` and enumerate every intended export. | No code change. Host sees exactly the listed exports. | Lookups of non-listed globals now return `NULL` instead of a dangerous pointer to unwrapped code. This is a **latent-bug fix**: today `--public-symbols` narrows wrapping but not the table, so calling a non-listed global by name would jump to raw code with no `r9` prologue and corrupt PIC state. |
+| `--strip-weak-sym-names` | None beyond passing the flag. Vtables and ODR-weak instantiations lose their names. | `udynlink_external_resolve_symbol` is no longer called for defined weaks. | Host-override of defined weak symbols by name (the loader's `WEAK` override path). The module's own default is used instead. **Silent regression** if you forget to list an override-eligible weak in `--public-symbols` — list such weaks explicitly to preserve the override. |
+
+#### Choosing and combining flags
+
+| Workflow | Flags | Notes |
+|----------|-------|-------|
+| Default C++ module | `--strip-hidden-syms` + `-fvisibility=hidden -fvisibility-inlines-hidden` | Spec-correct, predictable, no feature loss. The recommended starting point. |
+| `extern "C"`-only module | `--strip-mangled-syms` | Zero author workflow change. Also shrinks `.text` (wrapper skip) alongside the table. |
+| Strict export control | `--strip-non-public-syms` + `--public-symbols <list>` | Smallest table, full authorial intent. Also closes the unwrapped-export landmine. |
+| Heavy-template legacy module | `--strip-mangled-syms` + `--strip-weak-sym-names` | Attacks vtables and ODR-weaks, the biggest bloat sources in templated C++. Avoid `--strip-weak-sym-names` if the host overrides weak hooks by name. |
+| Maximum shrink | all four + `-fvisibility=hidden` + `--public-symbols` | Only for modules that need no host override of weaks. |
+
+All four are safe to compose. `--public-symbols` exempts listed symbols from every flag. The end-to-end test `tests/test-cpp-symbol-filter` exercises `--strip-hidden-syms` on QEMU across all three load modes; `tests/test-cpp-symbol-filter-inlines` validates inline, static inline, and weak template instantiations under `--strip-mangled-syms --strip-weak-sym-names`; `tests/test-cpp-symbol-filter-weak-override-loss` confirms `--strip-weak-sym-names` does not break module loading; `tests/test-cpp-symbol-filter-init-fini` exercises C++ and C constructors under `--strip-mangled-syms`; `tests/test-cpp-symbol-filter-public-list` verifies `--public-symbols` + `--strip-non-public-syms` filtering; `tests/test-cpp-symbol-filter-composition` exercises all four flags combined with a public-symbols allowlist on QEMU; `tests/test-cpp-symbol-filter-hidden-mangled` and `tests/test-cpp-symbol-filter-hidden-weak` cover the remaining untested pair combinations; and `tests/test-cpp-symbol-emission-all` is the comprehensive QEMU integration test covering every GCC C++ symbol emission pattern (extern "C", classes, vtables, templates, inline, weak, hidden, constructors, namespace, destructors, template variables, static member data, multiple inheritance). `tests/py/test_symbol_filter.py` exercises all four flags against the parsed `.bin` symbol table, and `tests/py/test_cpp_symbol_emission_all.py` provides comprehensive parameterized tests for all 16 flag combinations across all emission patterns.
+
 ## Data and Variables in Modules
 
 ### Global Variables
@@ -530,6 +599,10 @@ Source files are compiled with:
 | `--no-debug` | Do not print debug output. |
 | `--no-prologue` | Skip the assembly prologue/wrapper on exported functions. The host must use `UDYNLINK_PREPARE_CALL()` to set `r9` before every call. |
 | `--workdir <dir>` | Directory for intermediate files (`*.o`, `*.elf`, `*.s`) and the default `.bin` output, keeping the source tree clean. Default: next to the source file. |
+| `--strip-hidden-syms` | Demote defined symbols whose ELF visibility is `STV_HIDDEN`/`STV_INTERNAL` to nameless internal entries. Pair with `-fvisibility=hidden -fvisibility-inlines-hidden` in `--build-flags`. |
+| `--strip-non-public-syms` | When `--public-symbols` is set, demote every defined symbol not in the list to nameless internal. No-op without `--public-symbols`. |
+| `--strip-mangled-syms` | Demote Itanium-mangled (`_Z*`) defined symbols not in `--public-symbols` to nameless internal, and skip their prologue wrapping. |
+| `--strip-weak-sym-names` | Demote all defined `STB_WEAK` symbols not in `--public-symbols` to nameless internal. Loses the host-override path for those weak symbols. |
 
 ### Environment Variables
 

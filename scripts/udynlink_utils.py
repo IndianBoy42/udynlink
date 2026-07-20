@@ -2,11 +2,20 @@ import os, sys
 import argparse
 import hashlib
 from elftools.elf.elffile import ELFFile
+import re
 from elftools.elf.relocation import RelocationSection
 from elftools.elf.sections import SymbolTableSection
 from elftools.elf.relocation import RelocationSection
 from elftools.elf.descriptions import describe_reloc_type
 import json
+
+# Itanium C++ ABI mangling prefix. GCC emits _Z for all C++-mangled symbols
+# (functions, vtables _ZTV, typeinfo _ZTI, thunks _ZTh/_ZTv, local-scope _ZL/_ZZ).
+_CXX_MANGLED_RE = re.compile(r'^_Z')
+
+def is_cxx_mangled(name):
+    """True if ``name`` is an Itanium-ABI C++-mangled symbol."""
+    return bool(_CXX_MANGLED_RE.match(name))
 
 def to_json(obj):
     #print(json.dumps(data, indent=4))

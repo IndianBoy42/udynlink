@@ -205,6 +205,7 @@ Undefined weak symbols (`STB_WEAK` + `SHN_UNDEF`) are treated as `external` and 
 ### C++ Module Support
 - Call `udynlink_cpp_init(p_mod)` after loading a C++ module to run global constructors via `__init_array`
 - The host must set `r9` to the module's LOT base (`p_mod->ram_base`) before calling `udynlink_cpp_init`, using `UDYNLINK_PREPARE_CALL(p_mod)` or `UDYNLINK_CALL`
+- Heavily templated C++ modules can ship symbol tables larger than their code+data. `mkmodule` offers four opt-in bloat-reduction flags (`--strip-hidden-syms`, `--strip-non-public-syms`, `--strip-mangled-syms`, `--strip-weak-sym-names`) that demote defined symbols to nameless internal entries without changing loader or binary format. See `docs/writing-modules.md` → "Controlling C++ Symbol-Table Size".
 
 ### Module Image Format
 Binary modules start with the signature `UDLM`, followed by a 32-byte header, relocation table, symbol table, `.text`, and `.data`. The loader (`udynlink_load_module`) validates the signature, checks ABI version, applies relocations, and resolves extern symbols.
