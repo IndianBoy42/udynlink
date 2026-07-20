@@ -46,6 +46,22 @@ udynlink_error_t udynlink_check_arch_tag(uint16_t mod_arch, uint16_t host_arch) 
 
 #define UDYNLINK_MODULE_SIGN                  (((uint32_t)'M' << 24) | ((uint32_t)'L' << 16) | ((uint32_t)'D' << 8) | (uint32_t)'U')
 
+/* Sanity cap on header-derived RAM requests. Real modules are kilobyte-scale;
+ * a 16 MiB cap leaves >1000x headroom and rejects malformed/malicious images
+ * that would otherwise drive udynlink_external_malloc into a multi-GB
+ * allocation (or DoS the host). Header fields feeding ram_size are
+ * attacker-controlled in the fuzz/malicious-module threat model. */
+#define UDYNLINK_MAX_RAM_SIZE                (16u * 1024u * 1024u)
+
+/* Sanity cap on the header-derived *image* size (header + relocs + symtab +
+ * code + data), computed the same way udynlink_get_image_size does.  Real
+ * modules are kilobyte-scale; a 4 MiB cap leaves >1000x headroom and rejects
+ * malformed/malicious images whose header fields (num_rels, symt_size,
+ * code_size, data_size) are inflated to drive a multi-MiB memcpy.  Like the
+ * RAM cap above, these fields are attacker-controlled in the
+ * fuzz/malicious-module threat model. */
+#define UDYNLINK_MAX_IMAGE_SIZE              (4u * 1024u * 1024u)
+
 #define _UDYNLINK_EXPAND(x)                   #x"\n"
 static const char * const error_codes[] = {
     UDYNLINK_ERROR_CODES
@@ -111,7 +127,11 @@ static size_t get_header_size(const udynlink_module_header_t *p_header) {
 
 static size_t get_code_offset_from_header(const udynlink_module_header_t *p_header) {
     size_t res = get_header_size(p_header) + p_header->num_rels * 2 * sizeof(uint32_t) + p_header->symt_size;
-    res = (res + 3) & ~3U;
+    /* Align to 4 with a size_t mask: ~3U is 32-bit and would zero the high
+     * half of `res` on 64-bit hosts, silently truncating an oversized (e.g.
+     * 4 GiB symt_size) header to a small 'valid' offset and bypassing the
+     * UDYNLINK_MAX_IMAGE_SIZE cap downstream. */
+    res = (res + 3) & ~(size_t)3;
     return res;
 }
 
@@ -154,19 +174,19 @@ static const uint32_t *get_relocs_pointer(const udynlink_module_t *p_mod) {
 
     return (const uint32_t*)p_header + get_header_size(p_header) / sizeof(uint32_t);
 }
-
-// Compute num_named_syms for the given symbol table base.
-// Returns the index of the last contiguous named (non-INTERNAL) entry starting
-// from index 1, provided that (a) all named entries come before any INTERNAL
-// entries, and (b) the named entries are sorted lexicographically.  Returns 0
-// for old-format (unsorted) modules, which signals udynlink_lookup_symbol to
-// fall back to linear search.
-static uint16_t compute_num_named_syms_raw(const uint32_t *p_symt) {
+static uint16_t compute_num_named_syms_raw(const uint32_t *p_symt, size_t symt_size_bytes) {
+    size_t symt_words = symt_size_bytes / sizeof(uint32_t);
+    /* The entry-count word and every name_off read must lie inside the
+     * symbol table. symt_size is a header field, attacker-controlled. */
+    if (symt_words < 1) return 0;
     uint32_t num_entries = *p_symt;
     uint16_t last_named = 0;
     uint8_t found_local = 0;
 
     for (size_t i = 1; i < num_entries; i++) {
+        /* Each entry occupies two words: [val, name_off]. Reading
+         * p_symt[i*2+1] needs (i*2+1) < symt_words. */
+        if (i * 2 + 1 >= symt_words) break;
         uint32_t name_off = p_symt[i * 2 + 1];
         uint8_t sym_type = (name_off >> UDYNLINK_SYM_INFO_SHIFT) & UDYNLINK_SYM_INFO_TYPE_MASK;
         if (sym_type == UDYNLINK_SYM_TYPE_INTERNAL) {
@@ -177,17 +197,30 @@ static uint16_t compute_num_named_syms_raw(const uint32_t *p_symt) {
         }
     }
 
+    /* name_off is attacker-controlled. Both the byte offset itself AND the
+     * C-string read it induces must stay inside the symtab: a malformed
+     * image that omits the NUL terminator within symt_size would let strcmp
+     * walk out of the loader's own RAM copy of the symtab. Clamp the offset
+     * and bound strncmp by the remaining symtab bytes; on missing-NUL the
+     * compare returns non-zero, the sorted-check fails, and we fall back to
+     * linear search via return 0. */
     for (size_t i = 2; i <= last_named; i++) {
-        const char *prev = (const char*)p_symt + (p_symt[(i - 1) * 2 + 1] & UDYNLINK_SYM_OFFSET_MASK);
-        const char *cur  = (const char*)p_symt + (p_symt[i * 2 + 1] & UDYNLINK_SYM_OFFSET_MASK);
-        if (strcmp(prev, cur) > 0) return 0;
+        uint32_t prev_off = p_symt[(i - 1) * 2 + 1] & UDYNLINK_SYM_OFFSET_MASK;
+        uint32_t cur_off  = p_symt[i * 2 + 1] & UDYNLINK_SYM_OFFSET_MASK;
+        if (prev_off >= symt_size_bytes || cur_off >= symt_size_bytes) return 0;
+        const char *prev = (const char*)p_symt + prev_off;
+        const char *cur  = (const char*)p_symt + cur_off;
+        size_t prev_remaining = symt_size_bytes - prev_off;
+        size_t cur_remaining  = symt_size_bytes - cur_off;
+        size_t cmp_bound = prev_remaining < cur_remaining ? prev_remaining : cur_remaining;
+        if (strncmp(prev, cur, cmp_bound) > 0) return 0;
     }
 
     return last_named;
 }
 
 static uint16_t compute_num_named_syms(const udynlink_module_header_t *p_header) {
-    return compute_num_named_syms_raw(get_sym_table_pointer(p_header));
+    return compute_num_named_syms_raw(get_sym_table_pointer(p_header), p_header->symt_size);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -200,13 +233,19 @@ static void mark_module_free(udynlink_module_t *p_mod) {
 
 // Return the entry with the specified index in the given symbol table
 // Returns "p_sym" if OK, NULL if index is out of range or an error occurred
-static udynlink_sym_t *get_sym_at_raw(const uint32_t *p_symt, size_t index, udynlink_sym_t *p_sym) {
+static udynlink_sym_t *get_sym_at_raw(const uint32_t *p_symt, size_t index, udynlink_sym_t *p_sym, size_t symt_size_bytes) {
     uint32_t name_off;
     uint32_t info;
+    size_t symt_words = symt_size_bytes / sizeof(uint32_t);
 
+    /* entry-count word and the [val, name_off] pair for @index must all lie
+     * inside the symtab. symt_size is attacker-controlled. */
+    if (symt_words < 1) return NULL;
     if (index >= *p_symt) { // first word in the symbol table is the number of entries
         return NULL;
     }
+    /* Needs p_symt[index*2+1] and p_symt[index*2+2]; require the higher one. */
+    if (index * 2 + 2 >= symt_words) return NULL;
     // Read the offset to the name of the symbol and the symbol value
     name_off = p_symt[index * 2 + 1];
     p_sym->val = p_symt[index * 2 + 2];
@@ -221,15 +260,17 @@ static udynlink_sym_t *get_sym_at_raw(const uint32_t *p_symt, size_t index, udyn
     }
     // Get name pointer (if available)
     if (p_sym->type != UDYNLINK_SYM_TYPE_INTERNAL) { // local symbols don't have names
+        /* name_off is attacker-controlled; keep the name base inside the
+         * symtab so the caller's strcmp can't walk off the buffer. */
+        if ((name_off & UDYNLINK_SYM_OFFSET_MASK) >= symt_size_bytes) return NULL;
         p_sym->name = (const char*)p_symt + (name_off & UDYNLINK_SYM_OFFSET_MASK);
     } else {
         p_sym->name = "(N/A)";
     }
     return p_sym;
 }
-
 static udynlink_sym_t *get_sym_at(const udynlink_module_header_t *p_header, size_t index, udynlink_sym_t *p_sym) {
-    return get_sym_at_raw(get_sym_table_pointer(p_header), index, p_sym);
+    return get_sym_at_raw(get_sym_table_pointer(p_header), index, p_sym, p_header->symt_size);
 }
 
 // Offset the given symbol relative to the required base address (.code or .data), based on the symbol location
@@ -289,28 +330,50 @@ udynlink_error_t udynlink_load_apply_relocations(udynlink_module_t *p_mod,
     udynlink_sym_t sym;
     udynlink_error_t res = UDYNLINK_OK;
 
+    /* Max valid lot_offset (uint32_t units): LOT slots + .data words.
+     * BSS follows .data but is never a relocation target (zeroed at load).
+     * Reads of p_relocations[i*2..] are safe — num_rels is bounded by the
+     * image builder (udynlink_image_from_memory) before we are called. */
+    uint32_t max_lot_offset = p_header->num_lot + (p_header->data_size / sizeof(uint32_t));
+
     UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "LOT base: %p, .data starts at %p, .code starts at %p\n", p_lot, p_data, get_code_pointer(p_mod));
 
     for (size_t i = 0; i < p_header->num_rels; i++) {
         uint32_t lot_offset = p_relocations[i * 2];
         uint32_t symt_offset = p_relocations[i * 2 + 1];
 
+        /* Reject out-of-range offsets before any write — covers all three
+         * write sites (R_ARM_ABS32, code-reloc, and the LOT/.data ternary),
+         * since they all index into [p_lot, p_lot + max_lot_offset). */
+        if (lot_offset >= max_lot_offset) {
+            res = UDYNLINK_ERR_LOAD_BAD_RELOCATION_TABLE;
+            goto exit;
+        }
+
         if (symt_offset & (1u << 31)) {
             // https://stackoverflow.com/questions/75558729/position-independent-code-gcc-versus-armcc
             // R_ARM_ABS32 data relocation
             // *offset += &data - value
+            if (lot_offset < p_header->num_lot) {  // would underflow the .data index below
+                res = UDYNLINK_ERR_LOAD_BAD_RELOCATION_TABLE;
+                goto exit;
+            }
             uint32_t *p = p_data + (lot_offset - p_header->num_lot);
             *p += (uint32_t)(uintptr_t)p_data - (symt_offset & 0x7FFFFFFF);
             continue;
         }
 
         if (symt_offset & (1u << 30)) {
+            if (lot_offset < p_header->num_lot) {  // would underflow the .data index below
+                res = UDYNLINK_ERR_LOAD_BAD_RELOCATION_TABLE;
+                goto exit;
+            }
             uint32_t *p = p_data + (lot_offset - p_header->num_lot);
             *p = ((uint32_t)(uintptr_t)get_code_pointer(p_mod) + *p);
             continue;
         }
 
-        if (get_sym_at_raw(p_symtab, symt_offset, &sym) == NULL) { // symbol table offset is out of range, shouldn't happen
+        if (get_sym_at_raw(p_symtab, symt_offset, &sym, p_header->symt_size) == NULL) { // symbol table offset is out of range, shouldn't happen
             res = UDYNLINK_ERR_LOAD_BAD_RELOCATION_TABLE;
             goto exit;
         }
@@ -410,7 +473,7 @@ static udynlink_error_t rebase_module_pointers(udynlink_module_t *p_mod,
         }
 
         udynlink_sym_t sym;
-        if (get_sym_at_raw(get_sym_table_pointer(p_header), symt_offset, &sym) == NULL)
+        if (get_sym_at_raw(get_sym_table_pointer(p_header), symt_offset, &sym, p_header->symt_size) == NULL)
             continue; // defensive: rebase must never fail mid-move
 
         uint32_t *p_rel = (lot_offset < num_lot) ? p_lot + lot_offset
@@ -490,7 +553,11 @@ size_t udynlink_get_image_metadata_size(const udynlink_module_header_t *header) 
 const char *udynlink_image_get_module_name(const uint32_t *p_symtab) {
     if (!p_symtab) return NULL;
     udynlink_sym_t sym;
-    udynlink_sym_t *p_sym = get_sym_at_raw(p_symtab, UDYNLINK_SYM_NAME_OFFSET, &sym);
+    /* Public API has no symt_size argument; the caller must hand us a valid
+     * symtab whose size covers index 0. Pass SIZE_MAX to disable the bound
+     * (behaves like the pre-fix path) — callers come from udynlink_image_*,
+     * always pointing at a well-formed image's symtab. */
+    udynlink_sym_t *p_sym = get_sym_at_raw(p_symtab, UDYNLINK_SYM_NAME_OFFSET, &sym, SIZE_MAX);
     if (p_sym == NULL) {
         return NULL;
     } else {
@@ -520,10 +587,22 @@ udynlink_error_t udynlink_load_module_image(udynlink_module_t *p_mod,
     if (res != UDYNLINK_OK)
         goto exit;
 
+    // Reject images whose header-derived total (header + relocs + symtab +
+    // code + data) exceeds the sanity cap, before any header-derived length
+    // is used as a copy size. Reuses the error-code precedent set by the RAM cap.
+    if (udynlink_get_image_size(p_header) > UDYNLINK_MAX_IMAGE_SIZE) {
+        res = UDYNLINK_ERR_LOAD_BAD_RELOCATION_TABLE;
+        goto exit;
+    }
+
     UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Processing module image named '%s' with load mode %d\n", udynlink_image_get_module_name(image->p_symtab), (int)load_mode);
 
     // Allocate RAM or check given RAM region, as needed
     size_t ram_size = udynlink_compute_ram_size(p_header, load_mode);
+    if (ram_size > UDYNLINK_MAX_RAM_SIZE) {
+        res = UDYNLINK_ERR_LOAD_BAD_RELOCATION_TABLE;
+        goto exit;
+    }
     if (ram_size > 0) {
         if (load_addr == NULL) {
             UDYNLINK_LOAD_CLR_FOREIGN_RAM(p_mod);
@@ -572,17 +651,28 @@ udynlink_error_t udynlink_load_module_image(udynlink_module_t *p_mod,
         UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Copied full module to RAM at %p (%u bytes)\n", p_temp8, code_offset + p_header->code_size + p_header->data_size);
         p_mod->p_header = (const udynlink_module_header_t *)p_temp8;
     } else if (load_mode == UDYNLINK_LOAD_MODE_COPY_TEXT_DATA) {
-        // Copy code and data only; metadata stays in source
-        memcpy(p_temp8, image->p_code, p_header->code_size + p_header->data_size);
+        // Copy code and data only; metadata stays in source. Guard against
+        // ram_size == 0 (empty module: num_lot=bss_size=code_size=data_size=0)
+        // which leaves p_temp8 NULL — calling memcpy with a NULL argument is
+        // UB even when the size is zero.
+        size_t cd_size = p_header->code_size + p_header->data_size;
+        if (cd_size > 0) {
+            memcpy(p_temp8, image->p_code, cd_size);
+        }
         UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Copied code and data to RAM at %p (%u bytes)\n", p_temp8, p_header->code_size + p_header->data_size);
     } else {
         // XIP: copy only data
-        memcpy(p_temp8, image->p_data, p_header->data_size);
+        if (p_header->data_size > 0) {
+            memcpy(p_temp8, image->p_data, p_header->data_size);
+        }
         UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Copied data to RAM at %p (%u bytes)\n", p_temp8, p_header->data_size);
     }
 
-    // Zero out BSS
-    memset(get_data_pointer(p_mod) + p_header->data_size, 0, p_header->bss_size);
+    // Zero out BSS (guarded the same way: when ram_size == 0, both the data
+    // pointer and bss_size are zero, so the memset would be a no-op UB).
+    if (p_header->bss_size > 0) {
+        memset(get_data_pointer(p_mod) + p_header->data_size, 0, p_header->bss_size);
+    }
 
     // Process relocations
     res = udynlink_load_apply_relocations(p_mod, p_header, image->p_relocations, image->p_symtab);

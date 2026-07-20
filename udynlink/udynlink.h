@@ -351,9 +351,15 @@ static inline int udynlink_module_has_no_prologue(const udynlink_module_header_t
  *
  * @param[in] p_mod Pointer to the loaded module handle.
  */
+#ifndef UDYNLINK_PREPARE_CALL
+/* Provided as a function-like macro so a host build that never executes ARM
+ * module code (e.g. the loader fuzz/sanitizer harnesses in tests/fuzz) can
+ * override this on the compile line with a no-op body. On Cortex-M this
+ * emits the r9 load required by the PIC code model. */
 #define UDYNLINK_PREPARE_CALL(p_mod) do { \
     __asm volatile ("mov r9, %0" :: "r"((uint32_t)(p_mod)->ram_base) : "r9"); \
 } while(0)
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 // Image builders

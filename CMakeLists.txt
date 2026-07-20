@@ -122,3 +122,8 @@ option(UDYNLINK_BUILD_TESTS "Build QEMU test host firmware" OFF)
 if(UDYNLINK_BUILD_TESTS)
     add_subdirectory(tests/qemu_host)
 endif()
+
+if(UDYNLINK_BUILD_FUZZERS)
+    enable_testing()
+    add_subdirectory(tests/fuzz)
+endif()

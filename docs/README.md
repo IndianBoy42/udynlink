@@ -25,6 +25,7 @@ All of udynlink is guided by seven principles. When evaluating a feature or chan
 | [Examples](examples.md) | Working code examples for every major feature |
 | [Testing Guide](testing.md) | Running tests, adding test cases and platforms, debugging |
 | [Host Testing](host-testing.md) | Testing module logic on your development machine without QEMU or ARM tools; mocking patterns and templates |
+| [Host Sanitizer & Fuzz Testing](fuzzing.md) | Sanitizer (ASan+UBSan) and libFuzzer harnesses that exercise the udynlink loader itself on the host; seed corpus, crash triage |
 | [Thread Safety](thread-safety.md) | Modules in multithreaded hosts (FreeRTOS/Zephyr): execution vs lifecycle, r9 preemption safety, same-module multi-thread rules, nested calls |
 
 ## Internal Notes

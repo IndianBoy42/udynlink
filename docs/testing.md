@@ -91,6 +91,17 @@ The following variables are read by `test_driver.py` and the `Justfile`:
 | `UDYNLINK_TEST_DEBUG` | If set, enables `UDYNLINK_DEBUG_INFO` in the test build | `1` |
 | `UDYNLINK_TEST_CLEAN` | If set, deletes the CMake build dir before building | `1` |
 
+
+### Host sanitizer & fuzz testing
+
+Independently of QEMU, the loader itself (`udynlink/udynlink.c`) is exercised
+natively on the host by an opt-in ASan+UBSan regression gate and a libFuzzer
+harness under `tests/fuzz/`. Both compile the loader with the host compiler
+(never `arm-none-eabi-*`), feed it real `mkmodule`-generated `.bin` images and
+mutations thereof, and treat any ASan/UBSan report or signal as a failure.
+See [Host Sanitizer & Fuzz Testing](fuzzing.md) for build/run recipes
+(`just test-san`, `just fuzz`, `just fuzz-seeds`), the trust model being
+tested, and how to read and minimize a crash.
 ## QEMU Setup
 
 ### Quick Setup: xPack QEMU (recommended)

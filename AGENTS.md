@@ -49,6 +49,7 @@ All user-facing documentation lives under `docs/` and is summarized in `docs/REA
 | `docs/testing.md` | Running tests, adding test cases and platforms, debugging **MUST READ before testing** |
 | `docs/host-testing.md` | Testing module logic on the host machine without QEMU/ARM tools; mocking patterns, CMake helper, and vendored template |
 | `docs/thread-safety.md` | Modules in multithreaded hosts (FreeRTOS/Zephyr): execution vs lifecycle, r9 preemption safety, same-module multi-thread rules, nested calls |
+| `docs/fuzzing.md` | Host sanitizer (ASan+UBSan) and libFuzzer harnesses that exercise the udynlink loader itself natively; seed corpus, crash triage |
 
 > **Always keep documentation in sync.** If you change code, public APIs, test behavior, build commands, or toolchain requirements, update the corresponding `docs/*.md` file(s) before finishing the task. `AGENTS.md` itself must also be updated if build/test commands, architecture constraints, or the platform matrix change.
 
@@ -142,7 +143,17 @@ just ci                        # Full CI suite (MPS2 + AN385 + AN500 + AN505 + H
 # Python tests
 just test-py                   # Python unit tests only (no ARM toolchain needed)
 just test-py-all               # All Python tests including integration (needs arm-none-eabi-gcc)
+
+# Host sanitizer & fuzz testing (loader, not module logic; see docs/fuzzing.md)
+just fuzz-seeds        # Regenerate tests/fuzz/corpus/*.bin from in-repo module sources
+just test-san          # Build and run the ASan+UBSan loader regression gate (gcc or clang)
+just fuzz              # Build and run the libFuzzer harness for 60 seconds (requires clang)
+just fuzz 10           # Run the libFuzzer harness for 10 seconds
 ```
+
+The fuzz/san targets are gated behind the `UDYNLINK_BUILD_FUZZERS` CMake option
+(OFF by default). `just fuzz` requires `clang` for `-fsanitize=fuzzer`; the
+sanitizer gate (`just test-san`) builds under gcc or clang.
 
 ### Build the test host firmware
 

@@ -477,9 +477,11 @@ lint:
 
 # Clean build artifacts
 clean:
-    rm -rf {{build_dir}} {{tests_build_dir}} {{tests_dir}}/build_*
+    rm -rf {{build_dir}} {{tests_build_dir}} {{tests_dir}}/build_* \
+        build-fuzz build-san
     rm -f {{tests_dir}}/qemu_host/src/test_qemu.c
     rm -f {{tests_dir}}/qemu_host/src/*_module_data.h
+    rm -rf {{tests_dir}}/fuzz/corpus
     rm -f temp/*
 
 # Clean everything including generated files
@@ -514,6 +516,56 @@ test-py:
 # Run Python tests including integration tests (requires arm-none-eabi-gcc)
 test-py-all:
     uv run --with pytest pytest tests/py -v
+
+# =============================================================================
+# Host Sanitizer & Fuzz Testing (loader, not module logic)
+# =============================================================================
+
+# Regenerate the loader fuzz corpus from in-repo module sources. Real UDLM
+# images cover extern relocations, weak symbols, data relocations, cross-module
+# dependencies, and C++ init_array. Two minimality seeds cover sub-header-edge
+# inputs.
+fuzz-seeds:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p tests/fuzz/corpus tests/fuzz/_workdir
+    cd {{repo_root}}/scripts
+    gen() {
+        local name="$1"; shift
+        local src="$1"; shift
+        {{python_cmd}} mkmodule --target cortex-m4 \
+            --workdir {{repo_root}}/tests/fuzz/_workdir \
+            --bin-name {{repo_root}}/tests/fuzz/corpus/"$name".bin \
+            "$src"
+    }
+    gen hello      {{repo_root}}/tests/test-helloworld/mod_hello.c
+    gen globals1   {{repo_root}}/tests/test-globals1/mod_globals1.c
+    gen globals2   {{repo_root}}/tests/test-globals2/mod_globals2.c
+    gen fib        {{repo_root}}/tests/test-fib/mod_fib.c
+    gen weak       {{repo_root}}/tests/test-weak-symbols/mod_weak.c
+    gen cross_math {{repo_root}}/tests/test-cross-module/mod_math.c
+    gen cross_app  {{repo_root}}/tests/test-cross-module/mod_app.c
+    gen cpp_init   {{repo_root}}/tests/test-cpp-symbol-filter-init-fini/mod_init_fini.cpp
+    rm -rf {{repo_root}}/tests/fuzz/_workdir
+    # Minimality seeds: a single byte and the bare UDLM signature (sub-header
+    # inputs that the harness's size guard short-circuits).
+    printf '\x00' > {{repo_root}}/tests/fuzz/corpus/seed_1byte.bin
+    printf 'UDLM' > {{repo_root}}/tests/fuzz/corpus/seed_udlm_sig.bin
+
+# Build and run the libFuzzer harness (requires clang) for N seconds.
+# Reproduce a crash with: ./build-fuzz/tests/fuzz/udynlink_fuzz_load <crash-file>
+fuzz time="60":
+    cmake -B build-fuzz -S . -DUDYNLINK_BUILD_FUZZERS=ON \
+        -DCMAKE_C_COMPILER=clang
+    cmake --build build-fuzz --target udynlink_fuzz_load
+    ./build-fuzz/tests/fuzz/udynlink_fuzz_load \
+        tests/fuzz/corpus -max_total_time={{time}} -print_final_stats=1
+
+# Build and run the ASan+UBSan loader regression gate (gcc or clang).
+test-san:
+    cmake -B build-san -S . -DUDYNLINK_BUILD_FUZZERS=ON
+    cmake --build build-san --target udynlink_san_load
+    ctest --test-dir build-san -R udynlink_san_load --output-on-failure
 
 # =============================================================================
 # Help
