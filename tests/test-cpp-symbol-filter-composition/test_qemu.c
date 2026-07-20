@@ -1,0 +1,1 @@
+../test-cpp-symbol-emission-all/test_qemu.c
