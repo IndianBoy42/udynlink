@@ -284,7 +284,7 @@ The toolchain automatically adds these flags for `.cpp` and `.cxx` files:
 - `-fno-exceptions` — no `try`/`catch`/`throw`
 - `-fno-rtti` — no `typeid` or `dynamic_cast`
 - `-fno-use-cxa-atexit` — no static object destruction at exit
-- `-fno-threadsafe-statics` — function-local `static` variables use a plain byte flag instead of the `__cxa_guard_*` ABI calls. Matches udynlink's "no thread safety" stance (the loader itself is not thread-safe; initialization-order hazards inside a module are the host's concern via its own synchronization).
+- `-fno-threadsafe-statics` — function-local `static` variables use a plain byte flag instead of the `__cxa_guard_*` ABI calls. Matches udynlink's "no thread safety" stance (the loader itself is not thread-safe). A host that *needs* interlocked first-time initialization for a specific module can opt back in per-module with `--build-flags=-fthreadsafe-statics`; see [Thread Safety — Thread-Safe Function-Local Statics](thread-safety.md#thread-safe-function-local-statics-__cxa_guard_).
 
 ### C++ ABI Symbols the Host Must Provide
 
@@ -315,7 +315,7 @@ uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod,
 }
 ```
 
-A host that wants different behavior (sized/aligned free, a log+abort on pure-virtual, real `__cxa_guard_*` for thread-safe statics) provides a strong definition of the corresponding symbol; the weak one in the header is discarded and the module's calls land in the host's implementation.
+A host that wants different behavior (sized/aligned free, a log+abort on pure-virtual) provides a strong definition of the corresponding symbol; the weak one in the header is discarded and the module's calls land in the host's implementation. The `__cxa_guard_*` family is deliberately **not** shipped as a stub in this header — it is a synchronization primitive the host must implement; see [Thread Safety — Thread-Safe Function-Local Statics](thread-safety.md#thread-safe-function-local-statics-__cxa_guard_) for the opt-in build flag and a reference stub.
 
 > **Do not define `__cxa_*` or `operator delete` inside a module.** `mkmodule` wraps every defined `STB_GLOBAL`/`STB_WEAK` function with a prologue that assumes `r9` is set up. If `__cxa_pure_virtual` is defined in the module, the vtable slot that references the un-wrapped name points at a wrapper expecting a stale `r9`, and dispatch through that slot (an undefined-behavior path that nonetheless must load cleanly) corrupts PIC state. Always provide these symbols on the host side — either through `udynlink_cpp_abi.h` or through the host's own C++ runtime.
 

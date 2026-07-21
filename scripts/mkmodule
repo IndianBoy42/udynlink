@@ -71,6 +71,20 @@ def compile(src_name, args, public_symbols, macros=[]):
         compile_data["extra"] += " -fno-exceptions"
         compile_data["extra"] += " -fno-rtti"
         compile_data["extra"] += " -fno-threadsafe-statics"
+        # Function-local statics become a plain byte flag instead of a call
+        # into __cxa_guard_acquire/release. Hosts that load C++ modules
+        # therefore never need to provide __cxa_guard_* stubs. udynlink itself
+        # provides no thread safety (see AGENTS.md), so cross-thread
+        # interlocked initializers are the host's concern via its own
+        # atomics if needed.
+    # Append user-supplied --build-flags last so they land AFTER the C++
+    # defaults above and can override them. GCC honors the last -f... flag
+    # for toggle-style options, so --build-flags='-fthreadsafe-statics'
+    # re-enables thread-safe function-local static initialization (the host
+    # must then provide __cxa_guard_acquire/release/abort — see
+    # docs/thread-safety.md). Same for -fexceptions, -frtti, etc.
+    if args.build_flags is not None:
+        compile_data["extra"] += " " + args.build_flags
     debug("Compiling '%s'" % src_name, args)
     execute(get_tool("gcc") + " " + compile_cmd.format(**compile_data), args)
     object_files += [main_obj]
@@ -686,8 +700,6 @@ if args.bin_name is None:
         path, _ = os.path.splitext(sources[0])
         args.bin_name = path + ".bin"
 
-if args.build_flags is not None:
-    compile_cmd = args.build_flags + " " + compile_cmd
 
 public_symbols = {}
 if args.public_symbols is not None:

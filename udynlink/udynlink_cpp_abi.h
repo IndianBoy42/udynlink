@@ -70,6 +70,37 @@
  * references that `mkmodule` classifies as `external`. Do not define
  * `__cxa_pure_virtual` (or any other `__cxa_*`) inside a module; provide it
  * on the host side via this header.
+ *
+ * Why mangled names (`_Z*`) in source instead of source-level
+ * `operator new(size_t)` syntax? Two reasons:
+ *
+ *   1. The header is intended primarily for *C-only* bare-metal hosts that
+ *      link no C++ runtime and have no C++ translation unit available.
+ *      `operator new` is not expressible in C; the host can only name the
+ *      symbol by its Itanium ABI mangled form.
+ *   2. The `_Z` prefix is reserved by the C++ standard ([lex.name]) and the
+ *      Itanium ABI, so defining these identifiers in source is formally UB.
+ *      In practice every C++ runtime (libstdc++, libc++, libsupc++,
+ *      picolibc's cxa_* set) defines these exact names — the standard's
+ *      "replaceable functions" clause ([support.dynamic]) sanctions user
+ *      replacement of `operator new`/`delete` and leaves the symbol name to
+ *      the ABI, which mandates exactly `_Znwj`/`_ZdlPv`/etc. on ARM.
+ *      GCC (13.x, 15.x) accepts the literal identifiers under `extern "C"`
+ *      with `-Wall -Wextra -Wpedantic` and emits them verbatim — confirmed
+ *      bit-identical to a source-level `void* operator new(unsigned int)`
+ *      definition in a separate probe.
+ *
+ * `__cxa_pure_virtual` is not a replaceable function; it is an Itanium ABI
+ * runtime entry point. The ABI specifies its name and signature; defining it
+ * here is exactly the role libsupc++ plays on a hosted target.
+ *
+ * Override contract: the weak attribute lets a strong definition elsewhere
+ * in the link (separate TU; a libstdc++ strong `_Znwj`; a host C++ TU built
+ * with source-level `void* operator new(unsigned int)`) win at link time.
+ * A strong override MUST live in a separate translation unit from an
+ * `#include "udynlink_cpp_abi.h"`: defining both the header's weak stub and
+ * a source-level `operator new` in the same TU is rejected by the assembler
+ * ("symbol `_Znwj' is already defined"). Verified.
  */
 #ifndef __UDYNLINK_CPP_ABI_H__
 #define __UDYNLINK_CPP_ABI_H__

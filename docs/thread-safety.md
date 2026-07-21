@@ -212,6 +212,104 @@ instead of calling the loader directly.
 | Nested call (module A → host cb → module B) | **Yes** | Use `UDYNLINK_CALL` (or thunks). Never bare `UDYNLINK_PREPARE_CALL` for the nested call. |
 | Concurrent load / unload / link / lookup on one handle | **No** | Serialize with a mutex; confine to one loader task where possible. |
 
+## Thread-Safe Function-Local Statics (`__cxa_guard_*`)
+
+C++ function-local `static` variables with non-trivial constructors are
+guarded by the Itanium ABI [`__cxa_guard_acquire` / `__cxa_guard_release` /
+`__cxa_guard_abort`][cxa-guard] trio so the constructor runs exactly once
+across threads. `mkmodule` compiles modules with `-fno-threadsafe-statics`
+by default, which lowers a local `static` to a plain byte flag with no
+guard call — consistent with udynlink's "no thread safety inside the
+library" stance. The same flag is applied to the host-side C++ helper in
+`tests/platforms/stm32f429_discovery/platform.cmake`.
+
+A host that *does* want interlocked first-time initialization for a
+specific module (because it will call that module concurrently from
+multiple threads on a shared instance) can opt back in **per module**:
+
+```bash
+python3 mkmodule --build-flags=-fthreadsafe-statics  mod_foo.cpp
+```
+
+`mkmodule` appends `--build-flags` **after** its built-in `-fno-*`
+defaults, and GCC honors the *last* occurrence of a toggle-style flag,
+so this re-enables the `__cxa_guard_*` calls in that module only.
+(Verified: the same probe object built with `-fthreadsafe-statics`
+appended last emits `U __cxa_guard_acquire` / `U __cxa_guard_release`;
+the default build does not.) The same last-flag-wins trick overrides
+other defaults too — for instance `--build-flags="-fthreadsafe-statics
+-fexceptions"` would re-enable both, but re-enabling exceptions without
+an `__cxa_*` runtime to back them is almost never what you want on
+bare metal.
+
+When you opt in, the module's LOT now contains `external` slots for
+`__cxa_guard_acquire` and `__cxa_guard_release` (`__cxa_guard_abort` is
+only referenced if the constructor throws, which under `-fno-exceptions`
+does not happen). The host must resolve them. `udynlink_cpp_abi.h` does
+**not** ship guard stubs — they are a synchronization primitive, and a
+correct implementation is host- and RTOS-specific. Provide your own in
+`udynlink_external_resolve_symbol`:
+
+```cpp
+extern "C" int  __cxa_guard_acquire(volatile int *g);   /* return 1 → run ctor */
+extern "C" void __cxa_guard_release(volatile int *g);   /* marker: ctor done */
+extern "C" void __cxa_guard_abort(volatile int *g);     /* ctor threw: re-arm */
+
+uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *m,
+                                           const char *name) {
+    if (!strcmp(name, "__cxa_guard_acquire")) return (uintptr_t)&__cxa_guard_acquire;
+    if (!strcmp(name, "__cxa_guard_release")) return (uintptr_t)&__cxa_guard_release;
+    if (!strcmp(name, "__cxa_guard_abort"))   return (uintptr_t)&__cxa_guard_abort;
+    /* …host symbols, udynlink_cpp_resolve_abi_symbol(name), … */
+    return 0;
+}
+```
+
+A minimal interlocked implementation on Cortex-M uses a bit-test-and-set
+on the guard byte under a critical section:
+
+```cpp
+extern "C" int __cxa_guard_acquire(volatile int *g) {
+    int took;
+    taskENTER_CRITICAL();
+    took = (*g & 1) ? 0 : (*g |= 1, 1);   /* win the race → 1 */
+    taskEXIT_CRITICAL();
+    return took;                            /* 0 → already done, skip ctor */
+}
+extern "C" void __cxa_guard_release(volatile int *g) { (void)g; }
+extern "C" void __cxa_guard_abort(volatile int *g)   { *g = 0; }
+```
+
+The 32-bit guard word has GCC-private semantics beyond bit 0, so leave
+the other bits alone. The Cortex-M `ldrb`/`strb` bit-0 dance above is
+what GCC's `-fthreadsafe-statics` lowering expects.
+
+**Two cautions that flow from the rest of this guide:**
+
+1. The guard only makes the *first-time* initialization race-free. The
+   constructor body itself, and every subsequent call into the now-initialized
+   static, still races on the module's `.data`/`.bss` exactly as described in
+   [Scenario 2 — Same Module, Multiple Threads](#scenario-2--same-module-multiple-threads-conditionally-safe).
+   Pattern A (one instance per thread) remains the zero-race option.
+2. The guard stubs are host functions. If they call into a module, the
+   [nested-call](#nested--reentrant-calls) rules apply: route through
+   `UDYNLINK_CALL`, never a bare `UDYNLINK_PREPARE_CALL`.
+
+### Interaction with `--strip-mangled-syms`
+
+The ABI externals `_ZdlPv`, `_Znwj`, `__cxa_pure_virtual`,
+`__cxa_guard_acquire`, `__cxa_guard_release` are SHN_UNDEF references —
+`mkmodule` classifies them as `external`, and `--strip-mangled-syms`
+only demotes *defined* mangled symbols (vtables `_ZTV…`, typeinfo
+`_ZTI…`, fully-built user functions). Pairing `--strip-mangled-syms`
+with `--public-symbols` keeps the intended exports alive while the
+operator-delete / guard / pure-virtual slots stay `external` and are
+still resolved by the host at load time — verified on the standard
+C++ new/delete and vtable/destructor probes. So the strip flag does
+not interact with the guard opt-in.
+
+[cxa-guard]: https://itanium-cxx-abi.github.io/cxx-abi/abi.html#guards
+
 ## Further Reading
 
 - [Integrating as a Host — Thread Safety and Concurrency][ts] — bare-metal and
