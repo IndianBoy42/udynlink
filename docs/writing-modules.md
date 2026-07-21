@@ -300,7 +300,9 @@ Even with the flags above, GCC emits calls to a small set of C++ ABI symbols tha
 | `_ZnwjRKSt9nothrow_t`, `_ZnajRKSt9nothrow_t` | nothrow `operator new` / `new[]` | `new (std::nothrow) T`. |
 | `__cxa_pure_virtual` | abstract-base vtable slot | Any class with a pure-virtual method (`= 0`) that GCC emits a vtable for. Called only by undefined behavior (dispatching a pure virtual during construction/destruction). |
 
-The header `udynlink/udynlink_cpp_abi.h` ships weak defaults for all of them (forwards `new`/`delete` to `udynlink_external_malloc`/`udynlink_external_free`, loops forever in `__cxa_pure_virtual`) plus a resolver helper. A host that already links a real C++ runtime (libstdc++, picolibc) does not need the header — strong definitions win the link automatically. C-only bare-metal hosts include the header and call the resolver from `udynlink_external_resolve_symbol`:
+The header `udynlink/udynlink_cpp_abi.h` ships weak defaults for all of them (`new`/`delete` forward to `udynlink_external_malloc`/`udynlink_external_free`; `__cxa_pure_virtual` loops forever) plus a resolver helper. The stubs have **neutral C names** (`udynlink_cpp_new`, `udynlink_cpp_delete`, ...) — udynlink never links against the host's symbol table by name, it only ever binds through `udynlink_external_resolve_symbol`. The stubs are therefore deliberately *not* named `_Znwj` / `_ZdlPv` at the C level; the resolver maps the mangled name the loader passes through to whichever address the host chooses. This keeps a C++ host's own libstdc++-provided `_Znwj` from silently overriding the module's `new` path at link time — the host stays in explicit, in-code control of which implementation a module sees.
+
+Include the header and call the resolver from `udynlink_external_resolve_symbol`:
 
 ```c
 #include "udynlink_cpp_abi.h"
@@ -315,7 +317,7 @@ uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod,
 }
 ```
 
-A host that wants different behavior (sized/aligned free, a log+abort on pure-virtual) provides a strong definition of the corresponding symbol; the weak one in the header is discarded and the module's calls land in the host's implementation. The `__cxa_guard_*` family is deliberately **not** shipped as a stub in this header — it is a synchronization primitive the host must implement; see [Thread Safety — Thread-Safe Function-Local Statics](thread-safety.md#thread-safe-function-local-statics-__cxa_guard_) for the opt-in build flag and a reference stub.
+To change a stub's behavior (sized/aligned free, a log+abort on pure-virtual, routing `operator new` to the host's libstdc++ entry point, interposing for debugging), edit what `udynlink_cpp_resolve_abi_symbol()` returns for that name — or copy the resolver and substitute your own pointers. There is no link-time override to set up, and the stub's weak attribute is only there so the linker drops unused stubs. The `__cxa_guard_*` family is deliberately **not** shipped as a stub in this header — it is a synchronization primitive the host must implement; see [Thread Safety — Thread-Safe Function-Local Statics](thread-safety.md#thread-safe-function-local-statics-__cxa_guard_) for the opt-in build flag and a reference stub.
 
 > **Do not define `__cxa_*` or `operator delete` inside a module.** `mkmodule` wraps every defined `STB_GLOBAL`/`STB_WEAK` function with a prologue that assumes `r9` is set up. If `__cxa_pure_virtual` is defined in the module, the vtable slot that references the un-wrapped name points at a wrapper expecting a stale `r9`, and dispatch through that slot (an undefined-behavior path that nonetheless must load cleanly) corrupts PIC state. Always provide these symbols on the host side — either through `udynlink_cpp_abi.h` or through the host's own C++ runtime.
 

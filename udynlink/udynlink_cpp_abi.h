@@ -71,36 +71,31 @@
  * `__cxa_pure_virtual` (or any other `__cxa_*`) inside a module; provide it
  * on the host side via this header.
  *
- * Why mangled names (`_Z*`) in source instead of source-level
- * `operator new(size_t)` syntax? Two reasons:
+ * Why these stubs use neutral internal names (udynlink_cpp_*) and a resolver,
+ * not the raw mangled names (_ZdlPv, _Znwj, ...) the loader actually passes
+ * through: udynlink binds external symbols only through the host's
+ * `udynlink_external_resolve_symbol` callback — it never links against the
+ * host's symbol table by name. So the stub's C identifier is irrelevant to
+ * the binding; only what `udynlink_cpp_resolve_abi_symbol(name)` returns
+ * matters. Keeping the stub names neutral and non-mangled means:
  *
- *   1. The header is intended primarily for *C-only* bare-metal hosts that
- *      link no C++ runtime and have no C++ translation unit available.
- *      `operator new` is not expressible in C; the host can only name the
- *      symbol by its Itanium ABI mangled form.
- *   2. The `_Z` prefix is reserved by the C++ standard ([lex.name]) and the
- *      Itanium ABI, so defining these identifiers in source is formally UB.
- *      In practice every C++ runtime (libstdc++, libc++, libsupc++,
- *      picolibc's cxa_* set) defines these exact names — the standard's
- *      "replaceable functions" clause ([support.dynamic]) sanctions user
- *      replacement of `operator new`/`delete` and leaves the symbol name to
- *      the ABI, which mandates exactly `_Znwj`/`_ZdlPv`/etc. on ARM.
- *      GCC (13.x, 15.x) accepts the literal identifiers under `extern "C"`
- *      with `-Wall -Wextra -Wpedantic` and emits them verbatim — confirmed
- *      bit-identical to a source-level `void* operator new(unsigned int)`
- *      definition in a separate probe.
+ *   - A C-only bare-metal host has no C++ runtime and no need to name an
+ *     `operator new` in source — it just includes this header.
+ *   - A C++ host that links libstdc++ (or defines `operator new` itself)
+ *     does *not* silently route module `delete` calls into the host's
+ *     `_ZdlPv` via a weak/strong override at link time. The host stays in
+ *     explicit control of which `_ZdlPv` the module sees — the udynlink
+     resolver returns the address of `udynlink_cpp_delete(void*, unsigned)`
+     here, and the host can swap that pointer for its own implementation,
+     a sized-free wrapper, a debugging interposer, or the libstdc++ entry
+     point — whichever it picks, in code, at the resolution site.
  *
- * `__cxa_pure_virtual` is not a replaceable function; it is an Itanium ABI
- * runtime entry point. The ABI specifies its name and signature; defining it
- * here is exactly the role libsupc++ plays on a hosted target.
- *
- * Override contract: the weak attribute lets a strong definition elsewhere
- * in the link (separate TU; a libstdc++ strong `_Znwj`; a host C++ TU built
- * with source-level `void* operator new(unsigned int)`) win at link time.
- * A strong override MUST live in a separate translation unit from an
- * `#include "udynlink_cpp_abi.h"`: defining both the header's weak stub and
- * a source-level `operator new` in the same TU is rejected by the assembler
- * ("symbol `_Znwj' is already defined"). Verified.
+ * The C++ standard [lex.name] reserves `_Z`-prefixed identifiers, and the
+ * Itanium ABI further constrains them. Defining the literal mangled names
+ * in source works in practice on GCC but is not standard-conforming, so
+ * the stubs avoid the question entirely and let the resolver do the
+ * mapping. udynlink does not demangle; the resolver compares the raw
+ * mangled string the loader passes through.
  */
 #ifndef __UDYNLINK_CPP_ABI_H__
 #define __UDYNLINK_CPP_ABI_H__
@@ -115,40 +110,42 @@ extern "C" {
 #endif
 
 /* --------------------------------------------------------------------------
- * operator delete / delete[]  (and the aligned + sized variants)
- *
- * GCC emits references to exactly one variant per call site, depending on
- * -fsized-deallocation, the alignment of the type, and the form used
- * (`delete p` vs `delete[] a`). We provide all four so a module that uses
- * any of them loads; the body forwards to udynlink_external_free, ignoring
- * the size and alignment arguments the host's free() does not want.
+ * Weak defaults for the C++ ABI symbols a `mkmodule`-compiled C++ module
+ * references at load time. The stubs have neutral names; the address of
+ * each is handed to the loader only via udynlink_cpp_resolve_abi_symbol()
+ * below — they are never looked up by name. A strong override is therefore
+ * unnecessary and unused; replace behavior by editing the resolver's return
+ * value.
  * ----------------------------------------------------------------------- */
 
-/* Sized (operator delete(void*, unsigned int)) — emitted when the deleting
- * destructor runs and -fsized-deallocation is in effect. Reachable only if
- * the module actually executes `delete` through a virtual destructor. */
+/* operator delete(void*, unsigned int) — the sized form GCC emits when
+ * -fsized-deallocation is in effect. Reachable only if the module actually
+ * executes `delete` through a virtual destructor. Size is dropped because
+ * udynlink_external_free takes only the pointer. */
 __attribute__((weak))
-void _ZdlPvj(void *p, unsigned int sz) {
+void udynlink_cpp_delete(void *p, unsigned int sz) {
     (void)sz;
     udynlink_external_free(p);
 }
 
-/* Unsized (operator delete(void*)). Emitted when -fsized-deallocation is
- * off (default on bare metal), or when the compiler cannot prove the size. */
+/* operator delete(void*) — the unsized form, emitted when
+ * -fsized-deallocation is off (the bare-metal default) or the size is not
+ * statically known. */
 __attribute__((weak))
-void _ZdlPv(void *p) {
+void udynlink_cpp_delete_unsized(void *p) {
     udynlink_external_free(p);
 }
 
-/* Array forms. Behavior mirrors the scalar forms. */
+/* operator delete[](void*, unsigned int) and the unsized form — array
+ * counterparts, behavior identical to the scalar forms. */
 __attribute__((weak))
-void _ZdaPvj(void *p, unsigned int sz) {
+void udynlink_cpp_delete_array(void *p, unsigned int sz) {
     (void)sz;
     udynlink_external_free(p);
 }
 
 __attribute__((weak))
-void _ZdaPv(void *p) {
+void udynlink_cpp_delete_array_unsized(void *p) {
     udynlink_external_free(p);
 }
 
@@ -157,13 +154,13 @@ void _ZdaPv(void *p) {
  * The align_val_t argument is an enum that GCC passes as a plain integer in
  * the third slot; we ignore it and forward to the host free. */
 __attribute__((weak))
-void _ZdlPvjSt11align_val_t(void *p, unsigned int sz, unsigned int al) {
+void udynlink_cpp_delete_aligned(void *p, unsigned int sz, unsigned int al) {
     (void)sz; (void)al;
     udynlink_external_free(p);
 }
 
 __attribute__((weak))
-void _ZdaPvjSt11align_val_t(void *p, unsigned int sz, unsigned int al) {
+void udynlink_cpp_delete_array_aligned(void *p, unsigned int sz, unsigned int al) {
     (void)sz; (void)al;
     udynlink_external_free(p);
 }
@@ -176,25 +173,24 @@ void _ZdaPvjSt11align_val_t(void *p, unsigned int sz, unsigned int al) {
  * or handle the NULL; with -fno-exceptions the compiler turns `new` into a
  * NULL check + call to a nothrow handler, which we also stub below).
  * ----------------------------------------------------------------------- */
-
 __attribute__((weak))
-void *_Znwj(unsigned int sz) {
+void *udynlink_cpp_new(unsigned int sz) {
     return udynlink_external_malloc(sz);
 }
 
 __attribute__((weak))
-void *_Znaj(unsigned int sz) {
+void *udynlink_cpp_new_array(unsigned int sz) {
     return udynlink_external_malloc(sz);
 }
 
 __attribute__((weak))
-void *_ZnwjSt11align_val_t(unsigned int sz, unsigned int al) {
+void *udynlink_cpp_new_aligned(unsigned int sz, unsigned int al) {
     (void)al;
     return udynlink_external_malloc(sz);
 }
 
 __attribute__((weak))
-void *_ZnajSt11align_val_t(unsigned int sz, unsigned int al) {
+void *udynlink_cpp_new_array_aligned(unsigned int sz, unsigned int al) {
     (void)al;
     return udynlink_external_malloc(sz);
 }
@@ -205,13 +201,13 @@ void *_ZnajSt11align_val_t(unsigned int sz, unsigned int al) {
  * slot, so the signature mirrors the sized form with an extra dummy
  * argument. */
 __attribute__((weak))
-void *_ZnwjRKSt9nothrow_t(unsigned int sz, void *nt) {
+void *udynlink_cpp_new_nothrow(unsigned int sz, void *nt) {
     (void)nt;
     return udynlink_external_malloc(sz);
 }
 
 __attribute__((weak))
-void *_ZnajRKSt9nothrow_t(unsigned int sz, void *nt) {
+void *udynlink_cpp_new_array_nothrow(unsigned int sz, void *nt) {
     (void)nt;
     return udynlink_external_malloc(sz);
 }
@@ -221,41 +217,41 @@ void *_ZnajRKSt9nothrow_t(unsigned int sz, void *nt) {
  *
  * Called only if the program commits undefined behavior by dispatching a
  * pure virtual function during base construction or destruction. There is no
- * useful recovery; loop forever so a watchdog can reboot. A host that would
- * rather log+abort can override with a strong definition.
+ * useful recovery; loop forever so a watchdog can reboot.
  * ----------------------------------------------------------------------- */
 __attribute__((weak, noreturn))
-void __cxa_pure_virtual(void) {
+void udynlink_cpp_pure_virtual(void) {
     for (;;) { }
 }
 
 /* --------------------------------------------------------------------------
  * Resolver: the host calls this from its udynlink_external_resolve_symbol
- * to bind the C++ ABI names above to the addresses of the (weak or
- * host-overridden) implementations. Returns 0 for names this header does
- * not own, so the host's own table can handle the rest of the lookups.
+ * to map a module's mangled C++ ABI name to one of the neutral stubs above.
+ * Returns 0 for names this header does not own, so the host's own table can
+ * handle the rest. Edit the return values here — or copy the function and
+ * substitute your own pointers — to override a stub's behavior, route a
+ * symbol to libstdc++, interpose for debugging, etc.
  *
- * Operator new/delete return C++ mangled names, so the strcmp's here use the
- * raw _Z*-prefixed strings the loader passes through verbatim. udynlink
- * does not demangle and the host should not either.
+ * udynlink does not demangle; the strings compared here are the raw _Z*
+ * names the loader passes through verbatim.
  * ----------------------------------------------------------------------- */
 static inline uintptr_t udynlink_cpp_resolve_abi_symbol(const char *name) {
     /* operator delete (sized, unsized, array, aligned). */
-    if (!strcmp(name, "_ZdlPvj"))                    return (uintptr_t)&_ZdlPvj;
-    if (!strcmp(name, "_ZdlPv"))                     return (uintptr_t)&_ZdlPv;
-    if (!strcmp(name, "_ZdaPvj"))                    return (uintptr_t)&_ZdaPvj;
-    if (!strcmp(name, "_ZdaPv"))                     return (uintptr_t)&_ZdaPv;
-    if (!strcmp(name, "_ZdlPvjSt11align_val_t"))     return (uintptr_t)&_ZdlPvjSt11align_val_t;
-    if (!strcmp(name, "_ZdaPvjSt11align_val_t"))     return (uintptr_t)&_ZdaPvjSt11align_val_t;
+    if (!strcmp(name, "_ZdlPvj"))                 return (uintptr_t)&udynlink_cpp_delete;
+    if (!strcmp(name, "_ZdlPv"))                  return (uintptr_t)&udynlink_cpp_delete_unsized;
+    if (!strcmp(name, "_ZdaPvj"))                 return (uintptr_t)&udynlink_cpp_delete_array;
+    if (!strcmp(name, "_ZdaPv"))                  return (uintptr_t)&udynlink_cpp_delete_array_unsized;
+    if (!strcmp(name, "_ZdlPvjSt11align_val_t"))  return (uintptr_t)&udynlink_cpp_delete_aligned;
+    if (!strcmp(name, "_ZdaPvjSt11align_val_t"))  return (uintptr_t)&udynlink_cpp_delete_array_aligned;
     /* operator new (scalar, array, aligned, nothrow). */
-    if (!strcmp(name, "_Znwj"))                      return (uintptr_t)&_Znwj;
-    if (!strcmp(name, "_Znaj"))                      return (uintptr_t)&_Znaj;
-    if (!strcmp(name, "_ZnwjSt11align_val_t"))       return (uintptr_t)&_ZnwjSt11align_val_t;
-    if (!strcmp(name, "_ZnajSt11align_val_t"))      return (uintptr_t)&_ZnajSt11align_val_t;
-    if (!strcmp(name, "_ZnwjRKSt9nothrow_t"))        return (uintptr_t)&_ZnwjRKSt9nothrow_t;
-    if (!strcmp(name, "_ZnajRKSt9nothrow_t"))        return (uintptr_t)&_ZnajRKSt9nothrow_t;
+    if (!strcmp(name, "_Znwj"))                   return (uintptr_t)&udynlink_cpp_new;
+    if (!strcmp(name, "_Znaj"))                  return (uintptr_t)&udynlink_cpp_new_array;
+    if (!strcmp(name, "_ZnwjSt11align_val_t"))    return (uintptr_t)&udynlink_cpp_new_aligned;
+    if (!strcmp(name, "_ZnajSt11align_val_t"))    return (uintptr_t)&udynlink_cpp_new_array_aligned;
+    if (!strcmp(name, "_ZnwjRKSt9nothrow_t"))     return (uintptr_t)&udynlink_cpp_new_nothrow;
+    if (!strcmp(name, "_ZnajRKSt9nothrow_t"))     return (uintptr_t)&udynlink_cpp_new_array_nothrow;
     /* pure-virtual slot. */
-    if (!strcmp(name, "__cxa_pure_virtual"))         return (uintptr_t)&__cxa_pure_virtual;
+    if (!strcmp(name, "__cxa_pure_virtual"))      return (uintptr_t)&udynlink_cpp_pure_virtual;
     return 0;
 }
 
