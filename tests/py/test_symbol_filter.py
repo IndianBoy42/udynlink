@@ -10,10 +10,8 @@ skipped when ``arm-none-eabi-gcc`` is unavailable.
 
 import os
 import shutil
-import struct
 import subprocess
 import sys
-import types
 
 import pytest
 
@@ -57,54 +55,44 @@ skip_no_arm_gcc = pytest.mark.skipif(
 
 
 # ---------------------------------------------------------------------------
-# .bin symbol table parser
+# .bin symbol table parser — delegated to the standalone parser library.
 # ---------------------------------------------------------------------------
+#
+# The on-disk symbol-table format is defined once in
+# ``scripts/udynlink_parser.py`` (the single source of truth, mirroring
+# udynlink/udynlink.c and the mkmodule writer).  These constants are re-exported
+# here only so existing test call sites keep working without touching their
+# ``_SYM_TYPE_*`` references; the parsing itself goes through
+# ``udynlink_parser.parse_module``.
 
-# Replicate the on-disk constants from udynlink/udynlink.c. The symt format
-# is: first u32 = entry count, then count * (u32 s_off, u32 val), then the
-# name pool (null-terminated). s_off high bits encode type and location.
-_SYM_OFFSET_MASK = 0x07FFFFFF
-_SYM_INFO_SHIFT = 27
-_SYM_TYPE_MASK = 0x07
-_SYM_TYPE_INTERNAL = 0
-_SYM_TYPE_EXPORTED = 1
-_SYM_TYPE_EXTERN = 2
-_SYM_TYPE_MODULE_NAME = 3
-_SYM_TYPE_WEAK = 4
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.join(_THIS_DIR, "..", "..", "scripts"))
+import udynlink_parser as _up
+
+_SYM_OFFSET_MASK    = _up.SYM_NAME_OFFSET_MASK
+_SYM_INFO_SHIFT     = _up.SYM_INFO_SHIFT
+_SYM_TYPE_MASK      = _up.SYM_INFO_TYPE_MASK
+_SYM_TYPE_INTERNAL  = _up.SYM_TYPE_INTERNAL
+_SYM_TYPE_EXPORTED  = _up.SYM_TYPE_EXPORTED
+_SYM_TYPE_EXTERN    = _up.SYM_TYPE_EXTERN
+_SYM_TYPE_MODULE_NAME = _up.SYM_TYPE_MODULE_NAME
+_SYM_TYPE_WEAK      = _up.SYM_TYPE_WEAK
 
 
 def _parse_symtab(bin_path):
     """Return a list of dicts describing every entry in the module's symt.
 
-    Each dict has ``name`` (or ``None`` for INTERNAL), ``type`` (int 0..4),
-    and ``value`` (int).  Mirrors ``udynlink_image_get_module_name`` and
-    ``get_sym_at_raw`` in udynlink.c.
+    Each dict has ``name`` (or ``None`` for INTERNAL), ``type`` (int 0..4)
+    and ``value`` (int).  Delegates to ``udynlink_parser.parse_module`` so the
+    format is decoded exactly once across the Python toolchain.
     """
     with open(bin_path, "rb") as f:
         data = f.read()
-    assert data[:4] == b"UDLM", "missing UDLM signature"
-    # Layout: header(32) + relocs(num_rels*8) + symt(symtsize) + code + data
-    num_rels = struct.unpack_from("<H", data, 12)[0]
-    symtsize = struct.unpack_from("<I", data, 16)[0]
-    symt_off = 32 + num_rels * 8
-    symt = data[symt_off:symt_off + symtsize]
-    # First u32 = count
-    num_entries = struct.unpack_from("<I", symt, 0)[0]
-    entries = []
-    for i in range(num_entries):
-        base = 4 + i * 8
-        s_off, val = struct.unpack_from("<II", symt, base)
-        info = s_off >> _SYM_INFO_SHIFT
-        sym_type = info & _SYM_TYPE_MASK
-        if sym_type == _SYM_TYPE_INTERNAL:
-            name = None
-        else:
-            name_off = s_off & _SYM_OFFSET_MASK
-            # Read the null-terminated string starting at symt + name_off.
-            end = symt.find(b"\x00", name_off)
-            name = symt[name_off:end].decode("utf-8")
-        entries.append({"name": name, "type": sym_type, "value": val})
-    return entries
+    img = _up.parse_module(data)
+    return [
+        {"name": s.name, "type": s.type, "value": s.val_raw}
+        for s in img.symbols
+    ]
 
 
 def _named_entries(entries):

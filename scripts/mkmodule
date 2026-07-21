@@ -5,6 +5,13 @@ from jinja2 import FileSystemLoader
 from jinja2.environment import Environment
 import struct
 import targets
+from udynlink_parser import (
+    MODULE_SIGNATURE, ARCH_FLAG_NO_PROLOGUE, pack_version,
+    SYM_TYPE_INTERNAL, SYM_TYPE_EXPORTED, SYM_TYPE_EXTERN,
+    SYM_TYPE_MODULE_NAME, SYM_TYPE_WEAK,
+    SYM_INFO_SHIFT, SYM_INFO_CODE_MASK,
+    RELOC_FLAG_CODE_BASE, RELOC_FLAG_DATA_BASE,
+)
 
 sectname_code = '.text'
 sectname_data = '.data'
@@ -428,7 +435,7 @@ def process(output, args):
 
     set_debug_col('magenta')
     debug("%s Building image %s" % ('-' * 10, '-' * 10), args)
-    img = bytearray("UDLM".encode('ascii'))  # Signature (4b)
+    img = bytearray(MODULE_SIGNATURE)  # Signature (4b)
     # The first entry in the symbol table is always the module name
     slist_all = [k for k in sym_map
                  if ((k in referenced_keys) or sym_map[k] == "external"
@@ -460,12 +467,12 @@ def process(output, args):
     for r in ordered_relocs:
         key, name, offset, value = r
         if name == ".text":
-            value = (1 << 30) | value #flag -> not a symt index
+            value = RELOC_FLAG_CODE_BASE | value #flag -> not a symt index
         elif name == ".data":
             # R_ARM_ABS32 data relocation
             # *offset += &data - value
             data_offset = (offset - delta_off) * 4
-            value = (1 << 31) | value #flag -> not a symt index
+            value = RELOC_FLAG_DATA_BASE | value #flag -> not a symt index
         else:
             if r not in data_relocs:
                 offset = reloc_key_to_lot[key]
@@ -516,14 +523,14 @@ def process(output, args):
             name = sd["name"]
             defined_in_code = sect_idx_mapping[sd["section"]] == sectname_code
             if sym_map[s] == "local":
-                type_data = 0
+                type_data = SYM_TYPE_INTERNAL
             elif sym_map[s] == "exported":
-                type_data = 1
+                type_data = SYM_TYPE_EXPORTED
             elif sym_map[s] == "weak":
-                type_data = 4
+                type_data = SYM_TYPE_WEAK
             else:  # external
-                type_data = 2
-            type_data |= 8 if defined_in_code else 0
+                type_data = SYM_TYPE_EXTERN
+            type_data |= SYM_INFO_CODE_MASK if defined_in_code else 0
             val = sd["value"]
             # Symbols that are not in the code section (and are defined in the module) will have their value offseted with the
             # start of the .data section in the image
@@ -532,10 +539,10 @@ def process(output, args):
             if val_offset:
                 debug_hint += "Offset by -0x%08X bytes from value 0x%08X" % (val_offset, val)
             val = val - val_offset
-            s_off = (off if sym_map[s] != "local" else 0) | (type_data << 27)
+            s_off = (off if sym_map[s] != "local" else 0) | (type_data << SYM_INFO_SHIFT)
         else:  # module name
             name = args.name
-            val, s_off = 0, (3 << 27) | off
+            val, s_off = 0, (SYM_TYPE_MODULE_NAME << SYM_INFO_SHIFT) | off
         img += struct.pack("<II", s_off, val)
         debug("%02d: Symbol '%s', %s { offset: 0x%08X, value 0x%08X }" %
               (i, name, debug_hint, s_off, val), args)
@@ -634,14 +641,14 @@ except ValueError as e:
 if not any(a.startswith("--mcpu") for a in sys.argv[1:]):
     args.mcpu = target_meta["mcpu"]
 
-# Parse version strings (major.minor) into uint16_t
+# Parse version strings (major.minor) into uint16_t (pack_version)
 mv_parts = args.mod_version.split(".")
-args.mod_version_val = (int(mv_parts[0]) << 8) | int(mv_parts[1] if len(mv_parts) > 1 else "0")
+args.mod_version_val = pack_version(int(mv_parts[0]), int(mv_parts[1] if len(mv_parts) > 1 else "0"))
 uv_parts = args.udynlink_version.split(".")
-args.udynlink_version_val = (int(uv_parts[0]) << 8) | int(uv_parts[1] if len(uv_parts) > 1 else "0")
+args.udynlink_version_val = pack_version(int(uv_parts[0]), int(uv_parts[1] if len(uv_parts) > 1 else "0"))
 args.arch_tag_val = target_meta["arch_tag"]
 if args.no_prologue:
-    args.arch_tag_val |= 0x80
+    args.arch_tag_val |= ARCH_FLAG_NO_PROLOGUE
 args.template = target_meta["template"]
 args.fpu_flag = " -mfpu=" + target_meta["fpu"] if target_meta.get("fpu") else ""
 args.float_abi_flag = " -mfloat-abi=" + target_meta["float_abi"] if target_meta.get("float_abi") else ""

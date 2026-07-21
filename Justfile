@@ -509,7 +509,7 @@ ci-quick:
     just compile-check
     just validate-all-targets
 
-# Run Python unit tests (mkhostsyms, etc.)
+# Run Python unit tests (mkhostsyms, udynlink_parser, symbol filters, etc.)
 test-py:
     uv run --with pytest pytest tests/py -v -m "not integration"
 

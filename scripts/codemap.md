@@ -6,7 +6,7 @@ Build toolchain for compiling C/C++ source into `udynlink` loadable module image
 ## Design Patterns
 - **Pipeline / Chain of Responsibility**: `mkmodule` orchestrates a fixed sequence: compile → link → process → (optional) generate C header.
 - **Template-based Code Generation**: Uses Jinja2 (`asm_template.tmpl`) to emit ARM Thumb-2 assembly prologues that wrap exported functions with `r9` (LOT base) setup.
-- **ELF Introspection**: `udynlink_utils.py` uses `pyelftools` to read sections, symbols, and relocations from linked ELF files.
+- **ELF Introspection**: `udynlink_utils.py` uses `pyelftools` to read sections, symbols, and relocations from linked ELF files. The on-disk UDLM binary format itself (header, symbol-table bit packing, relocation encoding, runtime RAM layout) is defined once in `udynlink_parser.py`, which both `mkmodule` (writer) and the test suite (reader) import — no format constants are duplicated across the Python toolchain.
 - **Strategy for Language Support**: `mkmodule` detects `.cpp`/`.cxx` files and automatically injects `-fno-exceptions -fno-rtti -fno-use-cxa-atexit` plus links `cpp_init_fini.c` for constructor support.
 - **Selective Export Filter**: `--public-symbols` switches from "wrap all globals" to "wrap only specified globals + `__init_array`", reducing image size.
 
@@ -40,6 +40,7 @@ Build toolchain for compiling C/C++ source into `udynlink` loadable module image
 |------|---------|
 | `mkmodule` | Main CLI entry point. Orchestrates compile/link/process pipeline. |
 | `udynlink_utils.py` | ELF parsing helpers (symbols, relocations, sections), CLI helpers, MD5 symbol wrapping. |
+| `udynlink_parser.py` | **Single source of truth for the UDLM binary module format** (Python). Decodes the on-disk image (header, relocation table, symbol table, code/data) and models the runtime RAM layout per load mode, mirroring `udynlink/udynlink.c` and `udynlink/udynlink.h`. `mkmodule` imports its format constants (`MODULE_SIGNATURE`, `SYM_TYPE_*`, `RELOC_FLAG_*`, `pack_version`, …) instead of re-declaring magic numbers; `tests/py/test_udynlink_parser.py` guards the contract via lossless round-trip parsing of every in-tree sample module. |
 | `asm_template.tmpl` | Jinja2 template generating ARM Thumb-2 assembly prologues for exported functions. |
 | `code_before_data.ld` | Custom linker script: `.text` at origin 0, followed by `.data` (with `.init_array`), then `.bss`. |
 | `cpp_init_fini.c` | C++ global constructor runner (`__preinit_array` + `__init_array`). Compiled and linked automatically for C++ modules. |
