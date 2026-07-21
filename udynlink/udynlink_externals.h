@@ -21,6 +21,9 @@
 #include <stddef.h>
 #include <stdarg.h>
 #include "stdint.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 struct _udynlink_module_t;
 typedef struct _udynlink_module_t udynlink_module_t;
@@ -141,8 +144,13 @@ uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const
  *   };
  * @endcode
  *
- * @param sym The bare symbol name (not a string).
+ * @note The strings and addresses are read-only and should live in
+ *       flash/ROM on embedded targets.
  */
 #define UDYNLINK_SYMBOL(sym) { #sym, (void *)(uintptr_t)(sym) }
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // #ifndef __UDYNLINK_EXTERNALS_H__

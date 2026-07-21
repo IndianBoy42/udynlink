@@ -70,6 +70,7 @@ def compile(src_name, args, public_symbols, macros=[]):
         compile_data["extra"] += " -fno-use-cxa-atexit"
         compile_data["extra"] += " -fno-exceptions"
         compile_data["extra"] += " -fno-rtti"
+        compile_data["extra"] += " -fno-threadsafe-statics"
     debug("Compiling '%s'" % src_name, args)
     execute(get_tool("gcc") + " " + compile_cmd.format(**compile_data), args)
     object_files += [main_obj]

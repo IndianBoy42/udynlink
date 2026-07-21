@@ -226,7 +226,7 @@ arm-none-eabi-gcc -fPIE -msingle-pic-base -mno-pic-data-is-text-relative \
 For C++ sources (`.cpp` / `.cxx`), the toolchain automatically appends:
 
 ```bash
--fno-exceptions -fno-rtti -fno-use-cxa-atexit
+-fno-exceptions -fno-rtti -fno-use-cxa-atexit -fno-threadsafe-statics
 ```
 
 and also compiles `cpp_init_fini.c` into the object list. This file provides `__init_array`, which iterates over `.preinit_array` and `.init_array` to run global constructors.

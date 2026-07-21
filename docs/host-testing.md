@@ -258,13 +258,14 @@ C++ module sources (`.cpp` / `.cxx`) work on host with one important difference:
 | `-fno-exceptions` | Yes | **Apply manually** to match |
 | `-fno-rtti` | Yes | **Apply manually** to match |
 | `-fno-use-cxa-atexit` | Yes | **Apply manually** to match |
+| `-fno-threadsafe-statics` | Yes | **Apply manually** to match |
 
 On target, the host must call `udynlink_cpp_init()` to run `__init_array`
 constructors. On host, the C runtime runs global constructors automatically
 before `main()` — **do not call `udynlink_cpp_init`** (the module isn't loaded
 via udynlink; there is no `udynlink_module_t`).
 
-The C++ restriction flags (`-fno-exceptions -fno-rtti -fno-use-cxa-atexit`) are
+The C++ restriction flags (`-fno-exceptions -fno-rtti -fno-use-cxa-atexit -fno-threadsafe-statics`) are
 critical: without them, host tests could accidentally use `try`/`catch` or
 `dynamic_cast` — features the module cannot use on target. The [CMake
 helper](#cmake-path) applies these automatically; the [Makefile

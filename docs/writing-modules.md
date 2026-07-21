@@ -277,31 +277,47 @@ Typical symbols a host firmware provides:
 - Namespaces
 - Function overloading (for internal use; exported symbols need `extern "C"`)
 
-### Unsupported Features
+### Restricted C++ Features
 
 The toolchain automatically adds these flags for `.cpp` and `.cxx` files:
 
 - `-fno-exceptions` — no `try`/`catch`/`throw`
 - `-fno-rtti` — no `typeid` or `dynamic_cast`
 - `-fno-use-cxa-atexit` — no static object destruction at exit
+- `-fno-threadsafe-statics` — function-local `static` variables use a plain byte flag instead of the `__cxa_guard_*` ABI calls. Matches udynlink's "no thread safety" stance (the loader itself is not thread-safe; initialization-order hazards inside a module are the host's concern via its own synchronization).
 
-## C++ Modules
+### C++ ABI Symbols the Host Must Provide
 
-### Supported Features
+Even with the flags above, GCC emits calls to a small set of C++ ABI symbols that the loader classifies as `external` and the host must resolve at load time — even when the call site is unreachable at runtime (for example, the deleting destructor of a class with `virtual ~T() = default;` that the module never `delete`s). Without a binding, `udynlink_load_module()` returns `UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL` on the first load mode and every subsequent one.
 
-- Classes and objects
-- Constructors and destructors
-- Templates
-- Namespaces
-- Function overloading (for internal use; exported symbols need `extern "C"`)
+| Mangled name | Plain name | When referenced |
+|---|---|---|
+| `_ZdlPv`, `_ZdlPvj` | `operator delete(void*)`, `operator delete(void*, unsigned int)` | Any class with a `virtual` destructor (deleting destructor). Also reachable if the module actually executes `delete` through a base pointer. |
+| `_ZdaPv`, `_ZdaPvj` | `operator delete[]` array forms | As above for array `delete[]`. |
+| `_ZdlPvjSt11align_val_t`, `_ZdaPvjSt11align_val_t` | aligned `operator delete` / `delete[]` | Types with `alignas > 16`. |
+| `_Znwj`, `_Znaj` | `operator new(unsigned int)`, `operator new[](unsigned int)` | Any `new T` / `new T[n]` expression the module actually executes. |
+| `_ZnwjSt11align_val_t`, `_ZnajSt11align_val_t` | aligned `operator new` / `new[]` | `alignas > 16`. |
+| `_ZnwjRKSt9nothrow_t`, `_ZnajRKSt9nothrow_t` | nothrow `operator new` / `new[]` | `new (std::nothrow) T`. |
+| `__cxa_pure_virtual` | abstract-base vtable slot | Any class with a pure-virtual method (`= 0`) that GCC emits a vtable for. Called only by undefined behavior (dispatching a pure virtual during construction/destruction). |
 
-### Unsupported Features
+The header `udynlink/udynlink_cpp_abi.h` ships weak defaults for all of them (forwards `new`/`delete` to `udynlink_external_malloc`/`udynlink_external_free`, loops forever in `__cxa_pure_virtual`) plus a resolver helper. A host that already links a real C++ runtime (libstdc++, picolibc) does not need the header — strong definitions win the link automatically. C-only bare-metal hosts include the header and call the resolver from `udynlink_external_resolve_symbol`:
 
-The toolchain automatically adds these flags for `.cpp` and `.cxx` files:
+```c
+#include "udynlink_cpp_abi.h"
 
-- `-fno-exceptions` — no `try`/`catch`/`throw`
-- `-fno-rtti` — no `typeid` or `dynamic_cast`
-- `-fno-use-cxa-atexit` — no static object destruction at exit
+uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod,
+                                            const char *name) {
+    (void)p_mod;
+    uintptr_t a = udynlink_cpp_resolve_abi_symbol(name);
+    if (a) return a;
+    // ... host's normal symbols (printf, malloc, custom HAL, ...) ...
+    return 0;
+}
+```
+
+A host that wants different behavior (sized/aligned free, a log+abort on pure-virtual, real `__cxa_guard_*` for thread-safe statics) provides a strong definition of the corresponding symbol; the weak one in the header is discarded and the module's calls land in the host's implementation.
+
+> **Do not define `__cxa_*` or `operator delete` inside a module.** `mkmodule` wraps every defined `STB_GLOBAL`/`STB_WEAK` function with a prologue that assumes `r9` is set up. If `__cxa_pure_virtual` is defined in the module, the vtable slot that references the un-wrapped name points at a wrapper expecting a stale `r9`, and dispatch through that slot (an undefined-behavior path that nonetheless must load cleanly) corrupts PIC state. Always provide these symbols on the host side — either through `udynlink_cpp_abi.h` or through the host's own C++ runtime.
 
 ### Global Constructors
 
