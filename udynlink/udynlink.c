@@ -703,15 +703,24 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
     return udynlink_load_module_image(p_mod, &image, load_addr, load_size, load_mode);
 }
 
+/* Saves/restores the caller's r9 around the module call, mirroring
+ * UDYNLINK_CALL_VOID in udynlink_call.h. The restore clobber also acts as a
+ * hard barrier that defeats sibling-call optimization: without it, at -O2/-O3
+ * /-Os and under LTO GCC rewrites the f() invocation as a tail call (bx r3)
+ * AFTER the function epilogue (ldmia {…, r9, lr}), which restores the caller's
+ * r9 from the stack and so clobbers the LOT base the module code relies on. */
 void udynlink_cpp_init(udynlink_module_t *p_mod){
-    udynlink_sym_t __init_array= {};
-    if(udynlink_lookup_symbol(p_mod, "__init_array", &__init_array) != NULL)
-    {
-        typedef void (*void_func)(void);
-        void_func f = (void_func)__init_array.val;
-        UDYNLINK_PREPARE_CALL(p_mod);
-        f();
-    }   
+    udynlink_sym_t init_array_sym = {};
+    if (udynlink_lookup_symbol(p_mod, "__init_array", &init_array_sym) == NULL) {
+        return;
+    }
+    typedef void (*void_func)(void);
+    void_func f = (void_func)init_array_sym.val;
+    uint32_t prev_r9;
+    __asm volatile ("mov %0, r9" : "=r"(prev_r9) : :);
+    UDYNLINK_PREPARE_CALL(p_mod);
+    f();
+    __asm volatile ("mov r9, %0" :: "r"(prev_r9) : "r9");
 }
 
 udynlink_error_t udynlink_unload_module(udynlink_module_t *p_mod) {

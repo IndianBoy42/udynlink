@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Low-level loading primitives** — `udynlink_validate_header()`, `udynlink_compute_ram_size()`, `udynlink_get_image_metadata_size()`, `udynlink_image_get_module_name()`, and `udynlink_load_apply_relocations()`. These let advanced users implement custom loading pipelines (e.g., read header from SD card, validate, allocate RAM, copy sections chunk by chunk, then apply relocations).
 - **`user_ctx` field on `udynlink_module_t`** — an opaque `void *` pointer that the loader never touches, provided for the host to associate arbitrary state (filesystem path, language runtime handle, reference counter, etc.) with a module handle.
 
+### Fixed
+
+- **`udynlink_cpp_init` r9 clobber under sibling-call optimization** — At `-O2`/`-O3`/`-Os`/`-Oz` and under `-flto`, GCC turned the `__init_array` call into a tail call. The function's epilogue (`ldmia {…, r9, lr}`) restored the caller's `r9` *after* the inline-asm `UDYNLINK_PREPARE_CALL` set it to the LOT base, so the module's constructor runner was entered with the wrong `r9` and corrupted its data accesses. Prologue-wrapped modules masked the bug (their prologue re-sets `r9`), but C++ modules built with `--no-prologue` crashed. `udynlink_cpp_init` now saves/restores `r9` around the call, mirroring `UDYNLINK_CALL_VOID` — the restore clobber also acts as a hard barrier that defeats sibling-call optimization. Hosts that build `libudynlink` at `-Os` plus `-flto` should rebuild.
+
 ## [0.2.0] - 2026-05-27
 
 ### Changed
