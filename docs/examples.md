@@ -1108,6 +1108,100 @@ int main(void) {
 
 ---
 
+## Iterating a Module's Symbol Table (C and C++)
+
+udynlink lets a host enumerate every symbol in a module's symbol table — either **before loading** (to inspect an image's exports without allocating RAM) or **after loading** (to get relocated absolute addresses). The C API exposes index/count functions; the C++ API wraps them in a C++23 range.
+
+### Pre-load inspection (C)
+
+```c
+#include "udynlink.h"
+#include <stdio.h>
+
+void list_image_exports(const void *flash_base) {
+    udynlink_module_image_t img;
+    udynlink_image_from_memory(flash_base, &img);
+
+    size_t n = udynlink_image_get_symbol_count(&img);
+    printf("image offers %zu symbols:\n", n);
+    udynlink_sym_t s;
+    for (size_t i = 0; i < n; i++) {
+        if (udynlink_image_get_symbol(&img, i, &s) == NULL) continue;
+        /* val is a section-relative offset here — no RAM allocated yet. */
+        printf("  [%2zu] %-20s type=%u loc=%u offset=0x%lx\n",
+               i, s.name, s.type, s.location, (unsigned long)s.val);
+    }
+}
+```
+
+### Post-load enumeration (C)
+
+```c
+#include "udynlink.h"
+#include <stdio.h>
+
+void list_loaded_symbols(const udynlink_module_t *mod) {
+    size_t n = udynlink_get_symbol_count(mod);
+    udynlink_sym_t s;
+    for (size_t i = 0; i < n; i++) {
+        if (udynlink_get_symbol(mod, i, &s) == NULL) continue;
+        /* val is now the relocated absolute address for INTERNAL/EXPORTED/WEAK. */
+        const char *kind = "????";
+        switch (s.type) {
+            case UDYNLINK_SYM_TYPE_MODULE_NAME: kind = "module"; break;
+            case UDYNLINK_SYM_TYPE_EXPORTED:    kind = "export"; break;
+            case UDYNLINK_SYM_TYPE_EXTERN:      kind = "extern"; break;
+            case UDYNLINK_SYM_TYPE_WEAK:        kind = "weak";   break;
+            case UDYNLINK_SYM_TYPE_INTERNAL:    kind = "local";  break;
+        }
+        printf("  %-20s %s @ %p\n", s.name, kind, (void*)s.val);
+    }
+}
+```
+
+`udynlink_get_symbol()` is side-effect-free (no host callback, no allocation), so it is safe to call from any context after load — including ISRs.
+
+### C++23 range-for (pre- and post-load)
+
+```cpp
+#include "udynlink.hpp"
+#include <cstdio>
+
+// Before loading — raw, unrelocated values, straight from a flash image:
+for (udynlink::Symbol s : udynlink::symbols(flash_base)) {
+    if (s.is_exported() && s.is_function()) {
+        std::printf("export: %s\n", std::string{s.name()}.c_str());
+    }
+}
+
+// After loading — relocated absolute addresses via Module::symbols():
+udynlink::Module mod;
+if (mod.load(flash_base) == UDYNLINK_OK) {
+    for (udynlink::Symbol s : mod.symbols()) {
+        std::printf("%-20s @ %p\n",
+                    std::string{s.name()}.c_str(), (void*)s.value());
+    }
+}
+```
+
+`udynlink::SymbolView` models `std::ranges::view`, so it composes with the standard range adaptors:
+
+```cpp
+// Names of every exported symbol, materialized into a vector (C++23 ranges::to):
+auto names = mod.symbols()
+           | std::views::filter(&udynlink::Symbol::is_exported)
+           | std::views::transform(&udynlink::Symbol::name);
+```
+
+### Key points
+
+- **Pre-load** (`udynlink_image_get_symbol_count` / `udynlink_image_get_symbol` / `udynlink::symbols(image)`): no RAM allocated, `val` is a raw section offset. Use to log manifests, validate exports, or decide whether to load.
+- **Post-load** (`udynlink_get_symbol_count` / `udynlink_get_symbol` / `Module::symbols()`): `val` is the relocated absolute address for `INTERNAL`/`EXPORTED`/`WEAK` symbols (the module's own definition for `WEAK`; host overrides live in the LOT and are reported by `udynlink_lookup_symbol()`). `EXTERN`/`MODULE_NAME` stay raw.
+- The count is clamped to what the (attacker-controlled) `symt_size` can actually hold, so a malformed image cannot drive a host into billions of iterations.
+- Index 0 is always the module name; named (searchable) symbols follow; local (nameless) symbols come last.
+
+---
+
 ## Call Thunks: Passing Module Functions as Callbacks
 
 The `udynlink_thunk` layer creates callable function pointers for module symbols that handle `r9` switching automatically. This is essential when passing module functions as callbacks to ISRs, timer APIs, or any consumer that is unaware of udynlink's r9/LOT convention.

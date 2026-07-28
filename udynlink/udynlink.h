@@ -460,6 +460,46 @@ size_t udynlink_get_image_metadata_size(const udynlink_module_header_t *header);
  */
 const char *udynlink_image_get_module_name(const uint32_t *p_symtab);
 
+/**
+ * @brief Return the number of symbol entries in a module image's symbol table.
+ *
+ * The count includes the module-name entry at index 0.  Use it with
+ * udynlink_image_get_symbol() to enumerate a module's symbols before loading
+ * it (e.g. to inspect exports, check for a required symbol, or log a
+ * manifest).  Only @p image->p_header and @p image->p_symtab are read.
+ *
+ * The returned count is bounded by what the (attacker-controlled) @c
+ * symt_size can actually hold, so a malformed image claiming a huge entry
+ * count cannot drive a host into billions of iterations.
+ *
+ * @param[in] image Module image descriptor (p_header and p_symtab valid).
+ *
+ * @return Number of symbol entries, or 0 on error / empty table.
+ */
+size_t udynlink_image_get_symbol_count(const udynlink_module_image_t *image);
+
+/**
+ * @brief Retrieve a symbol descriptor by index from a module image.
+ *
+ * Returns the raw, **unrelocated** symbol: @c val is an offset within the
+ * symbol's section (code or data), not an absolute address.  No RAM has been
+ * allocated and no relocations applied, so this is safe to call before
+ * udynlink_load_module() / udynlink_load_module_image().  For relocated
+ * absolute values, load the module and use udynlink_get_symbol().
+ *
+ * Index 0 is the module name (::UDYNLINK_SYM_TYPE_MODULE_NAME); indices
+ * [1, num_named_syms] are the sorted, named (searchable) symbols; the
+ * remaining entries are local (nameless, @c "(N/A)") symbols.
+ *
+ * @param[in]  image Module image descriptor.
+ * @param[in]  index Symbol index in [0, udynlink_image_get_symbol_count()-1].
+ * @param[out] p_sym Symbol descriptor to fill.
+ *
+ * @return @p p_sym on success, NULL if @p index is out of range, the image
+ *         is malformed, or an argument is NULL.
+ */
+const udynlink_sym_t *udynlink_image_get_symbol(const udynlink_module_image_t *image, size_t index, udynlink_sym_t *p_sym);
+
 ////////////////////////////////////////////////////////////////////////////////
 // Public interface - module loading
 
@@ -677,6 +717,47 @@ udynlink_sym_t *udynlink_lookup_symbol(const udynlink_module_t *p_mod, const cha
  * @return The symbol's relocated value if found, 0 otherwise.
  */
 uintptr_t udynlink_get_symbol_value(const udynlink_module_t *p_mod, const char *name);
+
+/**
+ * @brief Return the number of symbol entries in a loaded module's symbol table.
+ *
+ * The count includes the module-name entry at index 0.  Pair with
+ * udynlink_get_symbol() to enumerate the loaded module's symbols.  This is
+ * the post-load counterpart of udynlink_image_get_symbol_count(); unlike that
+ * function it reads the symbol table through the loaded module's header, so
+ * it works for every load mode (the symbol table is always reachable via @c
+ * p_mod->p_header).
+ *
+ * @param[in] p_mod Pointer to the loaded module handle, or NULL.
+ *
+ * @return Number of symbol entries, or 0 if @p p_mod is NULL / not loaded.
+ */
+size_t udynlink_get_symbol_count(const udynlink_module_t *p_mod);
+
+/**
+ * @brief Retrieve a symbol descriptor by index from a loaded module.
+ *
+ * Fills @p p_sym with the **relocated** symbol: for INTERNAL, EXPORTED, and
+ * WEAK symbols @c val is the absolute address within the module's loaded
+ * code or data section (the module's own definition is used for WEAK symbols;
+ * a host override, if any, lives in the LOT slot and is reported by
+ * udynlink_lookup_symbol()).  For EXTERN and MODULE_NAME symbols @c val is
+ * the raw table value (offset / name token), matching
+ * udynlink_lookup_symbol().
+ *
+ * This is a pure enumeration of the on-disk symbol table: it applies no host
+ * callback and has no side effects, so it is safe to call at any time after a
+ * successful load (including from ISRs, unlike the loader's load/unload
+ * paths).
+ *
+ * @param[in]  p_mod Pointer to the loaded module handle.
+ * @param[in]  index Symbol index in [0, udynlink_get_symbol_count()-1].
+ * @param[out] p_sym Symbol descriptor to fill.
+ *
+ * @return @p p_sym on success, NULL if @p index is out of range, @p p_mod is
+ *         NULL/not loaded, or @p p_sym is NULL.
+ */
+const udynlink_sym_t *udynlink_get_symbol(const udynlink_module_t *p_mod, size_t index, udynlink_sym_t *p_sym);
 
 /**
  * @brief Set the loader debug verbosity.

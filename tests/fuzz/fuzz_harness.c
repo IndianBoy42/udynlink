@@ -15,7 +15,11 @@
  * udynlink_external_malloc to allocate the move target; this exercises the
  * rebase_module_pointers path with a foreign NULL dest without actually
  * moving anything. The result code is irrelevant — a clean rejection is as
- * good as a successful relocate from the harness's "did it crash?" view. */
+ * good as a successful relocate from the harness's "did it crash?" view.
+ *
+ * Also walks the whole symbol table via the index-based enumeration API so the
+ * sanitized bounds checks in udynlink_get_symbol() / get_sym_at_raw run on
+ * every (possibly malformed) loadable image. */
 static void exercise_loaded(udynlink_module_t *p_mod) {
     udynlink_sym_t sym;
     udynlink_sym_t *psym;
@@ -24,6 +28,12 @@ static void exercise_loaded(udynlink_module_t *p_mod) {
     psym = udynlink_lookup_symbol(p_mod, "test", &sym);
     (void)psym;
     (void)udynlink_get_symbol_value(p_mod, "test");
+
+    size_t nsym = udynlink_get_symbol_count(p_mod);
+    for (size_t i = 0; i < nsym; i++) {
+        (void)udynlink_get_symbol(p_mod, i, &sym);
+    }
+
     (void)udynlink_relocate_module(p_mod, NULL, 0);
 }
 
@@ -76,6 +86,17 @@ int udynlink_fuzz_exercise(const uint8_t *buf, size_t size) {
      * buffer and load it again, in COPY_ALL only (the other modes share the
      * same load path body and would merely triple the runtime). */
     udynlink_image_from_memory(buf, &image);
+    /* Pre-load enumeration: walk the image's symbol table before any RAM is
+     * allocated, exercising udynlink_image_get_symbol_count /
+     * udynlink_image_get_symbol and their symt_size bounds on the (possibly
+     * malformed) buffer. */
+    {
+        udynlink_sym_t sym;
+        size_t nsym = udynlink_image_get_symbol_count(&image);
+        for (size_t i = 0; i < nsym; i++) {
+            (void)udynlink_image_get_symbol(&image, i, &sym);
+        }
+    }
     memset(&mod, 0, sizeof(mod));
     err = udynlink_load_module_image(&mod, &image, NULL, 0,
                                       UDYNLINK_LOAD_MODE_COPY_ALL);

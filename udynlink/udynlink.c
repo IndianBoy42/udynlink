@@ -273,6 +273,21 @@ static udynlink_sym_t *get_sym_at(const udynlink_module_header_t *p_header, size
     return get_sym_at_raw(get_sym_table_pointer(p_header), index, p_sym, p_header->symt_size);
 }
 
+/* Bound the symbol-table entry count claimed by *p_symt against what the
+ * (attacker-controlled) symt_size can actually hold.  get_sym_at_raw admits an
+ * index i only when i < *p_symt AND i*2+2 < symt_words, i.e. i < (symt_words-1)/2.
+ * Returning the clamped count keeps a malformed image that lies about its
+ * entry count from making a host iterate billions of NULL-returning calls. */
+static size_t bounded_sym_count(const uint32_t *p_symt, size_t symt_size_bytes) {
+    size_t symt_words = symt_size_bytes / sizeof(uint32_t);
+    if (symt_words < 1) {
+        return 0;
+    }
+    size_t claimed = *p_symt;
+    size_t max_valid = (symt_words >= 3) ? (symt_words - 1) / 2 : 0;
+    return claimed < max_valid ? claimed : max_valid;
+}
+
 // Offset the given symbol relative to the required base address (.code or .data), based on the symbol location
 // The function returns p_sym after it applies the offset to p_sym->val.
 static udynlink_sym_t *offset_sym(const udynlink_module_t *p_mod, udynlink_sym_t *p_sym) {
@@ -925,6 +940,43 @@ uintptr_t udynlink_get_symbol_value(const udynlink_module_t *p_mod, const char *
         return 0;
     }
     return sym.val;
+}
+
+size_t udynlink_image_get_symbol_count(const udynlink_module_image_t *image) {
+    if (image == NULL || image->p_header == NULL || image->p_symtab == NULL) {
+        return 0;
+    }
+    return bounded_sym_count(image->p_symtab, image->p_header->symt_size);
+}
+
+const udynlink_sym_t *udynlink_image_get_symbol(const udynlink_module_image_t *image, size_t index, udynlink_sym_t *p_sym) {
+    if (image == NULL || image->p_header == NULL || image->p_symtab == NULL || p_sym == NULL) {
+        return NULL;
+    }
+    /* Pre-load: no RAM allocated, so return the raw (unrelocated) descriptor. */
+    return get_sym_at_raw(image->p_symtab, index, p_sym, image->p_header->symt_size);
+}
+
+size_t udynlink_get_symbol_count(const udynlink_module_t *p_mod) {
+    if (p_mod == NULL || p_mod->p_header == NULL) {
+        return 0;
+    }
+    return bounded_sym_count(get_sym_table_pointer(p_mod->p_header), p_mod->p_header->symt_size);
+}
+
+const udynlink_sym_t *udynlink_get_symbol(const udynlink_module_t *p_mod, size_t index, udynlink_sym_t *p_sym) {
+    if (p_mod == NULL || p_mod->p_header == NULL || p_sym == NULL) {
+        return NULL;
+    }
+    if (get_sym_at(p_mod->p_header, index, p_sym) == NULL) {
+        return NULL;
+    }
+    /* Post-load: fold in the loaded code/data base so INTERNAL/EXPORTED/WEAK
+     * symbols report absolute addresses.  EXTERN/MODULE_NAME are left raw,
+     * matching udynlink_lookup_symbol().  No host callback is invoked, so this
+     * is side-effect-free and safe from any context after load. */
+    offset_sym(p_mod, p_sym);
+    return p_sym;
 }
 
 void udynlink_set_debug_level(udynlink_debug_level_t level) {

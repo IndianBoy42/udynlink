@@ -560,6 +560,60 @@ Only reads `p_symtab`; the caller does not need to provide a full `udynlink_modu
 
 ---
 
+### `udynlink_image_get_symbol_count`
+
+```c
+size_t udynlink_image_get_symbol_count(const udynlink_module_image_t *image);
+```
+
+Returns the number of symbol entries in a module image's symbol table, **before** loading. Pair with `udynlink_image_get_symbol()` to enumerate a module's symbols for inspection, manifest logging, or pre-load validation. Only `image->p_header` and `image->p_symtab` are read.
+
+The count is clamped to what the (attacker-controlled) `symt_size` can actually hold, so a malformed image claiming a huge entry count cannot drive a host into billions of iterations.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `image` | `const udynlink_module_image_t *` | Module image descriptor. |
+
+**Return value:** Number of symbol entries (including the module-name entry at index 0), or 0 on error / empty table.
+
+---
+
+### `udynlink_image_get_symbol`
+
+```c
+const udynlink_sym_t *udynlink_image_get_symbol(const udynlink_module_image_t *image,
+                                                size_t index,
+                                                udynlink_sym_t *p_sym);
+```
+
+Retrieves the **raw, unrelocated** symbol descriptor at `index` from a module image. No RAM is allocated and no relocations are applied, so this is safe to call before `udynlink_load_module()` / `udynlink_load_module_image()`. For relocated absolute values, load the module and use `udynlink_get_symbol()`.
+
+Index 0 is the module name (`UDYNLINK_SYM_TYPE_MODULE_NAME`); indices `[1, num_named_syms]` are the sorted, named (searchable) symbols; the remaining entries are local (nameless, `"(N/A)"`) symbols.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `image` | `const udynlink_module_image_t *` | Module image descriptor. |
+| `index` | `size_t` | Symbol index in `[0, udynlink_image_get_symbol_count()-1]`. |
+| `p_sym` | `udynlink_sym_t *` | Symbol descriptor to fill. |
+
+**Return value:** `p_sym` on success; `NULL` if `index` is out of range, the image is malformed, or an argument is `NULL`.
+
+```c
+/* Pre-load inspection: log every exported function a flash image offers. */
+udynlink_module_image_t img;
+udynlink_image_from_memory(flash_base, &img);
+size_t n = udynlink_image_get_symbol_count(&img);
+udynlink_sym_t s;
+for (size_t i = 0; i < n; i++) {
+    if (udynlink_image_get_symbol(&img, i, &s) && s.type == UDYNLINK_SYM_TYPE_EXPORTED
+        && s.location == UDYNLINK_SYM_LOCATION_CODE) {
+        printf("  export: %s\n", s.name);
+    }
+}
+```
+
+---
+
 ### `udynlink_image_from_memory`
 
 ```c
@@ -932,6 +986,55 @@ Looks up a symbol and returns its absolute value.
 **Note:** Because `0` is a valid address on Cortex-M, a return value of `0` is ambiguous. Use `udynlink_lookup_symbol` when you need to distinguish "not found" from "address 0".
 
 ---
+
+### `udynlink_get_symbol_count`
+
+```c
+size_t udynlink_get_symbol_count(const udynlink_module_t *p_mod);
+```
+
+Returns the number of symbol entries in a loaded module's symbol table. Post-load counterpart of `udynlink_image_get_symbol_count()`; reads the symbol table through the loaded module's header, so it works for every load mode. Pair with `udynlink_get_symbol()`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `p_mod` | `const udynlink_module_t *` | Loaded module handle, or `NULL`. |
+
+**Return value:** Number of symbol entries (including the module-name entry at index 0), or 0 if `p_mod` is `NULL` / not loaded.
+
+---
+
+### `udynlink_get_symbol`
+
+```c
+const udynlink_sym_t *udynlink_get_symbol(const udynlink_module_t *p_mod,
+                                          size_t index,
+                                          udynlink_sym_t *p_sym);
+```
+
+Retrieves the **relocated** symbol descriptor at `index` from a loaded module. For `INTERNAL`, `EXPORTED`, and `WEAK` symbols `val` is the absolute address within the module's loaded code or data section (the module's own definition is used for `WEAK` symbols; a host override, if any, lives in the LOT slot and is reported by `udynlink_lookup_symbol()`). For `EXTERN` and `MODULE_NAME` symbols `val` is the raw table value, matching `udynlink_lookup_symbol()`.
+
+This is a pure enumeration of the on-disk symbol table: it applies no host callback and has no side effects, so it is safe to call at any time after a successful load (including from ISRs, unlike the loader's load/unload paths).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `p_mod` | `const udynlink_module_t *` | Loaded module handle. |
+| `index` | `size_t` | Symbol index in `[0, udynlink_get_symbol_count()-1]`. |
+| `p_sym` | `udynlink_sym_t *` | Symbol descriptor to fill. |
+
+**Return value:** `p_sym` on success; `NULL` if `index` is out of range, `p_mod` is `NULL`/not loaded, or `p_sym` is `NULL`.
+
+```c
+/* Enumerate a loaded module's exported symbols. */
+size_t n = udynlink_get_symbol_count(&mod);
+udynlink_sym_t s;
+for (size_t i = 0; i < n; i++) {
+    if (udynlink_get_symbol(&mod, i, &s) && s.type == UDYNLINK_SYM_TYPE_EXPORTED) {
+        printf("%s @ %p (%s)\n", s.name, (void*)s.val,
+               s.location == UDYNLINK_SYM_LOCATION_CODE ? "code" : "data");
+    }
+}
+```
+
 
 ## RAM Requirement Functions
 
@@ -1692,7 +1795,7 @@ Clears all cache entries by zeroing the array. Call after unloading a module tha
 
 ## C++ API (`udynlink/udynlink.hpp`)
 
-An optional C++ header that provides type-safe, RAII wrappers around the C API. It requires C++17 (for `std::optional`) and GCC or Clang (for statement-expression `r9` management). Include it after `udynlink.h` and `udynlink_call.h` (it includes both automatically).
+An optional C++ header that provides type-safe, RAII wrappers around the C API. It requires C++23 (for `std::ranges` and `std::string_view`) and GCC or Clang (for statement-expression `r9` management). Include it after `udynlink.h` and `udynlink_call.h` (it includes both automatically).
 
 ### `udynlink::Func<Sig>`
 
@@ -1788,6 +1891,7 @@ Non-copyable.
 | `bool is_loaded() const` | Returns `true` if currently loaded. |
 | `template<typename Sig> std::optional<Func<Sig>> resolve(const char *name) const` | Resolve a typed function handle. Returns `std::nullopt` on failure. |
 | `void cpp_init()` | Explicitly run C++ constructors. Rarely needed; `load()` calls it automatically. |
+| `SymbolView symbols() const` | Iterate the loaded module's symbol table (relocated). Empty if not loaded. |
 | `const udynlink_module_t *handle() const` | Raw C handle (const). |
 | `udynlink_module_t *handle()` | Raw C handle (mutable). |
 | `void swap(Module &other)` | Swap contents with another `Module`. |
@@ -1807,6 +1911,90 @@ if (add) {
 }
 
 // mod unloads automatically when it goes out of scope
+```
+
+---
+
+### `udynlink::Symbol`
+
+```cpp
+class Symbol;
+```
+
+Read-only, copyable descriptor for a single symbol-table entry — a thin wrapper around `udynlink_sym_t` returned by `SymbolView`. Cheap to copy; hold it by value.
+
+For symbols from a loaded module (`Module::symbols()`), `value()` is the relocated absolute address for `INTERNAL`/`EXPORTED`/`WEAK` symbols; for symbols from an image before loading (`udynlink::symbols(image)`), it is the raw section offset (see `udynlink_image_get_symbol()` vs `udynlink_get_symbol()`).
+
+| Method | Description |
+|--------|-------------|
+| `std::string_view name() const` | Symbol name, or an empty view if the entry was not populated. |
+| `uintptr_t value() const` | Relocated value (loaded) or raw section offset (image). |
+| `unsigned type() const` | `UDYNLINK_SYM_TYPE_*`. |
+| `unsigned location() const` | `UDYNLINK_SYM_LOCATION_*`. |
+| `bool is_exported() const` | `type == UDYNLINK_SYM_TYPE_EXPORTED`. |
+| `bool is_extern() const` | `type == UDYNLINK_SYM_TYPE_EXTERN`. |
+| `bool is_weak() const` | `type == UDYNLINK_SYM_TYPE_WEAK`. |
+| `bool is_internal() const` | `type == UDYNLINK_SYM_TYPE_INTERNAL`. |
+| `bool is_module_name() const` | `type == UDYNLINK_SYM_TYPE_MODULE_NAME` (index 0). |
+| `bool is_function() const` | `location == UDYNLINK_SYM_LOCATION_CODE`. |
+| `bool is_data() const` | `location == UDYNLINK_SYM_LOCATION_DATA`. |
+| `explicit operator bool() const` | `true` if the entry was populated (e.g. from a valid index). |
+| `const udynlink_sym_t &raw() const` | Escape hatch: the underlying C descriptor. |
+
+---
+
+### `udynlink::SymbolView`
+
+```cpp
+class SymbolView : public std::ranges::view_interface<SymbolView>;
+```
+
+A C++23 range over a module's symbol table. Models `std::ranges::view` (default-constructible, movable, O(1) copy). It does not own the underlying image/module data — keep the module loaded (for `Module::symbols()`) or the image bytes mapped (for the image overloads) for the lifetime of the view and its iterators.
+
+Two construction modes:
+
+- **relocated** — from a loaded module (`Module::symbols()`): `Symbol::value()` is the absolute address, via `udynlink_get_symbol()`.
+- **raw** — from an image (`udynlink::symbols(image)` / `udynlink::symbols(base_addr)`): `Symbol::value()` is the unrelocated section offset, via `udynlink_image_get_symbol()`. The view holds a copy of the `udynlink_module_image_t` descriptor (just pointers), so it stays valid as long as the backing image bytes remain mapped.
+
+Index 0 is the module name; the rest follow the on-disk symbol-table order.
+
+| Method | Description |
+|--------|-------------|
+| `SymbolView()` | Default: empty (size 0) view. |
+| `explicit SymbolView(const udynlink_module_t &mod)` | Relocated view over a loaded module. |
+| `explicit SymbolView(const udynlink_module_image_t &img)` | Raw view over an image descriptor. |
+| `explicit SymbolView(const void *base_addr)` | Raw view built from a contiguous module image (calls `udynlink_image_from_memory`). |
+| `size_t size() const` | Number of symbol entries (including the module-name entry at 0). |
+| `Symbol operator[](size_t i) const` | Random access (no bounds check beyond the loader's own; out-of-range yields a default `Symbol`). |
+| `iterator begin() const` / `iterator end() const` | Input iterator yielding `Symbol` by value. |
+
+`SymbolView::iterator` models `std::input_iterator`; dereference returns a **value** (the symbol table is packed, not an array of structs), so copy the `Symbol` out if you need to retain it across increments.
+
+**Free functions:**
+
+| Function | Description |
+|----------|-------------|
+| `SymbolView symbols(const udynlink_module_image_t &img)` | Build a raw (pre-load) view over an image descriptor. |
+| `SymbolView symbols(const void *base_addr)` | Build a raw (pre-load) view over a contiguous module image. |
+
+The view composes with the standard range adaptors (`std::views::transform`, `std::ranges::to`, range-for).
+
+**Example — pre-load inspection from flash:**
+
+```cpp
+// Before loading: list every exported function a flash image offers.
+for (udynlink::Symbol s : udynlink::symbols(flash_base)) {
+    if (s.is_exported() && s.is_function()) { dispatch(s); }
+}
+```
+
+**Example — post-load enumeration:**
+
+```cpp
+// After loading: enumerate relocated symbols.
+for (udynlink::Symbol s : mod.symbols()) {
+    printf("%s @ %p\n", std::string{s.name()}.c_str(), (void*)s.value());
+}
 ```
 
 ---

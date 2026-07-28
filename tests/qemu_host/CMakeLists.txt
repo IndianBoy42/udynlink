@@ -122,6 +122,14 @@ target_link_directories(test1.elf PRIVATE
 target_link_libraries(test1.elf PRIVATE udynlink udynlink_thunk udynlink_deps)
 
 # --- Standard C++ if any C++ sources ---
+# udynlink.hpp is C++23 (std::ranges, std::string_view). Build any C++ test
+# source at C++23 so the header's symbol-table iteration API is available.
+# CXX_STANDARD only affects C++ TUs, so setting it unconditionally is a no-op
+# for C-only test sources. CXX_STANDARD_REQUIRED OFF lets a compiler without
+# C++23 fall back gracefully.
+set_target_properties(test1.elf PROPERTIES
+    CXX_STANDARD 23
+    CXX_STANDARD_REQUIRED OFF)
 if(UDYNLINK_PLATFORM_HAS_CXX)
     set_target_properties(test1.elf PROPERTIES LINKER_LANGUAGE CXX)
 endif()

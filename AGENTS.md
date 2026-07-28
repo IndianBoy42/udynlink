@@ -184,7 +184,7 @@ The platform is selected via `-DUDYNLINK_PLATFORM=<name>` (default: `stm32f429_d
 | `udynlink_trie.h` | Optional (inline) | Compact search trie for O(k) host symbol resolution | Hosts wanting prefix-sharing or no Bloom overhead |
 | `udynlink_host_utils.h` | Optional (inline) | Tiny host-side symbol cache with LRU eviction | Speeding up repeated `udynlink_external_resolve_symbol` calls |
 | `udynlink_cpp_abi.h` | Optional (inline) | Weak stubs + resolver for the C++ ABI symbols (`operator delete`, `__cxa_pure_virtual`, ...) referenced by loadable C++ modules | C-only bare-metal hosts loading C++ modules with virtual destructors, abstract classes, or `new`/`delete` |
-| `udynlink.hpp` | Optional (C++17 inline) | `Module` (RAII lifecycle), `Func<Sig>` (typed function handle), `Context` (RAII r9 manager) | C++ hosts wanting type safety and automatic cleanup |
+| `udynlink.hpp` | Optional (C++23 inline) | `Module` (RAII lifecycle), `Func<Sig>` (typed function handle), `Context` (RAII r9 manager), `Symbol`/`SymbolView` (C++23 range over a module's symbol table, pre- or post-load) | C++ hosts wanting type safety and automatic cleanup |
 
 ## Architecture & Key Constraints
 
