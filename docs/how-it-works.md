@@ -697,11 +697,29 @@ At link time, this becomes an `UDYNLINK_SYM_TYPE_EXTERN` symbol. At load time, t
 When a module references a symbol that might be in another module, the host's `udynlink_external_resolve_symbol()` callback typically checks in this order:
 
 1. **Is it a dependency declaration?** (`udynlink_dep_is_dependency`) → resolve via `udynlink_dep_resolve_dependency()`
-2. **Is it a function in a loaded dependency?** → resolve via `udynlink_dep_resolve_func()` (allocates a thunk)
+2. **Is it a function in a loaded dependency?** → resolve via `udynlink_dep_resolve_func()`. If the exporting module declared a preallocated thunk export for the symbol (`UDYNLINK_THUNK_EXPORT`), the resolver returns the already-generated in-module thunk; otherwise it allocates a thunk from the dynamic pool
 3. **Is it a data variable in a loaded dependency?** → resolve via `udynlink_dep_resolve_data()` (returns address directly, no thunk needed)
 4. **Is it a host firmware symbol?** → return the host's own address
 
 The gateway and stub are generated at load time: the gateway is patched with the callee module's `ram_base` and the stub with the target function's absolute address. After loading, the module's LOT slot contains the stub address, so subsequent calls go through the stub → gateway → target automatically.
+
+### Preallocated Thunk Exports
+
+Modules may preallocate the thunk space for exports they expect to be imported:
+`UDYNLINK_THUNK_GATEWAY()` reserves an 18-byte gateway slot and
+`UDYNLINK_THUNK_EXPORT(fn)` a 10-byte stub slot, both in the module's own
+`.bss` (section `.bss.udynlink_thunk_pool`, kept alive under `--gc-sections`
+by a `KEEP` in `scripts/code_before_data.ld`). `udynlink_dep_load()`
+automatically generates the gateway and stub bytes into those slots after
+loading (via `udynlink_dep_generate_thunks()`), so the thunks are ready
+before any importer resolves the symbols and the shared dynamic thunk pool is
+not touched for them. See `docs/writing-modules.md` → "Preallocating
+Cross-Module Thunk Exports".
+
+Because the slots live inside the module's RAM, `udynlink_relocate_module()`
+invalidates their absolute immediates (gateway `ram_base`, stub function
+addresses); the host must call `udynlink_dep_generate_thunks()` again after
+relocating such a module.
 
 ### Circular Dependency Detection
 

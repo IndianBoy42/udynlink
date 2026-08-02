@@ -11,6 +11,15 @@ if(NOT udynlink_SCRIPTS_DIR)
   set(udynlink_SCRIPTS_DIR "${_udynlink_prefix}/share/udynlink/scripts")
 endif()
 
+# Public headers directory, used by udynlink_add_module() as the mkmodule -I
+# path. After install: <prefix>/include/udynlink/. For FetchContent: set in
+# CMakeLists.txt via CACHE.
+if(NOT udynlink_INCLUDE_DIR)
+  get_filename_component(_udynlink_cmake_dir "${CMAKE_CURRENT_LIST_DIR}" ABSOLUTE)
+  get_filename_component(_udynlink_prefix "${_udynlink_cmake_dir}/../../.." ABSOLUTE)
+  set(udynlink_INCLUDE_DIR "${_udynlink_prefix}/include/udynlink")
+endif()
+
 # Load helper functions
 # Backend-driven: host-syms generator + module builder, both optional so a
 # minimal install (targets only) still configures cleanly.

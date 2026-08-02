@@ -247,7 +247,7 @@ At load time, the host's `udynlink_external_resolve_symbol()` callback locates t
 To ensure a module is not loaded before its dependencies are available, use `UDYNLINK_REQUIRES`:
 
 ```c
-#include "udynlink_deps.h"
+#include "udynlink_deps_api.h"
 
 UDYNLINK_REQUIRES(math);
 
@@ -256,7 +256,28 @@ extern int math_add(int a, int b);
 
 `UDYNLINK_REQUIRES(math)` expands to an extern symbol named `.udynlink.mod.requires.math`. The host's dependency system recognizes this prefix and checks that a module named `math` is already loaded. If the dependency is missing, the load fails with `UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL`.
 
+`udynlink_deps_api.h` is the **module-facing** half of the dependency system — the only udynlink header a module source ever needs (it is self-contained; see the [mkmodule `-I` flag](#the-mkmodule-command-reference) below for how module builds reach it). Hosts implement the runtime side via `udynlink_deps.h`; module sources must never include that one.
+
 **Best practice:** Always use `UDYNLINK_REQUIRES` for every module you depend on. It documents the dependency for readers and enables the host to fail fast with a clear error message.
+
+### Preallocating Cross-Module Thunk Exports
+
+By default, cross-module calls allocate their trampolines (an 18-byte gateway + 10-byte stub per function) **lazily** from a shared dynamic thunk pool the first time another module imports the symbol. If a module knows which of its exports are most likely to be imported, it can instead **preallocate** the thunk space inside its own `.bss` and have the host generate the thunks at load time, so the dynamic pool is never touched for those exports.
+
+In the exporting module:
+
+```c
+#include "udynlink_deps_api.h"
+
+UDYNLINK_THUNK_GATEWAY();   /* exactly one per module */
+UDYNLINK_THUNK_EXPORT(math_add);   /* one per export you expect to be imported */
+```
+
+`UDYNLINK_THUNK_GATEWAY()` reserves an 18-byte gateway slot and each `UDYNLINK_THUNK_EXPORT(fn)` a 10-byte stub slot, all in the module's `.bss` section `.bss.udynlink_thunk_pool` (kept alive under `--gc-sections` by `KEEP(*(.bss.udynlink_thunk_pool))` in `scripts/code_before_data.ld` — GCC's `__attribute__((retain))` is not honored by arm-none-eabi-gcc for variables). `udynlink_dep_load()` then calls `udynlink_dep_generate_thunks()` automatically after loading, which writes the gateway (patched with the module's `ram_base`) and one stub per declared export into those slots.
+
+At resolve time, `udynlink_dep_resolve_func()` serves the pre-generated in-module thunk for a declared export; exports the module did not declare still fall back to the dynamic thunk pool. The macros live in `udynlink_deps_api.h`, which is self-contained (only `<stdint.h>`) so module sources can include it without dragging in any host-facing udynlink header.
+
+**Relocation caveat:** because the thunks live inside the module's RAM, `udynlink_relocate_module()` invalidates their absolute immediates (gateway `ram_base`, stub function addresses). After relocating a module that declares thunk exports, the host must call `udynlink_dep_generate_thunks(&mgr, p_mod)` again; the `b.n` branches inside the slots survive the move unchanged.
 
 ### Common Host Symbols
 
@@ -607,6 +628,7 @@ Source files are compiled with:
 | `--mod-version <ver>` | Module ABI version in `major.minor` format. Default: `1.0`. |
 | `--udynlink-version <ver>` | Minimum loader ABI version required. Default: `3.0`. |
 | `--build-flags <flags>` | Extra compiler flags prepended to the compile command. |
+| `-I <dir>`, `--include-dir <dir>` | Add a directory to the module compile include path (repeatable). Module sources can then `#include` udynlink headers — e.g. `udynlink_deps_api.h` for `UDYNLINK_REQUIRES` / `UDYNLINK_THUNK_*` — instead of pasting macros inline. Passed after `--build-flags` (so a conflicting `-I` there wins); applies to module sources only. |
 | `--module-name <name>` | Explicit module name. Default is derived from the first source file name. |
 | `--disasm` | Show disassembly of `.text` after linking. |
 | `--pc-rel` | Allow pc-relative addressing. |
@@ -701,6 +723,8 @@ This creates two CMake targets:
 
 - **`<name>`** — a custom target (part of `ALL`) that produces `${OUTPUT_DIR}/<name>.bin`. Intermediate files (`*.o`, `*.elf`, `*.s`) land under `${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/<name>.mkmodule`, never beside your sources.
 - **`udynlink::module::<name>`** — an INTERFACE library. Linking your firmware against it pulls in the module's build ordering and (with `GENERATE_HEADER`) the directory containing `<name>_module_data.h` as an include directory.
+
+The helper passes `-I <udynlink headers>` (`udynlink_INCLUDE_DIR` — the in-tree `udynlink/` for `add_subdirectory`/`FetchContent`, the installed `include/udynlink` for `find_package`) to every `mkmodule` invocation, so module sources can `#include "udynlink_deps_api.h"` directly. Extra include dirs for your own headers go through `BUILD_FLAGS` (e.g. `BUILD_FLAGS "-I${CMAKE_CURRENT_SOURCE_DIR}/include"`).
 
 ### Full Example (FetchContent)
 

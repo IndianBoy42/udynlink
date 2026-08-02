@@ -90,6 +90,7 @@ Additional flags:
 - `-O <level>` — optimization level (`0`, `s`, `2`, `3`, `z`; default: `s`)
 - `--bin-name <path>` — custom output binary name
 - `--build-flags=<flags>` — prepend extra compiler flags
+- `-I <dir>` / `--include-dir <dir>` — add a directory to the module compile include path (repeatable), e.g. `-I<repo>/udynlink` so module sources can `#include "udynlink_deps_api.h"` instead of pasting the dependency macros inline
 - `--mcpu <cpu>` — target CPU (default: `cortex-m4`)
 - `--target <name>` — target from the target database (default: `cortex-m4`). Supported: `cortex-m0`, `cortex-m0plus`, `cortex-m3`, `cortex-m4`, `cortex-m4f`, `cortex-m7`, `cortex-m33`, `cortex-m55`, `cortex-m85`
 - `--mod-version <ver>` — module ABI version (default: `1.0`)
@@ -180,8 +181,9 @@ The platform is selected via `-DUDYNLINK_PLATFORM=<name>` (default: `stm32f429_d
 | `udynlink.h` | Core (required) | Load, unload, symbol lookup, validation, linking primitives | Always |
 | `udynlink_externals.h` | Core (required) | `udynlink_external_malloc`, `udynlink_external_free`, `udynlink_external_vprintf`, `udynlink_external_resolve_symbol`, `udynlink_external_is_pointer_in_ram` | Always (host must implement) |
 | `udynlink_call.h` | Optional (inline) | `udynlink_func_t`, `udynlink_resolve_func()`, `UDYNLINK_CALL`, `UDYNLINK_CALL_MODULE_FUNC` | Convenient r9 save/restore around module calls |
-| `udynlink_deps.h` | Optional (separate .c) | Cross-module thunks, dependency tracking, circular detection, `UDYNLINK_REQUIRES` | Modules that call other modules |
-| `udynlink_thunk.h` | Optional (separate .c) | Thunk pool, gateway/stub allocation, `udynlink_thunk_make_call()`, `udynlink_external_find_stub()` | Creating callable function pointers for module symbols without r9 management |
+|`udynlink_deps.h`|Optional (separate .c)|Cross-module thunks, dependency tracking, circular detection, `UDYNLINK_REQUIRES`, `UDYNLINK_THUNK_EXPORT`|Modules that call other modules|
+|`udynlink_deps_api.h`|Optional (inline, module-facing)|`UDYNLINK_REQUIRES`, `UDYNLINK_THUNK_GATEWAY`, `UDYNLINK_THUNK_EXPORT` — self-contained, no host API|Module sources declaring deps / preallocated thunk exports (reached via `mkmodule -I`)|
+|`udynlink_thunk.h`|Optional (separate .c)|Thunk pool, gateway/stub allocation, `udynlink_thunk_make_call()`, `udynlink_external_find_stub()`|Creating callable function pointers for module symbols without r9 management|
 | `udynlink_hash.h` | Optional (inline) | GNU hash table + bloom filter for O(1) host symbol resolution | Hosts exporting many symbols |
 | `udynlink_trie.h` | Optional (inline) | Compact search trie for O(k) host symbol resolution | Hosts wanting prefix-sharing or no Bloom overhead |
 | `udynlink_host_utils.h` | Optional (inline) | Tiny host-side symbol cache with LRU eviction | Speeding up repeated `udynlink_external_resolve_symbol` calls |

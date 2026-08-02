@@ -90,6 +90,22 @@ function(udynlink_add_module name)
       "add_subdirectory / FetchContent / find_package first.")
   endif()
 
+  # Locate the udynlink public headers so module sources can #include them
+  # (e.g. udynlink_deps_api.h). In-tree/FetchContent consumers get it from
+  # the root CMakeLists cache entry; installed consumers from
+  # udynlinkConfig.cmake. Fall back to the sibling of scripts/ for layouts
+  # that skipped both.
+  if(NOT udynlink_INCLUDE_DIR)
+    get_filename_component(_udynlink_inc_dir "${udynlink_SCRIPTS_DIR}/../udynlink" ABSOLUTE)
+    set(udynlink_INCLUDE_DIR "${_udynlink_inc_dir}")
+  endif()
+  if(NOT EXISTS "${udynlink_INCLUDE_DIR}/udynlink_deps_api.h")
+    message(FATAL_ERROR
+      "udynlink_add_module: udynlink_INCLUDE_DIR does not point at the udynlink "
+      "headers (expected udynlink_deps_api.h next to udynlink.h): "
+      "${udynlink_INCLUDE_DIR}")
+  endif()
+
   set(_script "${udynlink_SCRIPTS_DIR}/mkmodule")
   # Intermediate artifacts stay in the build tree, never beside sources.
   set(_workdir "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/${name}.mkmodule")
@@ -118,6 +134,7 @@ function(udynlink_add_module name)
     "--workdir" "${_workdir}"
     "--bin-name" "${_bin}"
     "--module-name" "${ARG_MODULE_NAME}"
+    "-I" "${udynlink_INCLUDE_DIR}"
     "-O" "${ARG_OPT_LEVEL}"
     "--mod-version" "${ARG_MOD_VERSION}"
     "--udynlink-version" "${ARG_UDYNLINK_VERSION}")
@@ -164,12 +181,16 @@ function(udynlink_add_module name)
   add_custom_target(${name} ALL DEPENDS ${_bin})
 
   # Consumer-facing: link this to pull the module build + the header include dir.
-  # A plain-named INTERFACE target carries the build-ordering link and the
-  # include dir; a namespaced ALIAS exposes it as udynlink::module::<name>
+  # A plain-named INTERFACE target carries the build-ordering dependency and
+  # the include dir; a namespaced ALIAS exposes it as udynlink::module::<name>
   # (regular targets may not use '::' in their name, but ALIAS targets may).
+  #
+  # NOTE: the ordering edge is add_dependencies(), NOT putting the module
+  # custom target into INTERFACE_LINK_LIBRARIES — modern CMake (4.x) rejects
+  # linking UTILITY targets and older versions leak the name as a raw -l flag.
   set(_iface_tgt "_udynlink_module_${name}_iface")
   add_library(${_iface_tgt} INTERFACE)
-  target_link_libraries(${_iface_tgt} INTERFACE ${name})
+  add_dependencies(${_iface_tgt} ${name})
   if(ARG_GENERATE_HEADER)
     target_include_directories(${_iface_tgt} INTERFACE "${ARG_HEADER_OUTPUT_DIR}")
   endif()

@@ -416,6 +416,16 @@ The dependency system generates the trampoline automatically at load time:
    plus an 18-byte per-module gateway from the thunk pool. The stub loads the
    target address into `r12` and branches to the gateway, which switches `r9`
    to the callee's LOT base, calls, and restores the caller's `r9`.
+
+   If the exporting module instead declared **preallocated thunk exports**
+   (`UDYNLINK_THUNK_GATEWAY()`/`UDYNLINK_THUNK_EXPORT(fn)` — see
+   `docs/writing-modules.md` → "Preallocating Cross-Module Thunk Exports"),
+   `udynlink_dep_load()` already generated the thunks into the module's own
+   `.bss` at load time, and `udynlink_dep_resolve_func()` serves those
+   in-module thunks without touching the shared pool. After
+   `udynlink_relocate_module()`, the host must call
+   `udynlink_dep_generate_thunks()` again to re-patch the stale absolute
+   immediates inside such in-module thunks.
 3. The codec module's own externs (`pb_decode`, `pb_encode`, ...) still resolve
    as **host** symbols (step 4 of the pattern below) — the nanopb runtime
    stays host-side. Only the codec's `parse`/`write` exports are

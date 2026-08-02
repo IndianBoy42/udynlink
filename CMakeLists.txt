@@ -43,6 +43,13 @@ set(udynlink_SCRIPTS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/scripts" CACHE PATH
     "Path to udynlink scripts (mkhostsyms, mkmodule, etc.)"
 )
 
+# Public headers directory (udynlink_deps_api.h, udynlink.h, ...): used by
+# udynlink_add_module() to pass -I to mkmodule so module sources can include
+# the headers. Also resolved by udynlinkConfig.cmake for installed consumers.
+set(udynlink_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/udynlink" CACHE PATH
+    "Path to udynlink public headers"
+)
+
 # Install support
 include(GNUInstallDirs)
 install(TARGETS udynlink
@@ -66,6 +73,7 @@ install(FILES
     udynlink/udynlink_thunk.h
     udynlink/udynlink.hpp
     udynlink/udynlink_deps.h
+    udynlink/udynlink_deps_api.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/udynlink
 )
 

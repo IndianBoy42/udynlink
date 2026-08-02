@@ -45,12 +45,14 @@ This repository is the **eh2k fork** of the original udynlink project. It adds C
 - The `mkhostsyms` tool uses a `SymbolTableFormat` abstract base class; adding new formats requires subclassing and registering in the `FORMATS` dict
 
 ### Cross-Module Dependency System (`udynlink_deps`)
-- New files: `udynlink/udynlink_deps.h` (public API) and `udynlink/udynlink_deps.c` (implementation)
+- New files: `udynlink/udynlink_deps.h` (host-facing public API), `udynlink/udynlink_deps_api.h` (module-facing macros only: `UDYNLINK_REQUIRES`, `UDYNLINK_THUNK_GATEWAY`, `UDYNLINK_THUNK_EXPORT`) and `udynlink/udynlink_deps.c` (implementation)
 - Thunk pool: `udynlink_thunk_pool_t` / `udynlink_thunk_pool_init()` / `udynlink_thunk_alloc()` — bump allocator in executable RAM (now provided by `udynlink_thunk`)
 - `udynlink_external_find_stub` — weak function for stub deduplication (now provided by `udynlink_thunk`)
 - Dependency manager: `udynlink_dep_mgr_t` / `udynlink_dep_mgr_init()` — tracks loaded modules, detects circular dependencies (max depth 8)
 - Resolution helpers: `udynlink_dep_resolve_dependency()`, `udynlink_dep_resolve_func()`, `udynlink_dep_resolve_data()` — called from host's `udynlink_external_resolve_symbol()`
 - Load/unload wrappers: `udynlink_dep_load()` / `udynlink_dep_unload()` — auto-register modules, push/pop loading stack
+- Preallocated thunk exports: `UDYNLINK_THUNK_GATEWAY()`/`UDYNLINK_THUNK_EXPORT(fn)` reserve gateway/stub slots in the module's own `.bss` (`.bss.udynlink_thunk_pool`, kept via `KEEP` in `code_before_data.ld`); `udynlink_dep_generate_thunks()` (auto-called by `udynlink_dep_load`, re-callable after `udynlink_relocate_module`) eagerly fills them, and `udynlink_dep_resolve_func()` serves them before falling back to the dynamic thunk pool
+- `mkmodule` `-I`/`--include-dir` (repeatable): adds include paths to the module compile command so module sources can `#include "udynlink_deps_api.h"` instead of pasting the macros inline; the test driver passes `-I<repo>/udynlink` and `udynlink_add_module` passes the udynlink headers dir automatically
 - Thunk template: 28-byte ARM Thumb-2 inline function that saves caller's `r9`, sets callee's `r9` via `ram_base`, calls target via `blx ip`, then restores caller's `r9`
 - Uses `r12` (IP) for target function address to avoid clobbering `r0-r3` argument registers
 - Test: `tests/test-cross-module/` — validates cross-module calls between `mod_math` and `mod_app` across all load modes and optimization levels
@@ -62,6 +64,7 @@ This repository is the **eh2k fork** of the original udynlink project. It adds C
 - Gateways grow downward from pool end, stubs grow upward from pool start
 - Stub deduplication: `udynlink_external_find_stub()` — weak function, overridable for performance
 - `udynlink_thunk_make_call()` — convenience function that creates a callable thunk for a module symbol, usable without r9 management
+- Byte writers: `udynlink_thunk_write_gateway()` / `udynlink_thunk_write_stub()` — write gateway/stub bytes into a caller-owned region (no pool allocation); `udynlink_thunk_alloc_gateway()`/`udynlink_thunk_alloc_stub()` are thin wrappers around them
 - Lower-level primitives: `udynlink_thunk_pool_init()`, `udynlink_thunk_alloc()`, `udynlink_thunk_find_gateway()`, `udynlink_thunk_alloc_gateway()`, `udynlink_thunk_alloc_stub()`
 - Test: `tests/test-call-thunk/` — validates standalone call thunks across all load modes
 

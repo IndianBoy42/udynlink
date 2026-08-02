@@ -541,6 +541,7 @@ fuzz-seeds:
         local name="$1"; shift
         local src="$1"; shift
         {{python_cmd}} mkmodule --target cortex-m4 \
+            -I{{repo_root}}/udynlink \
             --workdir {{repo_root}}/tests/fuzz/_workdir \
             --bin-name {{repo_root}}/tests/fuzz/corpus/"$name".bin \
             "$src"

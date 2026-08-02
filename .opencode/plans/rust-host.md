@@ -481,6 +481,12 @@ extern "C" {
         func_addr: u32,
         gateway: *const u8,
     ) -> usize;
+    pub fn udynlink_thunk_write_gateway(dst: *mut u8, ram_base: u32);
+    pub fn udynlink_thunk_write_stub(
+        dst: *mut u8,
+        func_addr: u32,
+        gateway: *const u8,
+    ) -> usize;
     pub fn udynlink_thunk_make_call(
         pool: *mut UdynlinkThunkPool,
         p_mod: *const UdynlinkModule,
@@ -504,6 +510,7 @@ extern "C" {
     ) -> usize;
     pub fn udynlink_dep_resolve_data(mgr: *mut UdynlinkDepMgr, name: *const c_char) -> usize;
     pub fn udynlink_dep_register(mgr: *mut UdynlinkDepMgr, p_mod: *mut UdynlinkModule);
+    pub fn udynlink_dep_generate_thunks(mgr: *mut UdynlinkDepMgr, p_mod: *mut UdynlinkModule);
     pub fn udynlink_dep_load(
         mgr: *mut UdynlinkDepMgr,
         p_mod: *mut UdynlinkModule,

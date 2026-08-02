@@ -145,6 +145,38 @@ uintptr_t udynlink_thunk_alloc_stub(udynlink_thunk_pool_t *pool,
                                      uint32_t func_addr,
                                      const uint8_t *gateway);
 
+/* ─── Byte writers (no pool allocation) ────────────────────────────── */
+
+/**
+ * @brief Write an 18-byte gateway at @p dst, embedding @p ram_base.
+ *
+ * The gateway saves the caller's r9, loads the callee module's ram_base,
+ * branches to the function address left in IP (r12) by the stub, and
+ * restores r9 on return.
+ *
+ * @param dst      Destination RAM address (must be writable + executable).
+ * @param ram_base The callee module's ram_base to embed in the gateway.
+ */
+void udynlink_thunk_write_gateway(uint8_t *dst, uint32_t ram_base);
+
+/**
+ * @brief Write a 10-byte stub at @p dst and link it to a gateway.
+ *
+ * The stub loads @p func_addr into IP (r12) via movw+movt and branches to
+ * @p gateway.  Use for writing thunks into a caller-owned region (e.g. a
+ * module's preallocated .bss thunk pool) instead of the bump-allocated
+ * thunk pool.
+ *
+ * @param dst       Destination RAM address (must be writable + executable).
+ * @param func_addr Target function address (absolute).
+ * @param gateway   Gateway address the stub will branch to.
+ *
+ * @return Stub address (with Thumb bit set) on success, 0 on failure
+ *         (stub-to-gateway branch offset out of the ±2 KB range).
+ */
+uintptr_t udynlink_thunk_write_stub(uint8_t *dst, uint32_t func_addr,
+                                    const uint8_t *gateway);
+
 /* ─── Stub lookup ─────────────────────────────────────────────────── */
 
 /**

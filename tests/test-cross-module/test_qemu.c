@@ -61,6 +61,34 @@ static int test_cross_module_single(udynlink_load_mode_t mode) {
         return 0;
     }
 
+    /* mod_math declares a thunk export for math_add: the in-module stub
+     * must already be generated right after load, before any importer
+     * (mod_app) resolves it. */
+    {
+        udynlink_sym_t tsym;
+        if (udynlink_lookup_symbol(&mod_math,
+                ".udynlink.thunk_export.math_add", &tsym) == NULL) {
+            printf("eager thunk marker not found\n");
+            goto cleanup_math;
+        }
+        if (*(const uint16_t *)tsym.val == 0) {
+            udynlink_sym_t gsym;
+            printf("eager thunk slot zero (val=%08x)",
+                   (unsigned)tsym.val);
+            if (udynlink_lookup_symbol(&mod_math, "udynlink_thunk_gateway",
+                    &gsym) != NULL) {
+                printf(" gw=%08x gw0=%04x st0=%04x st1=%04x",
+                       (unsigned)gsym.val,
+                       (unsigned)*(const uint16_t *)gsym.val,
+                       (unsigned)*(const uint16_t *)tsym.val,
+                       (unsigned)*(const uint16_t *)((uint8_t *)tsym.val + 8));
+            }
+            printf("\n");
+            goto cleanup_math;
+        }
+        printf("eager thunk: OK\n");
+    }
+
     if (udynlink_dep_load(&g_dep_mgr, &mod_app, mod_app_module_data,
             NULL, 0, mode, &g_thunk_pool) != UDYNLINK_OK) {
         printf("mod_app load failed\n");
@@ -139,6 +167,16 @@ static int test_cross_module_single(udynlink_load_mode_t mode) {
         }
         printf("call_math(10, 20): sum=30, prod=200\n");
     }
+
+    /* math_add was served from mod_math's in-module thunk (0 pool bytes);
+     * only math_mul's stub landed in the dynamic pool (10 bytes — its
+     * 18-byte gateway is counted in gateway_top, not used). */
+    if (g_thunk_pool.used != 10) {
+        printf("pool used = %d, expected 10\n", (int)g_thunk_pool.used);
+        ok = 0;
+        goto cleanup_app;
+    }
+    printf("pool used = 10\n");
 
     printf("cross-module thunks: OK\n");
     ok = 1;

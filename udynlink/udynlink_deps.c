@@ -137,6 +137,49 @@ void udynlink_dep_register(udynlink_dep_mgr_t *mgr,
     register_module(mgr, p_mod);
 }
 
+void udynlink_dep_generate_thunks(udynlink_dep_mgr_t *mgr,
+                                  udynlink_module_t *p_mod) {
+    (void)mgr;
+    if (p_mod == NULL || p_mod->p_header == NULL) return;
+
+    /* A module without a gateway slot declares no thunk exports. */
+    udynlink_sym_t gw;
+    if (udynlink_lookup_symbol(p_mod, "udynlink_thunk_gateway", &gw) == NULL) {
+        return;
+    }
+    if (gw.type != UDYNLINK_SYM_TYPE_EXPORTED ||
+        gw.location != UDYNLINK_SYM_LOCATION_DATA) {
+        return;
+    }
+
+    uint8_t *gateway = (uint8_t *)gw.val;
+    udynlink_thunk_write_gateway(gateway, (uint32_t)p_mod->ram_base);
+
+    size_t count = udynlink_get_symbol_count(p_mod);
+    for (size_t i = 0; i < count; i++) {
+        udynlink_sym_t s;
+        if (udynlink_get_symbol(p_mod, i, &s) == NULL) continue;
+        if (s.type != UDYNLINK_SYM_TYPE_EXPORTED ||
+            s.location != UDYNLINK_SYM_LOCATION_DATA) continue;
+        if (s.name == NULL) continue;
+        /* memcmp, not strncmp: arm-none-eabi-gcc 15 miscompiles
+         * strncmp(s, const, strlen(const)) into a 2-arg strcmp, which fails
+         * for names longer than the prefix. */
+        if (memcmp(s.name, UDYNLINK_THUNK_EXPORT_PREFIX,
+                   UDYNLINK_THUNK_EXPORT_PREFIX_LEN) != 0) continue;
+
+        const char *fn = s.name + UDYNLINK_THUNK_EXPORT_PREFIX_LEN;
+        udynlink_sym_t fsym;
+        if (udynlink_lookup_symbol(p_mod, fn, &fsym) == NULL) continue;
+        if (fsym.location != UDYNLINK_SYM_LOCATION_CODE) continue;
+
+        /* Slots and gateway are co-located in one small .bss section, so
+         * the stub->gateway b.n branch is always in range. */
+        udynlink_thunk_write_stub((uint8_t *)s.val, (uint32_t)fsym.val,
+                                  gateway);
+    }
+}
+
 uintptr_t udynlink_dep_resolve_func(udynlink_dep_mgr_t *mgr,
                                     udynlink_thunk_pool_t *pool,
                                     const char *name) {
@@ -150,6 +193,27 @@ uintptr_t udynlink_dep_resolve_func(udynlink_dep_mgr_t *mgr,
         if (udynlink_lookup_symbol(p_mod, name, &sym) == NULL) continue;
 
         if (sym.location == UDYNLINK_SYM_LOCATION_DATA) continue;
+
+        /* Serve pre-generated in-module thunks first: if this module
+         * declared a thunk export for `name`, its stub slot was already
+         * filled by udynlink_dep_generate_thunks() at load time.  A zeroed
+         * slot means generation skipped it (function not exported), so it
+         * falls through to the dynamic pool. */
+        char mname[UDYNLINK_THUNK_EXPORT_PREFIX_LEN + UDYNLINK_DEP_MAX_NAME + 1];
+        size_t name_len = strlen(name);
+        if (name_len > 0 && name_len <= UDYNLINK_DEP_MAX_NAME) {
+            memcpy(mname, UDYNLINK_THUNK_EXPORT_PREFIX,
+                   UDYNLINK_THUNK_EXPORT_PREFIX_LEN);
+            memcpy(mname + UDYNLINK_THUNK_EXPORT_PREFIX_LEN, name,
+                   name_len + 1);
+            udynlink_sym_t tsym;
+            if (udynlink_lookup_symbol(p_mod, mname, &tsym) != NULL &&
+                tsym.type == UDYNLINK_SYM_TYPE_EXPORTED &&
+                tsym.location == UDYNLINK_SYM_LOCATION_DATA &&
+                *(const uint16_t *)tsym.val != 0) {
+                return tsym.val | 1u;
+            }
+        }
 
         uint32_t ram_base = (uint32_t)p_mod->ram_base;
         uint32_t func_addr = (uint32_t)sym.val;
@@ -217,6 +281,11 @@ udynlink_error_t udynlink_dep_load(udynlink_dep_mgr_t *mgr,
     }
 
     register_module(mgr, p_mod);
+
+    /* Eagerly generate in-module thunks for the module's declared thunk
+     * exports so importers can resolve them without the dynamic pool.
+     * No-op for modules without a udynlink_thunk_gateway slot. */
+    udynlink_dep_generate_thunks(mgr, p_mod);
 
     if (mod_name != NULL) pop_loading(mgr);
 

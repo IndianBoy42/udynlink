@@ -29,6 +29,10 @@
 #ifndef __UDYNLINK_DEPS_H__
 #define __UDYNLINK_DEPS_H__
 
+/* Module-facing macros (UDYNLINK_REQUIRES, UDYNLINK_THUNK_GATEWAY,
+ * UDYNLINK_THUNK_EXPORT) live in udynlink_deps_api.h so module sources
+ * can include that single self-contained header instead of this one. */
+#include "udynlink_deps_api.h"
 #include "udynlink_thunk.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -49,36 +53,15 @@ extern "C" {
 /* Maximum depth of the circular-dependency detection stack. */
 #define UDYNLINK_DEP_MAX_DEPTH          8
 
-/* ─── Module writer API ─────────────────────────────────────────────── */
-
-/**
- * @brief Declare a dependency on another module.
- *
- * Emits a GOT-referenced extern symbol named
- * ".udynlink.mod.requires.{mod_name}" plus a dummy function that
- * forces the compiler to emit an R_ARM_GOT_BREL (LOT) relocation for
- * the symbol. This ensures:
- *
- * - The core loader's external symbol resolver processes it via
- *   udynlink_external_resolve_symbol()
- * - mkmodule places the relocation before function EXTERN relocations
- *   so the dependency is resolved first, enabling auto-loading
- * - --gc-sections keeps the symbol alive via the linked section
- *
- * @param mod_name Identifier of the required module (not a string).
- *
- * @note This macro does not require any header includes beyond
- *       stdint.h/stddef.h. It uses only compiler built-in attributes
- *       and asm labels.
- */
-#define UDYNLINK_REQUIRES(mod_name) \
-    typedef void (*_udynlink_dep_fn_##mod_name)(void); \
-    _udynlink_dep_fn_##mod_name _udynlink_dep_##mod_name \
-        __asm__(".udynlink.mod.requires." #mod_name); \
-    __attribute__((used)) void _udynlink_dep_ref_##mod_name(void) { \
-        volatile _udynlink_dep_fn_##mod_name f = _udynlink_dep_##mod_name; \
-        (void)f; \
-    }
+/* Guard the thunk-export slot literals (18/10) in udynlink_deps_api.h
+ * against udynlink_thunk.h size changes. */
+#ifdef __cplusplus
+static_assert(UDYNLINK_GATEWAY_SIZE == 18 && UDYNLINK_STUB_SIZE == 10,
+              "thunk-export macro sizes must track udynlink_thunk.h");
+#else
+_Static_assert(UDYNLINK_GATEWAY_SIZE == 18 && UDYNLINK_STUB_SIZE == 10,
+               "thunk-export macro sizes must track udynlink_thunk.h");
+#endif
 
 /* ─── Dependency manager ───────────────────────────────────────────── */
 
@@ -227,6 +210,31 @@ uintptr_t udynlink_dep_resolve_data(udynlink_dep_mgr_t *mgr,
  */
 void udynlink_dep_register(udynlink_dep_mgr_t *mgr,
                            udynlink_module_t *p_mod);
+
+/**
+ * @brief Eagerly generate the in-module thunks of a module's declared
+ *        thunk exports.
+ *
+ * Modules declare thunk exports with UDYNLINK_THUNK_GATEWAY() +
+ * UDYNLINK_THUNK_EXPORT(fn), which reserve stub slots in the module's
+ * own .bss.  This function writes the gateway (18 bytes, ram_base
+ * patched in) and one stub (10 bytes) per declared export into those
+ * slots, so cross-module importers can be served without touching the
+ * dynamic thunk pool.
+ *
+ * Called automatically by udynlink_dep_load() right after the module is
+ * registered; a no-op for modules without a "udynlink_thunk_gateway"
+ * symbol.  It is idempotent and public so the host can re-run it after
+ * udynlink_relocate_module(): the move preserves the PC-relative
+ * stub->gateway branches, but the absolute immediates (the gateway's
+ * ram_base literal and each stub's function address in COPY_ALL /
+ * COPY_TEXT_DATA) go stale and must be re-patched.
+ *
+ * @param mgr   Dependency manager the module is registered in.
+ * @param p_mod Loaded module handle.
+ */
+void udynlink_dep_generate_thunks(udynlink_dep_mgr_t *mgr,
+                                  udynlink_module_t *p_mod);
 
 /* ─── Module load / unload with dependency tracking ─────────────────── */
 

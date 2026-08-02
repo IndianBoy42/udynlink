@@ -158,6 +158,7 @@ All optional features are separate headers that compile and link only if include
 |--------|----------|-------------------|
 | `udynlink_call.h` | `udynlink_func_t`, `UDYNLINK_CALL`, `UDYNLINK_CALL_MODULE_FUNC` | Zero (header-only inline) |
 | `udynlink_deps.h` | Cross-module thunks, dependency tracking, circular detection | Zero (separate `.c`, not linked) |
+| `udynlink_deps_api.h` | Module-facing half of the dependency system: `UDYNLINK_REQUIRES`, `UDYNLINK_THUNK_GATEWAY`, `UDYNLINK_THUNK_EXPORT` (self-contained; included by module sources via `mkmodule -I`) | Zero (header-only, not linked) |
 | `udynlink_hash.h` | GNU hash table + bloom filter for O(1) host symbol resolution | Zero (separate `.h`, not linked) |
 | `udynlink_host_utils.h` | Tiny host-side symbol cache with LRU eviction | Zero (header-only inline) |
 | `udynlink_cpp_abi.h` | Weak stubs + resolver for the C++ ABI symbols (`operator delete`, `__cxa_pure_virtual`, ...) referenced by loadable C++ modules | Zero (header-only inline) |

@@ -1225,6 +1225,8 @@ Internal macro used by the loader to emit debug messages. Not intended for host 
 
 The `udynlink/udynlink_deps.h` header provides an optional standalone layer for cross-module function calls and dependency tracking. It is designed to be used on top of the core loader without modifying it. Hosts that do not need cross-module linking can omit this header entirely.
 
+The **module-facing** macros (`UDYNLINK_REQUIRES`, `UDYNLINK_THUNK_GATEWAY`, `UDYNLINK_THUNK_EXPORT`) live in `udynlink/udynlink_deps_api.h`, a self-contained header (standard headers only) that module sources include instead of this one. `udynlink_deps.h` re-exports it for host code that wants both halves.
+
 ### Dependency Prefix Macros
 
 | Macro | Value | Description |
@@ -1411,6 +1413,41 @@ Resolves a cross-module function symbol by searching all registered dependency m
 
 - Thunk address on success.
 - `0` if the symbol is not found in any dependency module or the pool is exhausted.
+
+**Resolution order:** For each registered module that defines `name` as a code
+symbol, the resolver first serves a **pre-generated in-module thunk** if the
+module declared one via `UDYNLINK_THUNK_EXPORT(name)` (see
+`docs/writing-modules.md` → "Preallocating Cross-Module Thunk Exports"); only
+if no such thunk exists does it fall back to allocating a stub in the shared
+dynamic thunk pool. The dynamic pool therefore acts as a fallback for exports
+the module did not preallocate.
+
+### `udynlink_dep_generate_thunks`
+
+```c
+void udynlink_dep_generate_thunks(udynlink_dep_mgr_t *mgr,
+                                  udynlink_module_t *p_mod);
+```
+
+Eagerly writes the in-module thunks of a module's declared thunk exports
+(`UDYNLINK_THUNK_GATEWAY()` + `UDYNLINK_THUNK_EXPORT(fn)`) into the module's
+own `.bss`, so importers are served without touching the dynamic thunk pool.
+Called automatically by `udynlink_dep_load()` right after the module is
+registered; a no-op for modules without a `udynlink_thunk_gateway` symbol.
+Idempotent.
+
+**Post-relocate contract:** after `udynlink_relocate_module()` moves the
+module's RAM, the absolute immediates inside its in-module thunks go stale
+(the gateway's `ram_base` literal, and each stub's function address in
+`COPY_ALL`/`COPY_TEXT_DATA`; the PC-relative `b.n` branches survive). The
+host must call `udynlink_dep_generate_thunks()` again to re-patch them.
+
+**Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `mgr` | Dependency manager the module is registered in. |
+| `p_mod` | Loaded module handle. |
 
 ### `udynlink_dep_resolve_data`
 
@@ -1630,6 +1667,45 @@ Using `r12` (IP) for the function address preserves `r0-r3` (argument registers)
 | `gateway` | Gateway address the stub will branch to. |
 
 **Return value:** Stub address (with Thumb bit set) on success, `0` on failure (pool full or stub-to-gateway branch offset exceeds the ±2 KB range of `b.n`).
+
+### `udynlink_thunk_write_gateway`
+
+```c
+void udynlink_thunk_write_gateway(uint8_t *dst, uint32_t ram_base);
+```
+
+Writes an 18-byte gateway at `dst` (embedding `ram_base`) without allocating
+from a thunk pool. Used to generate thunks into a caller-owned region, e.g. a
+module's preallocated `.bss` thunk pool (`udynlink_dep_generate_thunks`).
+
+**Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `dst` | Destination RAM address (writable + executable). |
+| `ram_base` | The callee module's `ram_base` to embed in the gateway. |
+
+### `udynlink_thunk_write_stub`
+
+```c
+uintptr_t udynlink_thunk_write_stub(uint8_t *dst, uint32_t func_addr,
+                                    const uint8_t *gateway);
+```
+
+Writes a 10-byte stub at `dst` and links it to `gateway` (loads `func_addr`
+into `r12`, branches to the gateway) without allocating from a thunk pool.
+`udynlink_thunk_alloc_gateway()`/`udynlink_thunk_alloc_stub()` are thin
+wrappers around these writers plus pool allocation.
+
+**Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `dst` | Destination RAM address (writable + executable). |
+| `func_addr` | Target function address (absolute). |
+| `gateway` | Gateway address the stub will branch to. |
+
+**Return value:** Stub address (with Thumb bit set) on success, `0` on failure (stub-to-gateway branch offset exceeds the ±2 KB range of `b.n`).
 
 ### `udynlink_external_find_stub`
 

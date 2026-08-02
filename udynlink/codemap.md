@@ -50,8 +50,11 @@ Core C library implementing a micro dynamic linker for ARM Cortex-M MCUs. Handle
 | `udynlink.h` | Public API: data structures, error codes, function declarations. |
 | `udynlink.c` | Core implementation: load, unload, relocate, resolve, lookup, debug, `udynlink_cpp_init`. |
 | `udynlink_externals.h` | Host firmware contract: 5 functions the host MUST implement. |
-| `udynlink_thunk.h` | Thunk pool API: pool init, gateway/stub allocation, make_call, find_stub. |
-| `udynlink_thunk.c` | Thunk pool implementation: runtime-generated ARM thunks, gateway/stub templates. |
+| `udynlink_thunk.h` | Thunk pool API: pool init, gateway/stub allocation, byte writers, make_call, find_stub. |
+| `udynlink_thunk.c` | Thunk pool implementation: runtime-generated ARM thunks, gateway/stub templates, `udynlink_thunk_write_gateway`/`write_stub` byte writers. |
+| `udynlink_deps.h` | Host-facing dependency system: dep manager, resolution helpers, `udynlink_dep_generate_thunks`. Includes `udynlink_deps_api.h` (module macros) + `udynlink_thunk.h`. |
+| `udynlink_deps_api.h` | Module-facing dependency API, self-contained (standard headers only): `UDYNLINK_REQUIRES`, `UDYNLINK_THUNK_GATEWAY`, `UDYNLINK_THUNK_EXPORT`, `UDYNLINK_DEP_MAX_NAME`. Included by module sources (via `mkmodule -I`); never by host code. |
+| `udynlink_deps.c` | Dependency manager implementation: registration, circular detection, resolution helpers, eager thunk generation. |
 
 ## API Additions (eh2k fork)
 - `udynlink_cpp_init(udynlink_module_t*)`: Runs C++ global constructors via `__init_array`.

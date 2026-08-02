@@ -183,7 +183,10 @@ def test_one(full_path, opt):
     for m in test_data["modules"]:
         srcs = " ".join(m)
         extra_module_args = test_data.get("mkmodule_args", "")
-        compile_cmd = '%s ../../scripts/mkmodule --disasm --gen-c-header --header-path .%s%%s%%s %%s' % (sys.executable, module_target_flag)
+        # Modules may #include udynlink headers (e.g. udynlink_deps_api.h);
+        # the include path points at the repo's udynlink/ directory.
+        include_flag = "-I%s" % os.path.join(repo_root, "udynlink")
+        compile_cmd = '%s ../../scripts/mkmodule --disasm --gen-c-header --header-path . %s%s%%s%%s %%s' % (sys.executable, include_flag, module_target_flag)
         cmd = compile_cmd % ("" if opt else "-O3 ", extra_module_args, srcs)
         res, out = run_cmd(cmd, show_output=False)
         out = out.decode()

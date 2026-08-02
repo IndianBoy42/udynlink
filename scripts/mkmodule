@@ -89,6 +89,11 @@ def compile(src_name, args, public_symbols, macros=[]):
     # docs/thread-safety.md). Same for -fexceptions, -frtti, etc.
     if args.build_flags is not None:
         compile_data["extra"] += " " + args.build_flags
+    # First-class include paths (-I / --include-dir) land after --build-flags
+    # so a conflicting -I in build flags wins (it is searched first); the
+    # order of repeated -I flags themselves is preserved.
+    if args.include_dirs:
+        compile_data["extra"] += " " + " ".join("-I" + d for d in args.include_dirs)
     debug("Compiling '%s'" % src_name, args)
     execute(get_tool("gcc") + " " + compile_cmd.format(**compile_data), args)
     object_files += [main_obj]
@@ -621,6 +626,12 @@ parser.add_argument("--gen-c-header", dest="gen_c_header", action="store_true", 
 parser.add_argument("--header-path", dest="header_path", default=".", help="Path for the generated header (default: current dir)")
 parser.add_argument("--module-name", dest="name", default=None, help="Module name (default is inferred from the name of first source)")
 parser.add_argument("--build-flags", dest="build_flags", default=None)
+parser.add_argument("-I", "--include-dir", dest="include_dirs", action="append",
+    default=[], metavar="DIR",
+    help="Add DIR to the module compile include path (repeatable). Module "
+         "sources can then #include udynlink headers (e.g. "
+         "udynlink_deps_api.h) without pasting macros inline. Applies to "
+         "module sources only, after --build-flags.")
 parser.add_argument("--public-symbols", dest="public_symbols", default=None)
 parser.add_argument("--bin-name", dest="bin_name", default=None)
 parser.add_argument("--mcpu", dest="mcpu", default="cortex-m4", help="Target CPU (default: cortex-m4)")

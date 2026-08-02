@@ -42,6 +42,9 @@ SECTIONS
     . = ALIGN(4);
     *(.bss)
     *(.bss*)
+    /* Thunk-export stub/gateway slots (UDYNLINK_THUNK_EXPORT).
+     * Unreferenced, so KEEP is required to survive --gc-sections. */
+    KEEP(*(.bss.udynlink_thunk_pool))
     . = ALIGN(4);
   } > all
 

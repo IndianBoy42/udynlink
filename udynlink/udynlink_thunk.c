@@ -166,6 +166,32 @@ void *udynlink_thunk_alloc(udynlink_thunk_pool_t *pool, size_t n) {
     return p;
 }
 
+/* ─── Byte writers (no pool allocation) ────────────────────────────── */
+
+void udynlink_thunk_write_gateway(uint8_t *dst, uint32_t ram_base) {
+    memcpy(dst, gateway_template, UDYNLINK_GATEWAY_SIZE);
+    memcpy(dst + GATEWAY_RAM_BASE_OFF, &ram_base, sizeof(uint32_t));
+}
+
+uintptr_t udynlink_thunk_write_stub(uint8_t *dst, uint32_t func_addr,
+                                    const uint8_t *gateway_addr) {
+    encode_movw_ip(dst, (uint16_t)(func_addr & 0xFFFF));
+    encode_movt_ip(dst + 4, (uint16_t)((func_addr >> 16) & 0xFFFF));
+
+    /* b.n from stub's offset+8 to gateway.
+     * The b.n is at dst+8.  PC = dst+8+4 = dst+12.
+     * offset = gateway_addr - (dst + 12), in halfwords. */
+    intptr_t byte_offset = (intptr_t)gateway_addr - (intptr_t)(dst + 12);
+    int16_t hw_offset = (int16_t)(byte_offset / 2);
+
+    if (hw_offset < -1024 || hw_offset > 1023) {
+        return 0;
+    }
+
+    encode_b_n(dst + 8, hw_offset);
+    return (uintptr_t)dst | 1;
+}
+
 /* ─── Gateway / stub allocation ────────────────────────────────────── */
 
 uint8_t *udynlink_thunk_find_gateway(const udynlink_thunk_pool_t *pool,
@@ -190,8 +216,7 @@ uint8_t *udynlink_thunk_alloc_gateway(udynlink_thunk_pool_t *pool,
     }
     pool->gateway_top -= UDYNLINK_GATEWAY_SIZE;
     uint8_t *g = pool->base + pool->gateway_top;
-    memcpy(g, gateway_template, UDYNLINK_GATEWAY_SIZE);
-    memcpy(g + GATEWAY_RAM_BASE_OFF, &ram_base, sizeof(uint32_t));
+    udynlink_thunk_write_gateway(g, ram_base);
     return g;
 }
 
@@ -201,21 +226,11 @@ uintptr_t udynlink_thunk_alloc_stub(udynlink_thunk_pool_t *pool,
     uint8_t *s = (uint8_t *)udynlink_thunk_alloc(pool, UDYNLINK_STUB_SIZE);
     if (s == NULL) return 0;
 
-    encode_movw_ip(s, (uint16_t)(func_addr & 0xFFFF));
-    encode_movt_ip(s + 4, (uint16_t)((func_addr >> 16) & 0xFFFF));
-
-    /* b.n from stub's offset+8 to gateway.
-     * The b.n is at s+8.  PC = s+8+4 = s+12.
-     * offset = gateway_addr - (s + 12), in halfwords. */
-    intptr_t byte_offset = (intptr_t)gateway_addr - (intptr_t)(s + 12);
-    int16_t hw_offset = (int16_t)(byte_offset / 2);
-
-    if (hw_offset < -1024 || hw_offset > 1023) {
+    if (udynlink_thunk_write_stub(s, func_addr, gateway_addr) == 0) {
         pool->used -= UDYNLINK_STUB_SIZE;
         return 0;
     }
 
-    encode_b_n(s + 8, hw_offset);
     return (uintptr_t)s | 1;
 }
 

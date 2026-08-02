@@ -13,6 +13,7 @@ Build toolchain for compiling C/C++ source into `udynlink` loadable module image
 ## Data & Control Flow
 1. **Compile** (`compile` in `mkmodule`):
    - Invoke `arm-none-eabi-gcc` with position-independent flags (`-fPIE`, `-msingle-pic-base`, `-ffunction-sections`, `-fdata-sections`).
+   - Repeatable `-I`/`--include-dir` args (appended after `--build-flags`) add include paths so module sources can `#include` udynlink headers like `udynlink_deps_api.h`.
    - For C++ sources: add `-fno-exceptions -fno-rtti -fno-use-cxa-atexit` and compile `cpp_init_fini.c` for `__init_array` support.
    - Wrap exported functions: rename originals with MD5 prefix, generate prologue assembly that loads `r9` from fixed address `0x20000000` (see `asm_template.tmpl`), then branches to the wrapped function.
    - Assemble prologue into a second object file.

@@ -269,7 +269,7 @@ Tests that load more than one module must use `test_load_module()` and `test_unl
 
 The dependency system is validated by a family of tests, all exercising all three load modes (COPY_ALL, COPY_TEXT_DATA, XIP) at both `-O3` and `-Os`:
 
-- `test-cross-module` — loads `mod_math` and `mod_app`, verifies `mod_app` can call functions exported by `mod_math` via gateway/stub thunks. Uses `udynlink_dep_load()`, `udynlink_dep_unload()`, and a custom `test_resolve_symbol()` that delegates to `udynlink_dep_resolve_func()` and `udynlink_dep_resolve_data()`.
+- `test-cross-module` — loads `mod_math` and `mod_app`, verifies `mod_app` can call functions exported by `mod_math` via gateway/stub thunks. Uses `udynlink_dep_load()`, `udynlink_dep_unload()`, and a custom `test_resolve_symbol()` that delegates to `udynlink_dep_resolve_func()` and `udynlink_dep_resolve_data()`. `mod_math` declares a preallocated thunk export for `math_add` (`UDYNLINK_THUNK_GATEWAY()`/`UDYNLINK_THUNK_EXPORT`), so the test asserts both new behaviors: the in-module thunk exists right after load (before any importer) and `math_add` is served from it while undeclared `math_mul` still falls back to the dynamic pool (`pool used = 10`).
 - `test-dep-auto-load` — verifies automatic dependency loading via `udynlink_external_dep_load()` when a required module is not yet registered.
 - `test-dep-stub-dedup` — two modules importing the same function share a single stub; asserts the exact pool accounting (`pool used = 10`).
 - `test-dep-circular` — circular dependencies (`mod_a` requires `mod_b` and vice versa) are deferred via `UDYNLINK_SYM_DEFERRED` and both modules still load.
@@ -444,7 +444,7 @@ If a test fails, read `output_test_Os.txt` (or `output_test_O3.txt`) to see the 
 3. **Create isolated working directories** so parallel test suites do not collide:
    - `tests/build_<platform>_<test>_<opt>/` — CMake build directory.
    - `tests/build_<platform>_<test>_<opt>_src/` — copied source files and module build artifacts.
-4. **Compile modules** by invoking `../../scripts/mkmodule` inside the isolated src directory. Generates `.bin`, `.elf`, and `*_module_data.h`.
+4. **Compile modules** by invoking `../../scripts/mkmodule` inside the isolated src directory, passing `-I<repo>/udynlink` so module sources can `#include` udynlink headers (e.g. `udynlink_deps_api.h`). Generates `.bin`, `.elf`, and `*_module_data.h`.
 5. **Run objdump** on the module ELF and save disassembly to `output_objdump_*.txt`.
 6. **Configure and build** the QEMU host firmware via CMake, pointing `UDYNLINK_TEST_SRC_DIR` at the isolated src directory.
 7. **Launch QEMU** with the freshly built `test1.elf`, using the platform-specific QEMU command line built by `build_qemu_cmd()`.
