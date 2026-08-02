@@ -99,6 +99,16 @@ class TestProto2Module:
         assert exported == ["parse_alpha", "parse_beta",
                             "write_alpha", "write_beta"]
 
+    def test_export_prefix_disambiguates_modules(self, tmp_path):
+        """--export-prefix gives each codec module unique export names so
+        several modules can coexist in the deps layer (which resolves by
+        bare name, first match wins)."""
+        out = _run_pipeline(tmp_path, SIMPLE_PROTO, "--export-prefix", "tele")
+        mod = parse_module((out / "telemetry_mod.bin").read_bytes())
+        exported = sorted(s.name for s in mod.symbols
+                          if s.type_name == "EXPORTED" and s.name)
+        assert exported == ["tele_parse", "tele_write"]
+
     def test_ambiguous_proto_requires_struct(self, tmp_path):
         proto = tmp_path / "multi.proto"
         proto.write_text(TWO_MSG_PROTO)

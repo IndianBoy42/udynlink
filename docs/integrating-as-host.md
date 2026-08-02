@@ -421,6 +421,15 @@ The dependency system generates the trampoline automatically at load time:
    stays host-side. Only the codec's `parse`/`write` exports are
    module-to-module calls.
 
+**Exports are not namespaced.** A module's exports are bare C names;
+`udynlink_dep_resolve_func()`/`udynlink_dep_resolve_data()` return the first
+match in the dependency registry (load order) and do not detect ambiguity.
+Since every protobuf codec module exports the same `parse`/`write`, loading
+several codec modules and calling them from another module would resolve all
+references to the **first loaded** module. Build each codec module with
+`scripts/proto2module --export-prefix <pfx>` (unique per module) so exports
+become `<pfx>_parse`/`<pfx>_write` — see [Protobuf Modules](protobuf-modules.md).
+
 Thunk-pool sizing must account for cross-module codec references: 10 bytes
 per referenced export plus 18 bytes per callee module (see "Thunk Pool
 Sizing" below), not the module image sizes.

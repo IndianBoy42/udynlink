@@ -153,6 +153,13 @@ def main():
                          "only message")
     ap.add_argument("--module-name", help="udynlink module name "
                     "(default: <proto_basename>_mod)")
+    ap.add_argument("--export-prefix", metavar="PFX", default="",
+                    help="prefix for the exported function names "
+                    "(<PFX>_parse/<PFX>_write, or <PFX>_parse_<cname> in "
+                    "multi-struct mode). Needed when several codec modules "
+                    "are loaded together and call each other: deps-layer "
+                    "resolution is by bare name and first match wins, so "
+                    "every module must export unique names.")
     ap.add_argument("--out-dir", help="output directory for generated files "
                     "and the .bin (default: next to the .proto)")
     ap.add_argument("--target", default="cortex-m4",
@@ -212,9 +219,11 @@ def main():
                      % (s, ", ".join(all_msgs)))
 
     def pair(cname):
+        pre = args.export_prefix + "_" if args.export_prefix else ""
         if len(structs) == 1:
-            return "parse", "write"
-        return ("parse_%s" % cname.lower(), "write_%s" % cname.lower())
+            return pre + "parse", pre + "write"
+        return (pre + "parse_%s" % cname.lower(),
+                pre + "write_%s" % cname.lower())
 
     # 3. Generate the wrapper .c and the host-side API header.
     wrapper = os.path.join(out_dir, proto_base + "_mod.c")

@@ -49,6 +49,10 @@ python3 scripts/proto2module --struct SensorReading proto/sensor.proto
 # several structs in one module (exports parse_<name>/write_<name>)
 python3 scripts/proto2module --struct Alpha --struct Beta proto/multi.proto
 
+# unique export names when several codec modules are loaded together
+# (exports become <pfx>_parse/<pfx>_write)
+python3 scripts/proto2module --struct SensorReading --export-prefix sensor proto/sensor.proto
+
 # with an embeddable C array header for the host firmware
 python3 scripts/proto2module --struct SensorReading --gen-c-header proto/sensor.proto
 ```
@@ -122,6 +126,17 @@ resolver use `udynlink_dep_resolve_func()` — it generates a per-function stub
 (10 B) + per-module gateway (18 B) from the thunk pool that switches `r9`
 around the call. See [Host Guide — Integrating the Dependency System]
 (integrating-as-host.md#integrating-the-dependency-system-udynlink_deps).
+
+**Exports are not namespaced.** Module exports are bare C names, and the deps
+layer resolves cross-module references by name with **first-match-wins** over
+the registry in load order — no ambiguity detection. Every codec module
+exports the same `parse`/`write` (or `parse_<cname>`/`write_<cname>` in
+multi-struct mode), so if several codec modules are loaded together and call
+each other, all references resolve to the **first loaded** module. Pass
+`--export-prefix <pfx>` to each module (unique per module, e.g. its name) so
+its exports become `<pfx>_parse`/`<pfx>_write` and cannot collide. Host-side
+calls via `udynlink_lookup_symbol(p_mod, ...)` are unaffected — the module
+handle disambiguates.
 
 ## Overhead
 
