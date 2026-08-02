@@ -267,7 +267,14 @@ Tests that load more than one module must use `test_load_module()` and `test_unl
 
 ### Cross-Module Test
 
-The `test-cross-module` test validates the `udynlink_deps` dependency system. It loads two modules (`mod_math` and `mod_app`) and verifies that `mod_app` can call functions exported by `mod_math` via inline thunks. The test uses `udynlink_dep_load()`, `udynlink_dep_unload()`, and a custom `test_resolve_symbol()` that delegates to `udynlink_dep_resolve_func()` and `udynlink_dep_resolve_data()`. It exercises all three load modes (COPY_ALL, COPY_TEXT_DATA, XIP) at both `-O3` and `-Os`.
+The dependency system is validated by a family of tests, all exercising all three load modes (COPY_ALL, COPY_TEXT_DATA, XIP) at both `-O3` and `-Os`:
+
+- `test-cross-module` — loads `mod_math` and `mod_app`, verifies `mod_app` can call functions exported by `mod_math` via gateway/stub thunks. Uses `udynlink_dep_load()`, `udynlink_dep_unload()`, and a custom `test_resolve_symbol()` that delegates to `udynlink_dep_resolve_func()` and `udynlink_dep_resolve_data()`.
+- `test-dep-auto-load` — verifies automatic dependency loading via `udynlink_external_dep_load()` when a required module is not yet registered.
+- `test-dep-stub-dedup` — two modules importing the same function share a single stub; asserts the exact pool accounting (`pool used = 10`).
+- `test-dep-circular` — circular dependencies (`mod_a` requires `mod_b` and vice versa) are deferred via `UDYNLINK_SYM_DEFERRED` and both modules still load.
+- `test-dep-data` — cross-module data variables resolve via `udynlink_dep_resolve_data()` without thunks.
+- `test-dep-missing` — an unsatisfied dependency fails the load with `UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL`.
 
 ## How to Add a New QEMU Platform
 

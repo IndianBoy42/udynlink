@@ -240,7 +240,7 @@ int math_add(int a, int b) { return a + b; }
 int math_mul(int a, int b) { return a * b; }
 ```
 
-At load time, the host's `udynlink_external_resolve_symbol()` callback locates the target module and allocates a small thunk (28 bytes) that switches `r9` to the callee module's LOT base before calling the function. From the module author's perspective, this is transparent — the call looks like a normal function call.
+At load time, the host's `udynlink_external_resolve_symbol()` callback locates the target module and allocates a 10-byte stub (plus one shared 18-byte gateway per callee module) from the thunk pool. The stub loads the function address into `r12` (IP) and branches to the gateway, which switches `r9` to the callee module's LOT base before calling the function. From the module author's perspective, this is transparent — the call looks like a normal function call.
 
 ### Declaring Explicit Dependencies
 

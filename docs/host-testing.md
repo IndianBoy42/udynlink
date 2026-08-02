@@ -238,10 +238,10 @@ thunks, no r9 switching — just a normal function call. This validates that
 `mod_app` calls the right function with the right arguments.
 
 > **What this does NOT test:** The udynlink thunk mechanism that makes
-> cross-module calls work on target (28-byte ARM stubs that switch `r9` to the
-> callee's LOT base). That is a loader concern validated by the [QEMU
-> cross-module test](testing.md#cross-module-test). Host cross-module tests
-> validate **logic only**.
+> cross-module calls work on target (10-byte stubs + 18-byte gateways that
+> switch `r9` to the callee's LOT base). That is a loader concern validated by
+> the [QEMU cross-module tests](testing.md#cross-module-test). Host
+> cross-module tests validate **logic only**.
 
 The `UDYNLINK_REQUIRES(math)` macro expands to an `extern` symbol with a special
 section name (`.udynlink.mod.requires.math`). On host this symbol is **dormant**:

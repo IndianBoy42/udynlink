@@ -628,38 +628,27 @@ In ABI v3.0, every module has its own LOT base address in `r9`. When module A ca
 1. The callee (module B) needs its own `r9` to access its LOT.
 2. The caller (module A) needs its original `r9` restored after the call.
 
-Direct function pointers cannot solve this because a single `r9` value cannot serve two modules simultaneously. The `udynlink_deps` optional layer solves this by generating small inline **thunks** in executable RAM at load time.
+Direct function pointers cannot solve this because a single `r9` value cannot serve two modules simultaneously. The `udynlink_deps` optional layer solves this by generating small **thunks** in executable RAM at load time, using a two-level dispatch: one per-module **gateway** (18 bytes) plus one per-function **stub** (10 bytes).
 
 ### The Thunk Template
 
-Each cross-module function reference gets a 28-byte inline thunk allocated from a host-provided thunk pool. The thunk is a tiny ARM Thumb-2 function that switches `r9` to the callee module's base, calls the target, then restores the caller's `r9`:
+Each cross-module function reference gets a 10-byte stub, and each callee module gets a single shared 18-byte gateway, both allocated from a host-provided thunk pool. The stub loads the target function address into `r12` (IP), then branches to the module's gateway; the gateway switches `r9` to the callee module's LOT base, calls the function, and restores the caller's `r9`:
 
 ```asm
-    push    {r4, lr}         ; save caller's r4 and return address
-    mov     r4, r9           ; save caller's r9 in r4 (callee-saved)
-    ldr     r2, [pc, #12]    ; load callee's ram_base from literal pool
-    mov     r9, r2           ; set callee's r9
-    ldr.w   ip, [pc, #12]    ; load target function address into r12
-    blx     ip               ; call the target function
-    mov     r9, r4           ; restore caller's r9
-    pop     {r4, pc}         ; restore r4, return to caller
-    nop                      ; alignment padding
-    .word   ram_base         ; callee module's LOT base
-    .word   func_addr        ; target function absolute address
+; Per-function stub (10 bytes, one per cross-module function reference)
+    movw    ip, #func_lo16   ; load low 16 bits of target function address
+    movt    ip, #func_hi16   ; load high 16 bits of target function address
+    b.n     gateway           ; branch to the module's shared gateway
+
+; Per-module gateway (18 bytes, one per callee module)
+    push.w  {r9, lr}         ; save caller's r9 and return address
+    ldr.w   r9, [pc, #4]     ; load callee's ram_base from literal pool
+    blx     ip                ; call function (address in ip from stub)
+    pop.w   {r9, pc}         ; restore r9, return to caller
+    .word   ram_base          ; callee module's LOT base
 ```
 
-Instruction-by-instruction breakdown:
-
-| Instruction | Purpose |
-|-------------|---------|
-| `push {r4, lr}` | Save caller's `r4` and link register. |
-| `mov r4, r9` | Save caller's `r9` in `r4` (callee-saved register). |
-| `ldr r2, [pc, #12]` | Load the callee module's `ram_base` from the literal pool. |
-| `mov r9, r2` | Set `r9` to the callee's LOT base so its PIC data accesses work. |
-| `ldr.w ip, [pc, #12]` | Load the target function address into `r12` (IP). |
-| `blx ip` | Branch to the target function. |
-| `mov r9, r4` | Restore the caller's `r9` after the callee returns. |
-| `pop {r4, pc}` | Restore `r4` and return to the caller. |
+The stub-to-gateway branch uses a Thumb-16 `b.n` instruction, which has a ±2 KB range; if a stub is too far from its gateway, allocation fails. Because the gateway is shared by all of a module's stubs, a module with `N` cross-module function references costs `18 + 10*N` bytes of thunk pool.
 
 ### Why R12 (IP)?
 
@@ -689,11 +678,16 @@ Modules declare their dependencies using the `UDYNLINK_REQUIRES` macro:
 UDYNLINK_REQUIRES(math);
 ```
 
-This expands to an `extern` declaration with a special mangled symbol name:
+This expands to a function-pointer variable whose symbol is renamed to `.udynlink.mod.requires.math`, plus a `used` dummy function that forces the compiler to emit an `R_ARM_GOT_BREL` (LOT) relocation for it:
 
 ```c
-extern udynlink_module_t *__udynlink_dep_math
+typedef void (*_udynlink_dep_fn_math)(void);
+_udynlink_dep_fn_math _udynlink_dep_math
     __asm__(".udynlink.mod.requires.math");
+__attribute__((used)) void _udynlink_dep_ref_math(void) {
+    volatile _udynlink_dep_fn_math f = _udynlink_dep_math;
+    (void)f;
+}
 ```
 
 At link time, this becomes an `UDYNLINK_SYM_TYPE_EXTERN` symbol. At load time, the core loader calls `udynlink_external_resolve_symbol(p_mod, ".udynlink.mod.requires.math")`. A dependency-aware host can resolve this by looking up the module named `math` in its registry.
@@ -707,7 +701,7 @@ When a module references a symbol that might be in another module, the host's `u
 3. **Is it a data variable in a loaded dependency?** → resolve via `udynlink_dep_resolve_data()` (returns address directly, no thunk needed)
 4. **Is it a host firmware symbol?** → return the host's own address
 
-The thunk is generated at load time and patched with the callee module's `ram_base` and the target function's absolute address. After loading, the module's LOT slot contains the thunk address, so subsequent calls go through the thunk automatically.
+The gateway and stub are generated at load time: the gateway is patched with the callee module's `ram_base` and the stub with the target function's absolute address. After loading, the module's LOT slot contains the stub address, so subsequent calls go through the stub → gateway → target automatically.
 
 ### Circular Dependency Detection
 
@@ -723,7 +717,7 @@ The host must set `r9` to a module's LOT base before every call into that module
 
 ### Gateway + Stub Design
 
-The thunk pool uses a two-level dispatch that is more compact than inline thunks when a module has multiple exported functions:
+The thunk pool uses a two-level dispatch that is more compact than a single inline thunk per function reference when a module has multiple exported functions:
 
 - **Per-module gateway** (18 bytes): saves the caller's `r9`, loads the callee module's `ram_base`, branches to the function address in `r12` (IP), then restores the caller's `r9` on return:
 
