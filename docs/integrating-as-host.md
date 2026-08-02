@@ -424,11 +424,12 @@ The dependency system generates the trampoline automatically at load time:
 **Exports are not namespaced.** A module's exports are bare C names;
 `udynlink_dep_resolve_func()`/`udynlink_dep_resolve_data()` return the first
 match in the dependency registry (load order) and do not detect ambiguity.
-Since every protobuf codec module exports the same `parse`/`write`, loading
-several codec modules and calling them from another module would resolve all
-references to the **first loaded** module. Build each codec module with
-`scripts/proto2module --export-prefix <pfx>` (unique per module) so exports
-become `<pfx>_parse`/`<pfx>_write` — see [Protobuf Modules](protobuf-modules.md).
+Since every protobuf codec module exports the same `parse`/`write` names
+under its prefix, `scripts/proto2module` defaults the export prefix to the
+`.proto` basename (`sensor.proto` → `sensor_parse`/`sensor_write`), so
+several codec modules can be loaded together without colliding — see
+[Protobuf Modules](protobuf-modules.md). Build with `--export-prefix ''` only
+for a single codec module that no other module calls.
 
 Thunk-pool sizing must account for cross-module codec references: 10 bytes
 per referenced export plus 18 bytes per callee module (see "Thunk Pool

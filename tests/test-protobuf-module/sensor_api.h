@@ -14,10 +14,10 @@ extern "C" {
 #endif
 
 /* Decode in_len bytes at `in` into a SensorReading struct. Returns 1 on success. */
-int parse(const unsigned char *in, size_t in_len, void *msg);
+int sensor_parse(const unsigned char *in, size_t in_len, void *msg);
 
 /* Encode `msg` into `out`; *out_len is capacity in, bytes written out. */
-int write(const void *msg, unsigned char *out, size_t *out_len);
+int sensor_write(const void *msg, unsigned char *out, size_t *out_len);
 
 #ifdef __cplusplus
 }

@@ -1,7 +1,8 @@
 /* Protobuf module test: 1 struct == 1 module.
  *
  * The module (built from sensor_mod.c + sensor.pb.c via scripts/proto2module)
- * exports parse()/write() for the SensorReading message. The nanopb runtime
+ * exports sensor_parse()/sensor_write() for the SensorReading message — the
+ * default export prefix is the .proto basename. The nanopb runtime
  * (pb_common.c, pb_encode.c, pb_decode.c) lives in the host firmware; the
  * module binds to it through test_resolve_symbol() at load time.
  */
@@ -34,7 +35,7 @@ typedef int (*write_fn_t)(const void *, unsigned char *, size_t *);
 
 static int roundtrip(const udynlink_module_t *p_mod)
 {
-    const char *exported_syms[] = {"parse", "write", NULL};
+    const char *exported_syms[] = {"sensor_parse", "sensor_write", NULL};
     const char *extern_syms[] = {"pb_decode", "pb_encode",
                                  "pb_istream_from_buffer",
                                  "pb_ostream_from_buffer", NULL};
@@ -47,9 +48,9 @@ static int roundtrip(const udynlink_module_t *p_mod)
         return 0;
     if (!check_extern_symbols(p_mod, extern_syms))
         return 0;
-    if (!udynlink_lookup_symbol(p_mod, "parse", &sym_parse))
+    if (!udynlink_lookup_symbol(p_mod, "sensor_parse", &sym_parse))
         return 0;
-    if (!udynlink_lookup_symbol(p_mod, "write", &sym_write))
+    if (!udynlink_lookup_symbol(p_mod, "sensor_write", &sym_write))
         return 0;
 
     memset(&msg, 0, sizeof(msg));

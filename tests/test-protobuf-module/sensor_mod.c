@@ -5,7 +5,7 @@
 
 /* Decode a protobuf buffer into a caller-provided SensorReading struct.
  * Returns 1 on success, 0 on failure. */
-int parse(const unsigned char *in, size_t in_len, void *msg)
+int sensor_parse(const unsigned char *in, size_t in_len, void *msg)
 {
     pb_istream_t stream = pb_istream_from_buffer(in, in_len);
     return pb_decode(&stream, SensorReading_fields, msg) ? 1 : 0;
@@ -13,7 +13,7 @@ int parse(const unsigned char *in, size_t in_len, void *msg)
 
 /* Encode a caller-provided SensorReading struct. *out_len is capacity on entry,
  * bytes written on success. Returns 1 on success, 0 on failure. */
-int write(const void *msg, unsigned char *out, size_t *out_len)
+int sensor_write(const void *msg, unsigned char *out, size_t *out_len)
 {
     pb_ostream_t stream = pb_ostream_from_buffer(out, *out_len);
     int ok = pb_encode(&stream, SensorReading_fields, msg) ? 1 : 0;

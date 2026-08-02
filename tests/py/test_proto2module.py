@@ -51,8 +51,8 @@ message Beta { string b = 1 [(nanopb).max_size = 4]; }
 """
 
 
-def _run_pipeline(tmp_path, proto_text, *extra):
-    proto = tmp_path / "telemetry.proto"
+def _run_pipeline(tmp_path, proto_text, *extra, proto_name="telemetry.proto"):
+    proto = tmp_path / proto_name
     proto.write_text(proto_text)
     out = tmp_path / "out"
     out.mkdir()
@@ -66,19 +66,38 @@ def _run_pipeline(tmp_path, proto_text, *extra):
 @skip_missing_tools
 class TestProto2Module:
     def test_single_struct_exports_parse_write(self, tmp_path):
+        """Default export prefix is the .proto basename (telemetry.proto ->
+        telemetry_parse/telemetry_write); only the two wrappers are exported
+        and the extern set is exactly the nanopb runtime."""
         out = _run_pipeline(tmp_path, SIMPLE_PROTO)
         mod = parse_module((out / "telemetry_mod.bin").read_bytes())
         names = {s.name: s for s in mod.symbols}
-        assert names["parse"].type_name == "EXPORTED"
-        assert names["write"].type_name == "EXPORTED"
-        # Only the two wrappers are exported; schema tables are demoted.
-        exported = [s for s in mod.symbols
-                    if s.type_name == "EXPORTED" and s.name]
-        assert sorted(n.name for n in exported) == ["parse", "write"]
+        assert names["telemetry_parse"].type_name == "EXPORTED"
+        assert names["telemetry_write"].type_name == "EXPORTED"
+        exported = sorted(s.name for s in mod.symbols
+                          if s.type_name == "EXPORTED" and s.name)
+        assert exported == ["telemetry_parse", "telemetry_write"]
         externs = sorted(s.name for s in mod.symbols
                          if s.type_name == "EXTERN")
         assert externs == ["pb_decode", "pb_encode",
                            "pb_istream_from_buffer", "pb_ostream_from_buffer"]
+
+    def test_bare_exports_with_empty_prefix(self, tmp_path):
+        """--export-prefix '' restores the bare parse/write names."""
+        out = _run_pipeline(tmp_path, SIMPLE_PROTO, "--export-prefix", "")
+        mod = parse_module((out / "telemetry_mod.bin").read_bytes())
+        exported = sorted(s.name for s in mod.symbols
+                          if s.type_name == "EXPORTED" and s.name)
+        assert exported == ["parse", "write"]
+
+    def test_default_prefix_sanitizes_proto_name(self, tmp_path):
+        """Non-identifier chars in the .proto basename become '_'."""
+        out = _run_pipeline(tmp_path, SIMPLE_PROTO,
+                            proto_name="my-sensor.proto")
+        mod = parse_module((out / "my-sensor_mod.bin").read_bytes())
+        exported = sorted(s.name for s in mod.symbols
+                          if s.type_name == "EXPORTED" and s.name)
+        assert exported == ["my_sensor_parse", "my_sensor_write"]
 
     def test_single_struct_size_budget(self, tmp_path):
         """1 module == 1 struct must stay small (fixed overhead dominated)."""
@@ -96,13 +115,11 @@ class TestProto2Module:
         mod = parse_module((out / "telemetry_mod.bin").read_bytes())
         exported = sorted(s.name for s in mod.symbols
                           if s.type_name == "EXPORTED" and s.name)
-        assert exported == ["parse_alpha", "parse_beta",
-                            "write_alpha", "write_beta"]
+        assert exported == ["telemetry_parse_alpha", "telemetry_parse_beta",
+                            "telemetry_write_alpha", "telemetry_write_beta"]
 
-    def test_export_prefix_disambiguates_modules(self, tmp_path):
-        """--export-prefix gives each codec module unique export names so
-        several modules can coexist in the deps layer (which resolves by
-        bare name, first match wins)."""
+    def test_export_prefix_overrides_default(self, tmp_path):
+        """An explicit --export-prefix replaces the proto-basename default."""
         out = _run_pipeline(tmp_path, SIMPLE_PROTO, "--export-prefix", "tele")
         mod = parse_module((out / "telemetry_mod.bin").read_bytes())
         exported = sorted(s.name for s in mod.symbols

@@ -153,13 +153,13 @@ def main():
                          "only message")
     ap.add_argument("--module-name", help="udynlink module name "
                     "(default: <proto_basename>_mod)")
-    ap.add_argument("--export-prefix", metavar="PFX", default="",
+    ap.add_argument("--export-prefix", metavar="PFX", default=None,
                     help="prefix for the exported function names "
                     "(<PFX>_parse/<PFX>_write, or <PFX>_parse_<cname> in "
-                    "multi-struct mode). Needed when several codec modules "
-                    "are loaded together and call each other: deps-layer "
-                    "resolution is by bare name and first match wins, so "
-                    "every module must export unique names.")
+                    "multi-struct mode). Default: the .proto basename, so "
+                    "several codec modules loaded together never collide "
+                    "(deps-layer resolution is by bare name, first match "
+                    "wins). Pass '' for the bare parse/write names.")
     ap.add_argument("--out-dir", help="output directory for generated files "
                     "and the .bin (default: next to the .proto)")
     ap.add_argument("--target", default="cortex-m4",
@@ -177,6 +177,11 @@ def main():
         sys.exit("error: no such file: %s" % args.proto)
     proto_dir = os.path.dirname(proto_path)
     proto_base = os.path.splitext(os.path.basename(proto_path))[0]
+    # Default export prefix: the .proto basename, sanitized to a C identifier
+    # so `my-sensor.proto` yields `my_sensor_parse`/`my_sensor_write`. An
+    # explicit '' restores the bare parse/write names.
+    export_prefix = (args.export_prefix if args.export_prefix is not None
+                     else re.sub(r"[^A-Za-z0-9_]", "_", proto_base))
     out_dir = os.path.abspath(args.out_dir) if args.out_dir else proto_dir
     os.makedirs(out_dir, exist_ok=True)
 
@@ -219,7 +224,7 @@ def main():
                      % (s, ", ".join(all_msgs)))
 
     def pair(cname):
-        pre = args.export_prefix + "_" if args.export_prefix else ""
+        pre = export_prefix + "_" if export_prefix else ""
         if len(structs) == 1:
             return pre + "parse", pre + "write"
         return (pre + "parse_%s" % cname.lower(),
@@ -265,9 +270,11 @@ def main():
     if subprocess.call(cmd) != 0:
         sys.exit("error: mkmodule failed")
 
-    # 5. Size summary (image bytes + RAM per load mode). The .bin is named
-    # after the first source file (the wrapper) unless --bin-name was passed.
-    bin_path = os.path.join(out_dir, proto_base + "_mod.bin")
+    # 5. Size summary (image bytes + RAM per load mode). mkmodule names the
+    # .bin after the module name (--module-name or the wrapper basename)
+    # unless --bin-name was passed.
+    module_name = args.module_name or (proto_base + "_mod")
+    bin_path = os.path.join(out_dir, module_name + ".bin")
     for i, a in enumerate(mkmodule_args):
         if a == "--bin-name" and i + 1 < len(mkmodule_args):
             bin_path = mkmodule_args[i + 1]
@@ -285,7 +292,7 @@ def main():
         header_off = (header_off + 3) & ~3
         print("module %s: %d B image | RAM: XIP %d, COPY_TEXT_DATA %d, "
               "COPY_ALL %d" % (
-                  args.module_name or (proto_base + "_mod"),
+                  module_name,
                   h.code_size + h.data_size + header_off,
                   lot + h.data_size + h.bss_size,
                   lot + h.code_size + h.data_size + h.bss_size,

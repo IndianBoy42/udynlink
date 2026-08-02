@@ -1,21 +1,25 @@
 # Protobuf Modules (proto → UDLM)
 
 udynlink can run protobuf codecs as loadable modules: a `.proto` file is
-compiled into a standalone UDLM image exporting exactly two functions,
-`parse` and `write`, for one (or more) message types. Because modules are
-small, the natural deployment is **1 module == 1 struct**: the host loads
-only the codecs for the messages it actually uses, at runtime.
+compiled into a standalone UDLM image exporting a `parse` and a `write`
+function for one (or more) message types. Because modules are small, the
+natural deployment is **1 module == 1 struct**: the host loads only the
+codecs for the messages it actually uses, at runtime.
 
 ## Module ABI
 
-Every module built by `scripts/proto2module` exports:
+Every module built by `scripts/proto2module` exports one function pair per
+selected message. The names are prefixed with the `.proto` basename by
+default so several codec modules can be loaded together without colliding
+(`sensor.proto` exports `sensor_parse`/`sensor_write`; pass
+`--export-prefix ''` for the bare `parse`/`write`):
 
 ```c
 /* Decode `in_len` bytes at `in` into a caller-provided struct. 1 on success. */
-int parse(const unsigned char *in, size_t in_len, void *msg);
+int sensor_parse(const unsigned char *in, size_t in_len, void *msg);
 
 /* Encode `msg` into `out`; *out_len is capacity in, bytes written out. 1 on success. */
-int write(const void *msg, unsigned char *out, size_t *out_len);
+int sensor_write(const void *msg, unsigned char *out, size_t *out_len);
 ```
 
 Division of ownership:
@@ -40,18 +44,21 @@ vendored nanopb runtime (`third_party/nanopb`), and the usual
 `UDYNLINK_NANOPB_DIR` environment variables.
 
 ```bash
-# 1 module == 1 struct (the default deployment)
+# 1 module == 1 struct (the default deployment); exports are prefixed with
+# the .proto basename: sensor_parse / sensor_write
 just proto2module --struct SensorReading proto/sensor.proto
 
 # equivalent long form
 python3 scripts/proto2module --struct SensorReading proto/sensor.proto
 
-# several structs in one module (exports parse_<name>/write_<name>)
+# several structs in one module (exports <pfx>_parse_<name>/<pfx>_write_<name>)
 python3 scripts/proto2module --struct Alpha --struct Beta proto/multi.proto
 
-# unique export names when several codec modules are loaded together
-# (exports become <pfx>_parse/<pfx>_write)
-python3 scripts/proto2module --struct SensorReading --export-prefix sensor proto/sensor.proto
+# bare parse/write names (single codec module, host-side calls only)
+python3 scripts/proto2module --struct SensorReading --export-prefix '' proto/sensor.proto
+
+# custom prefix (overrides the basename default)
+python3 scripts/proto2module --struct SensorReading --export-prefix acme proto/sensor.proto
 
 # with an embeddable C array header for the host firmware
 python3 scripts/proto2module --struct SensorReading --gen-c-header proto/sensor.proto
@@ -103,7 +110,7 @@ udynlink_load_module(&mod, sensor_mod_module_data, NULL, 0,
                      UDYNLINK_LOAD_MODE_XIP);
 
 udynlink_sym_t sym;
-udynlink_lookup_symbol(&mod, "parse", &sym);
+udynlink_lookup_symbol(&mod, "sensor_parse", &sym);
 int (*parse)(const unsigned char *, size_t, void *) =
     (int (*)(const unsigned char *, size_t, void *))sym.val;
 
@@ -115,7 +122,8 @@ parse(buf, len, &msg);
 ```
 
 The generated `<proto>_api.h` declares the prototypes; the host must not
-define `parse`/`write` itself (they exist only inside the module).
+define `sensor_parse`/`sensor_write` itself (they exist only inside the
+module).
 
 **Calling a codec module from another module** (e.g., a dispatcher that routes
 messages to per-struct codec modules) requires a cross-module trampoline:
@@ -130,50 +138,54 @@ around the call. See [Host Guide — Integrating the Dependency System]
 **Exports are not namespaced.** Module exports are bare C names, and the deps
 layer resolves cross-module references by name with **first-match-wins** over
 the registry in load order — no ambiguity detection. Every codec module
-exports the same `parse`/`write` (or `parse_<cname>`/`write_<cname>` in
-multi-struct mode), so if several codec modules are loaded together and call
-each other, all references resolve to the **first loaded** module. Pass
-`--export-prefix <pfx>` to each module (unique per module, e.g. its name) so
-its exports become `<pfx>_parse`/`<pfx>_write` and cannot collide. Host-side
-calls via `udynlink_lookup_symbol(p_mod, ...)` are unaffected — the module
+exports the same `parse`/`write` names under its prefix, so this is only safe
+because the pipeline **defaults the export prefix to the `.proto` basename**
+(`sensor.proto` → `sensor_parse`/`sensor_write`): as long as the file names
+differ, module-to-module references cannot collide. Only use
+`--export-prefix ''` (bare `parse`/`write`) when a single codec module is
+loaded and no other module calls it. Host-side calls via
+`udynlink_lookup_symbol(p_mod, ...)` are unaffected either way — the module
 handle disambiguates.
 
 ## Overhead
 
-Measured on `cortex-m4`, `-Os`, `--public-symbols parse,write
---strip-non-public-syms` (the pipeline's default), runtime host-side.
+Measured on `cortex-m4`, `-Os`, `--public-symbols <prefix>_parse,<prefix>_write`
++ `--strip-non-public-syms` (the pipeline's default, export prefix = proto
+basename), runtime host-side.
 
 | Module | Image (flash) | RAM (XIP) | RAM (COPY_TEXT_DATA) |
 |---|---|---|---|
 | Empty 2-function stub module | 112 B | 0 B | 32 B |
-| `SensorReading` (5 fields, string + repeated) | 464 B | 44 B | 220 B |
-| `Big` (22 fields, nested msg, enum, repeated strings) | 700 B | 76 B | 412 B |
-| `SensorReading`+`Config`+`Status`, one module | 1000 B | 108 B | 544 B |
-| Same codec with nanopb runtime **inside** the module | 9444 B | 368 B | 7592 B |
+| `SensorReading` (5 fields, string + repeated) | 476 B | 44 B | 220 B |
+| `Big` (22 fields, nested msg, enum, repeated strings) | 704 B | 76 B | 412 B |
+| `SensorReading`+`Config`+`Status`, one module | 1084 B | 100 B | 604 B |
+| Same codec with nanopb runtime **inside** the module | 8768 B | 368 B | 7592 B |
 
-Breakdown of the 464 B single-struct module: 32 B header + 56 B relocations +
-176 B symbol table (2 exported + 4 extern + 3 nameless internals + module
-name) + 176 B code (12 B wrapper per export, 56–60 B `parse`/`write` bodies,
-literal pool) + 24 B data (the `pb_msgdesc_t`). RAM is 5 LOT entries (20 B,
-one per distinct referenced symbol: 4 runtime fns + the msgdesc) + 24 B data.
+Breakdown of the 476 B single-struct module: 32 B header + 56 B relocations +
+188 B symbol table (2 exported + 4 extern + 3 nameless internals + module
+name) + 176 B code (12 B wrapper per export, 56–60 B `sensor_parse`/
+`sensor_write` bodies, literal pool) + 24 B data (the `pb_msgdesc_t`). RAM is
+5 LOT entries (20 B, one per distinct referenced symbol: 4 runtime fns + the
+msgdesc) + 24 B data. The basename export prefix costs ~6 B per exported
+symbol; `--export-prefix ''` trims the image by 12 B.
 
 ### What "1 module == 1 struct" costs
 
-- **Fixed per-module overhead:** ~196 B flash + ~8 B RAM — the header,
+- **Fixed per-module overhead:** ~172 B flash + ~16 B RAM — the header,
   relocation/symbol tables, prologue wrappers, and LOT that every module
   carries regardless of struct size.
-- **Marginal per-struct cost in a shared module:** ~268 B flash + ~36 B RAM.
+- **Marginal per-struct cost in a shared module:** ~304 B flash + ~28 B RAM.
 - **Premium for splitting one shared module into N per-struct modules:**
-  ~196 B flash + ~8 B RAM per struct (each new module pays the fixed cost
-  again). For the 3-struct example: 3 modules = 1392 B vs 1 module = 1000 B.
+  ~172 B flash + ~16 B RAM per struct (each new module pays the fixed cost
+  again). For the 3-struct example: 3 modules = 1428 B vs 1 module = 1084 B.
 - **Scaling:** struct complexity grows the module slowly — 22 fields cost
-  only ~236 B more than 5 fields (mostly the bigger `pb_msgdesc_t` table).
+  only ~228 B more than 5 fields (mostly the bigger `pb_msgdesc_t` table).
   The cost model is dominated by the fixed per-module overhead, so the
   per-struct premium stays roughly constant as messages grow.
 
 ### Conclusion
 
-The overhead of 1 module == 1 struct is small (≈200 B flash, ≈8 B RAM per
+The overhead of 1 module == 1 struct is small (≈172 B flash, ≈16 B RAM per
 struct on a typical M-profile MCU) and buys maximum dynamic flexibility —
 load only the codecs you use, from flash or external storage, on demand, with
 no recompilation of the host. The two real costs are not bytes:
