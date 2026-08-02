@@ -1230,9 +1230,10 @@ The `udynlink/udynlink_deps.h` header provides an optional standalone layer for 
 | Macro | Value | Description |
 |-------|-------|-------------|
 | `UDYNLINK_DEP_PREFIX` | `".udynlink.mod.requires."` | Symbol prefix for dependency declarations. |
-| `UDYNLINK_DEP_PREFIX_LEN` | `24` | Length of the prefix string. |
+| `UDYNLINK_DEP_PREFIX_LEN` | `23` | Length of the prefix string. |
 | `UDYNLINK_DEP_MAX_DEPTH` | `8` | Maximum depth of the circular-dependency detection stack. |
-| `UDYNLINK_THUNK_SIZE` | `28` | Size of an inline per-function thunk in bytes. |
+| `UDYNLINK_GATEWAY_SIZE` | `18` | Size of a per-module gateway in the thunk pool (one per callee module). |
+| `UDYNLINK_STUB_SIZE` | `10` | Size of a per-function stub in the thunk pool (one per cross-module function reference). |
 
 ### `UDYNLINK_REQUIRES`
 

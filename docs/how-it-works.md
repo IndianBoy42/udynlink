@@ -675,7 +675,11 @@ static udynlink_thunk_pool_t g_thunk_pool;
 udynlink_thunk_pool_init(&g_thunk_pool, g_thunk_buf, sizeof(g_thunk_buf));
 ```
 
-Each thunk consumes `UDYNLINK_THUNK_SIZE` (28) bytes. The pool is a simple bump allocator; there is no per-thunk free operation because thunks are only invalidated when the callee module is unloaded (at which point the entire pool can be reset or discarded).
+Each cross-module function reference consumes a `UDYNLINK_STUB_SIZE` (10)
+byte stub, plus one `UDYNLINK_GATEWAY_SIZE` (18) byte gateway per callee
+module. The pool is a simple bump allocator; there is no per-thunk free
+operation because thunks are only invalidated when the callee module is
+unloaded (at which point the entire pool can be reset or discarded).
 
 ### Declaring Dependencies: `UDYNLINK_REQUIRES`
 

@@ -396,6 +396,35 @@ Use the dependency system when:
 
 Hosts that load only single, isolated modules do not need this layer.
 
+### Protobuf Codec Modules: Cross-Module Exports Need a Trampoline
+
+[Protobuf modules](protobuf-modules.md) built by `scripts/proto2module` export
+`parse`/`write` for a message type, and the host calls them directly via
+`udynlink_lookup_symbol()` + `UDYNLINK_PREPARE_CALL()`. When **another module**
+calls a codec module's `parse`/`write` (e.g., a dispatcher module routing
+messages to per-struct codec modules), a trampoline is required: the caller
+runs with its own LOT base in `r9`, and a bare function pointer into the
+callee would execute with the wrong `r9`, corrupting PIC state. This applies
+to every cross-module function call, not just codec exports.
+
+The dependency system generates the trampoline automatically at load time:
+
+1. The calling module declares `UDYNLINK_REQUIRES(<codec_module_name>)` — see
+   `docs/writing-modules.md` → "Declaring Explicit Dependencies".
+2. The host resolver routes the reference through `udynlink_dep_resolve_func()`
+   (step 2 of the pattern below), which allocates a 10-byte per-function stub
+   plus an 18-byte per-module gateway from the thunk pool. The stub loads the
+   target address into `r12` and branches to the gateway, which switches `r9`
+   to the callee's LOT base, calls, and restores the caller's `r9`.
+3. The codec module's own externs (`pb_decode`, `pb_encode`, ...) still resolve
+   as **host** symbols (step 4 of the pattern below) — the nanopb runtime
+   stays host-side. Only the codec's `parse`/`write` exports are
+   module-to-module calls.
+
+Thunk-pool sizing must account for cross-module codec references: 10 bytes
+per referenced export plus 18 bytes per callee module (see "Thunk Pool
+Sizing" below), not the module image sizes.
+
 ### Required Setup
 
 Before loading any modules, initialize the dependency manager and the thunk pool:
@@ -419,7 +448,7 @@ void init_deps(void) {
 ```
 
 - **`g_mod_slots`** — array of module pointers. The dependency manager tracks registered modules here.
-- **`g_thunk_buf`** — executable RAM buffer for cross-module call thunks. Each cross-module function reference consumes 28 bytes.
+- **`g_thunk_buf`** — executable RAM buffer for cross-module call thunks. Each cross-module function reference consumes a 10-byte stub plus a one-time 18-byte gateway per callee module (see [Thunk Pool Sizing](#thunk-pool-sizing)).
 
 ### The Host Resolver Pattern
 
@@ -491,14 +520,21 @@ If module A declares `UDYNLINK_REQUIRES(B)` and module B declares `UDYNLINK_REQU
 
 ### Thunk Pool Sizing
 
-Estimate the maximum number of cross-module function references your system will have simultaneously, then allocate:
+Each cross-module function reference consumes a 10-byte stub; each callee
+module additionally needs one 18-byte gateway (allocated once per module):
 
 ```c
-#define MAX_CROSS_CALLS 20
-#define THUNK_POOL_SIZE (MAX_CROSS_CALLS * UDYNLINK_THUNK_SIZE)
+#define MAX_CALLED_MODULES 4
+#define MAX_CROSS_CALLS    20
+#define THUNK_POOL_SIZE (MAX_CALLED_MODULES * UDYNLINK_GATEWAY_SIZE + \
+                         MAX_CROSS_CALLS * UDYNLINK_STUB_SIZE)
 ```
 
-There is no thunk free API. When a module is unloaded, its thunks become stale. If you need to reclaim thunk RAM, reset the pool by calling `udynlink_thunk_pool_init()` again (this invalidates all existing thunks, so only do it when no modules are loaded).
+Stubs are deduplicated — the same function resolved twice shares one stub.
+There is no thunk free API. When a module is unloaded, its thunks become
+stale. If you need to reclaim thunk RAM, reset the pool by calling
+`udynlink_thunk_pool_init()` again (this invalidates all existing thunks, so
+only do it when no modules are loaded).
 
 ---
 

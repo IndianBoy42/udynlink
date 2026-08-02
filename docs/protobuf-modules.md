@@ -113,6 +113,16 @@ parse(buf, len, &msg);
 The generated `<proto>_api.h` declares the prototypes; the host must not
 define `parse`/`write` itself (they exist only inside the module).
 
+**Calling a codec module from another module** (e.g., a dispatcher that routes
+messages to per-struct codec modules) requires a cross-module trampoline:
+the caller and callee have different `r9` (LOT base) values, so a bare
+function pointer would corrupt PIC state. Declare
+`UDYNLINK_REQUIRES(<module_name>)` in the calling module and have the host's
+resolver use `udynlink_dep_resolve_func()` — it generates a per-function stub
+(10 B) + per-module gateway (18 B) from the thunk pool that switches `r9`
+around the call. See [Host Guide — Integrating the Dependency System]
+(integrating-as-host.md#integrating-the-dependency-system-udynlink_deps).
+
 ## Overhead
 
 Measured on `cortex-m4`, `-Os`, `--public-symbols parse,write
