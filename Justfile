@@ -404,6 +404,13 @@ module-header source_file header_path *args="":
         {{args}} \
         {{source_file}}
 
+# Build a protobuf module (proto -> UDLM image) via scripts/proto2module
+proto2module proto_file *args="":
+    {{python_cmd}} {{scripts_dir}}/proto2module \
+        --target {{module_target}} \
+        {{args}} \
+        {{proto_file}}
+
 # Compile test-helloworld for all 9 supported targets (validation)
 validate-all-targets:
     #!/usr/bin/env bash

@@ -1,0 +1,22 @@
+syntax = "proto3";
+import "nanopb.proto";
+
+message SensorReading {
+  uint32 id = 1;
+  int32 temperature = 2;        // milli-degrees C
+  uint32 humidity = 3;          // per-mille
+  string tag = 4 [(nanopb).max_size = 16];
+  repeated uint32 samples = 5 [(nanopb).max_count = 8];
+}
+
+message Config {                 // for the multi-message comparison
+  uint32 sample_period_ms = 1;
+  bool log_enabled = 2;
+  string device_name = 3 [(nanopb).max_size = 24];
+}
+
+message Status {                 // for the multi-message comparison
+  uint32 uptime_s = 1;
+  uint32 errors = 2;
+  string last_error = 3 [(nanopb).max_size = 32];
+}

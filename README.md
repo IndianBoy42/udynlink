@@ -173,6 +173,7 @@ All optional features are separate headers that compile and link only if include
 - Fine-grained planning APIs (`udynlink_validate_header`, `udynlink_compute_ram_size`)
 - Hash-based O(1) symbol resolution
 - WASM2C runtime support
+- Protobuf modules: `.proto` → parse/write UDLM modules via `scripts/proto2module` (see `docs/protobuf-modules.md`)
 - Requires [GCC ARM Embedded](https://developer.arm.com/tools-and-software/open-source-software/developer-tools/gnu-toolchain) (`arm-none-eabi-gcc`)
 
 ## Building

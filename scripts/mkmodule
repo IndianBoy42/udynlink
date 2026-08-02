@@ -51,6 +51,10 @@ def assemble(src_name, args):
     return objname
 
 sym_renames = {}
+# Renames across ALL object files: the prologue-localize step in link() must
+# hide every wrapped body, not just the last object file's. (Per-object the
+# wrappers' bl targets stay correct; only the ELF visibility is affected.)
+all_sym_renames = {}
 
 def compile(src_name, args, public_symbols, macros=[]):
     out_dir = args.workdir if args.workdir else os.path.dirname(src_name)
@@ -119,6 +123,7 @@ def compile(src_name, args, public_symbols, macros=[]):
             os.rename(objname, temp_obj)
             sym_renames.clear()
             sym_renames.update({n: get_wrapped_name(n) for n in global_funcs })
+            all_sym_renames.update(sym_renames)
             if not args.no_debug:
                 print("sym_renames", to_json(sym_renames))
             rename_symbols(temp_obj, objname, sym_renames, args)
@@ -170,7 +175,7 @@ def link(objects, output, args):
     execute(get_tool("gcc") + " " + link_cmd.format(**link_data), args)
     # Change visibility of wrapped symbols to "local"
     debug("Changing visiblity of wrapped symbols to 'local' in %s" % output, args)
-    make_symbols_local(output, sym_renames, args)
+    make_symbols_local(output, all_sym_renames, args)
 
 def process(output, args):
     # Read actual data and verify proper section placement

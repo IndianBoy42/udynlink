@@ -43,7 +43,8 @@ All user-facing documentation lives under `docs/` and is summarized in `docs/REA
 |-------|-------------|
 | `docs/how-it-works.md` | Technical deep-dive: PIC model, LOT/r9 mechanism, relocations, binary format, ABI versioning |
 | `docs/integrating-as-host.md` | Adding udynlink to your firmware, implementing callbacks, symbol tables, lifecycle, thread safety |
-| `docs/writing-modules.md` | Creating loadable C/C++ modules, consuming symbols, mkmodule reference |
+|`docs/writing-modules.md`|Creating loadable C/C++ modules, consuming symbols, mkmodule reference|
+|`docs/protobuf-modules.md`|Compiling `.proto` definitions into parse/write UDLM modules (`scripts/proto2module`), 1-module-per-struct overhead analysis|
 | `docs/api-reference.md` | Complete reference for all public functions, structs, macros, and callbacks |
 | `docs/examples.md` | Working code examples for every major feature |
 | `docs/testing.md` | Running tests, adding test cases and platforms, debugging **MUST READ before testing** |
@@ -67,6 +68,7 @@ All user-facing documentation lives under `docs/` and is summarized in `docs/REA
 
 **Optional tools:**
 - **`scripts/mkhostsyms`** — reads a host firmware ELF and generates a C header with a const GNU hash table (`--format gnu-hash`, default) or search trie (`--format trie`) for O(1)/O(k) symbol resolution
+- **`scripts/proto2module`** — compiles `.proto` files into protobuf codec modules (parse/write per message) via protoc + nanopb. Requires `protoc` and the nanopb generator plugin (`uv pip install nanopb`); the nanopb C runtime is vendored at `third_party/nanopb` (see `docs/protobuf-modules.md`)
 
 ## Build & Test Commands
 

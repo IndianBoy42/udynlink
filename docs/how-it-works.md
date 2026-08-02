@@ -234,7 +234,7 @@ and also compiles `cpp_init_fini.c` into the object list. This file provides `__
 **Function wrapping happens in this step:**
 
 1. `mkmodule` discovers all public functions in the object file via `get_public_functions_in_object`.
-2. Each public function is renamed to a mangled name (`__<md5prefix>__<original>`) using `objcopy --redefine-sym`.
+2. Each public function is renamed to a mangled name (`__<md5prefix>__<original>`) using `objcopy --redefine-sym`. After linking, the renamed bodies are made ELF-local (`objcopy -L`, across **all** source files), so they never appear as exported symbols in the module's symbol table — the wrapper is the only visible export.
 3. An assembly prologue file is generated from the Jinja2 template and assembled into a second object file.
 4. Both object files (original + prologue) are passed to the linker.
 

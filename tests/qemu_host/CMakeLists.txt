@@ -107,6 +107,21 @@ target_include_directories(test1.elf PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+# --- nanopb runtime (vendored at third_party/nanopb) ---
+# Protobuf modules (scripts/proto2module) reference pb_decode/pb_encode/...
+# as host symbols; the host firmware provides the runtime. Only added when
+# the vendored copy is present, so plain tests are unaffected.
+if(EXISTS ${UDYNLINK_SOURCE_DIR}/third_party/nanopb/pb.h)
+    target_sources(test1.elf PRIVATE
+        ${UDYNLINK_SOURCE_DIR}/third_party/nanopb/pb_common.c
+        ${UDYNLINK_SOURCE_DIR}/third_party/nanopb/pb_encode.c
+        ${UDYNLINK_SOURCE_DIR}/third_party/nanopb/pb_decode.c
+    )
+    target_include_directories(test1.elf PRIVATE
+        ${UDYNLINK_SOURCE_DIR}/third_party/nanopb
+    )
+endif()
+
 # Per-file special flags are set directly by the included platform.cmake
 
 # --- Link settings ---
