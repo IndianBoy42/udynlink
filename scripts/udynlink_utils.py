@@ -142,7 +142,10 @@ def get_symbols_in_elf(obj):
     with open(obj, "rb") as f:
         elf = ELFFile(f)
         for sec_idx, section in enumerate(elf.iter_sections()):
-            if not isinstance(section, SymbolTableSection):
+            # SHT_SYMTAB only: SHT_DYNSYM is also a SymbolTableSection and
+            # would duplicate every exported symbol (e.g. under -rdynamic
+            # links), tripping the duplicate-name checks downstream.
+            if not isinstance(section, SymbolTableSection) or section['sh_type'] != 'SHT_SYMTAB':
                 continue
             for idx, symbol in enumerate(section.iter_symbols()):
                 sdata = {}

@@ -70,6 +70,8 @@ is_legacy = os.path.basename(qemu_bin) == "qemu-system-gnuarmeclipse"
 default_qemu_timeout = int(os.environ.get("UDYNLINK_QEMU_TIMEOUT", "5"))
 module_target = os.environ.get("UDYNLINK_MODULE_TARGET", "")
 module_target_flag = " --target %s " % module_target if module_target else " "
+# Set UDYNLINK_MKMODULE_LTO=1 to build every test module with mkmodule --lto.
+module_lto_flag = " --lto " if os.environ.get("UDYNLINK_MKMODULE_LTO") else ""
 
 # Repo root, computed from tests/ directory (where this script lives)
 repo_root = os.path.abspath("..")
@@ -186,7 +188,7 @@ def test_one(full_path, opt):
         # Modules may #include udynlink headers (e.g. udynlink_deps_api.h);
         # the include path points at the repo's udynlink/ directory.
         include_flag = "-I%s" % os.path.join(repo_root, "udynlink")
-        compile_cmd = '%s ../../scripts/mkmodule --disasm --gen-c-header --header-path . %s%s%%s%%s %%s' % (sys.executable, include_flag, module_target_flag)
+        compile_cmd = '%s ../../scripts/mkmodule --disasm --gen-c-header --header-path . %s%s%s%%s%%s %%s' % (sys.executable, include_flag, module_target_flag, module_lto_flag)
         cmd = compile_cmd % ("" if opt else "-O3 ", extra_module_args, srcs)
         res, out = run_cmd(cmd, show_output=False)
         out = out.decode()

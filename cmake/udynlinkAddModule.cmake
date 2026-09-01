@@ -22,7 +22,7 @@ target links to consume the generated embedding header.
       [UDYNLINK_VERSION <ver>]   # --udynlink-version (default: 3.0)
       [NO_PROLOGUE]              # --no-prologue
       [PC_REL]                   # --pc-rel
-      [NO_LONG_CALLS]            # --no-long-calls
+      [LTO]                      # --lto (link-time optimization)
       [DISASM]                   # --disasm
       [OUTPUT_DIR <dir>]         # where the .bin is written (default: ${CMAKE_CURRENT_BINARY_DIR})
       [GENERATE_HEADER]          # also emit <name>_module_data.h
@@ -49,7 +49,7 @@ Consumer in one line:
 #]=======================================================================]
 
 function(udynlink_add_module name)
-  set(_options NO_PROLOGUE PC_REL NO_LONG_CALLS DISASM GENERATE_HEADER)
+  set(_options NO_PROLOGUE PC_REL NO_LONG_CALLS LTO DISASM GENERATE_HEADER)
   set(_oneval TARGET MCPU PUBLIC_SYMBOLS OPT_LEVEL MODULE_NAME BUILD_FLAGS
               MOD_VERSION UDYNLINK_VERSION OUTPUT_DIR HEADER_OUTPUT_DIR)
   set(_multival SOURCES DEPENDS)
@@ -155,6 +155,9 @@ function(udynlink_add_module name)
   endif()
   if(ARG_NO_LONG_CALLS)
     list(APPEND _args "--no-long-calls")
+  endif()
+  if(ARG_LTO)
+    list(APPEND _args "--lto")
   endif()
   if(ARG_DISASM)
     list(APPEND _args "--disasm")

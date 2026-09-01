@@ -420,7 +420,8 @@ validate-all-targets:
         {{python_cmd}} ../../scripts/mkmodule \
             --target $target \
             --bin-name /tmp/mod_hello_${target}.bin \
-            hello.c || echo "FAILED: $target"
+            ${UDYNLINK_MKMODULE_LTO:+--lto} \
+            mod_hello.c || echo "FAILED: $target"
     done
 
 # =============================================================================
@@ -509,6 +510,13 @@ ci: test-mps2 test-an385 test-an500 test-an505 test-h405
 # Validate all targets can compile
 ci-validate-targets:
     just validate-all-targets
+
+# Run the full CI test suite with every module built via mkmodule --lto
+[parallel]
+ci-lto:
+    #!/usr/bin/env bash
+    export UDYNLINK_MKMODULE_LTO=1
+    just ci
 
 # Quick CI check (compile only, no QEMU)
 ci-quick:

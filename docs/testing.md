@@ -75,6 +75,14 @@ just ci
 
 This runs the five fully-passing mainline QEMU platforms in parallel: MPS2-AN386, AN385, AN500, AN505, and Olimex H405.
 
+```bash
+just ci-lto
+```
+
+Same platforms, but every test module is built with `mkmodule --lto`
+(see [LTO Mode](writing-modules.md#lto-mode)). Equivalent to setting
+`UDYNLINK_MKMODULE_LTO=1` on any test recipe.
+
 ### Environment Variables
 
 The following variables are read by `test_driver.py` and the `Justfile`:
@@ -90,6 +98,7 @@ The following variables are read by `test_driver.py` and the `Justfile`:
 | `UDYNLINK_PLATFORM` | Platform directory name under `tests/platforms/` | `mps2_an386` |
 | `UDYNLINK_TEST_DEBUG` | If set, enables `UDYNLINK_DEBUG_INFO` in the test build | `1` |
 | `UDYNLINK_TEST_CLEAN` | If set, deletes the CMake build dir before building | `1` |
+| `UDYNLINK_MKMODULE_LTO` | If set, every test module is built with `mkmodule --lto` | `1` |
 
 
 ### Host sanitizer & fuzz testing

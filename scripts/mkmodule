@@ -55,6 +55,37 @@ sym_renames = {}
 # hide every wrapped body, not just the last object file's. (Per-object the
 # wrappers' bl targets stay correct; only the ELF visibility is affected.)
 all_sym_renames = {}
+lto_wrap_syms = []  # --lto: public function names wrapped via linker --wrap
+
+def check_lto_object_usable(objname, args):
+    """Validate an object against the --lto expectations.
+
+    Prologue/discovery code reads the real-code symtab (STT_FUNC names), which
+    only FAT LTO objects carry; slim LTO objects hide their symbol types inside
+    the IR, so discovery would silently find nothing. Fully-empty TUs (feature-
+    gated to nothing) emit IR metadata with an EMPTY .gnu.lto_.symtab and have
+    nothing to discover, so they are fine. Also rejects -flto
+    """
+    has_lto_ir = has_real_code = False
+    lto_symtab_bytes = 0
+    with open(objname, "rb") as f:
+        elf = ELFFile(f)
+        for section in elf.iter_sections():
+            n = section.name
+            if n.startswith(".gnu.lto"):
+                has_lto_ir = True
+                if n.startswith(".gnu.lto_.symtab"):
+                    lto_symtab_bytes = max(lto_symtab_bytes, section["sh_size"])
+            elif section['sh_size'] and n.startswith((".text", ".data", ".rodata", ".bss")):
+                has_real_code = True
+    # A genuinely slim object carries a non-empty LTO symtab (the symbol list
+    # lives in the IR); an empty TU's symtab section is zero-size.
+    if has_lto_ir and not has_real_code and lto_symtab_bytes > 0:
+        error("--lto: object '%s' is a slim LTO object (IR without real code); "
+              "symbol discovery needs -ffat-lto-objects (is it overridden in --build-flags?)" % objname)
+    if not args.lto and has_lto_ir:
+        error("Object '%s' contains LTO bytecode but --lto is not enabled; "
+              "pass --lto instead of -flto in --build-flags" % objname)
 
 def compile(src_name, args, public_symbols, macros=[]):
     out_dir = args.workdir if args.workdir else os.path.dirname(src_name)
@@ -66,6 +97,15 @@ def compile(src_name, args, public_symbols, macros=[]):
     if not args.no_long_calls:
         extra += " -mlong-calls"
     extra += " -O" + args.opt_level
+    if args.lto:
+        # Fat LTO objects: IR for the linker plugin (cross-TU optimization at
+        # link) plus a real-code symtab so prologue/discovery code keeps working.
+        extra += " -flto -ffat-lto-objects"
+        # Without this, whole-program data pooling folds variables into
+        # .LANCHORn symbols and GOT relocations lose their user-visible
+        # names (e.g. UDYNLINK_REQUIRES() declarations stop being
+        # reclassifiable as externals).
+        extra += " -fno-section-anchors"
     if macros:
         extra = extra + " " + " ".join(macros)
     compile_data = {"input": src_name, "extra": extra, "output": main_obj, "mcpu": args.mcpu, "fpu": args.fpu_flag, "float_abi": args.float_abi_flag}
@@ -112,7 +152,22 @@ def compile(src_name, args, public_symbols, macros=[]):
         debug("Compiling '%s'" % src_name, args)
         execute(get_tool("gcc") + " " + compile_cmd.format(**compile_data), args)
         object_files += [libc_obj]
-    
+
+    # Integrity gate (both --lto and default mode): discovery and the wrapper
+    # mechanism need real-code symtabs, and LTO IR must never leak in through
+    # --build-flags unnoticed.
+    for objname in [] + object_files:
+        check_lto_object_usable(objname, args)
+        if args.lto:
+            # Whole-program LTO may fold weak data whose reads GCC proves
+            # constant, and re-emits prevailing weak definitions as GLOBAL;
+            # remember the originals to restore their binding after the link.
+            if not hasattr(args, 'lto_weak_defined'):
+                args.lto_weak_defined = set()
+            args.lto_weak_defined.update(
+                s["name"] for s in get_symbols_in_elf(objname)
+                if s["name"] and s["bind"] == "STB_WEAK" and s["section"] != "SHN_UNDEF")
+
     # Collect exported symbols and (optionally) generate prologue wrappers
     if not args.no_prologue:
         for objname in [] + object_files:
@@ -124,20 +179,37 @@ def compile(src_name, args, public_symbols, macros=[]):
                     args.dep_syms = set()
                 args.dep_syms.update(dep_syms)
             debug("Generating temporary object files with wrapped symbols '%s'" % ", ".join(global_funcs), args)
-            temp_obj = os.path.join(objname + '.temp.o')
-            os.rename(objname, temp_obj)
-            sym_renames.clear()
-            sym_renames.update({n: get_wrapped_name(n) for n in global_funcs })
-            all_sym_renames.update(sym_renames)
-            if not args.no_debug:
-                print("sym_renames", to_json(sym_renames))
-            rename_symbols(temp_obj, objname, sym_renames, args)
+            if args.lto:
+                # binutils refuses --redefine-sym on LTO IR objects, so the
+                # wrapper/body split happens at link time: ld --wrap=NAME
+                # redirects outside references to __wrap_NAME (the prologue
+                # wrapper), which calls __real_NAME (the unrenamed IR body).
+                # Defined-scope calls inside the merged LTRANS unit are not
+                # redirected and call the body directly — same semantics as
+                # the objcopy rename on the non-LTO path.
+                for n in global_funcs:
+                    check(not n.startswith(("__wrap_", "__real_")),
+                          "--lto: public function '%s' collides with the reserved __wrap_/__real_ prefix; rename it or drop --lto" % n)
+                lto_wrap_syms.extend(global_funcs)
+                prologue_names = {("__wrap_" + n): ("__real_" + n) for n in global_funcs}
+                prologue_weak = ["__wrap_" + n for n in weak_funcs]
+            else:
+                temp_obj = os.path.join(objname + '.temp.o')
+                os.rename(objname, temp_obj)
+                sym_renames.clear()
+                sym_renames.update({n: get_wrapped_name(n) for n in global_funcs })
+                all_sym_renames.update(sym_renames)
+                if not args.no_debug:
+                    print("sym_renames", to_json(sym_renames))
+                rename_symbols(temp_obj, objname, sym_renames, args)
+                prologue_names = sym_renames
+                prologue_weak = weak_funcs
             # Generate ASM for prologue
             debug("Generating ASM file for public function prologues", args)
             loader = FileSystemLoader(os.path.dirname(os.path.abspath(__file__)))
             env = Environment(loader = loader)
             tmpl = env.get_template(args.template)
-            data = tmpl.render({"sym_names": sym_renames, "weak_names": weak_funcs})
+            data = tmpl.render({"sym_names": prologue_names, "weak_names": prologue_weak})
             p_fname = os.path.join(objname + "_prologue.s")
             with open(p_fname, "wt") as f:
                 f.write(str(data))
@@ -175,12 +247,54 @@ def link(objects, output, args):
     if hasattr(args, 'dep_syms') and args.dep_syms:
         for sym in sorted(args.dep_syms):
             extra_link_flags += " -Wl,--undefined=%s" % sym
+    if args.lto:
+        extra_link_flags += " -flto"
+        # Present the link as exporting its globals: without this the plugin
+        # resolution marks module symbols LDPR_PREVAILING_DEF_IRONLY and GCC
+        # internalizes exported data ('D g' -> 'd g') or folds reads of weak
+        # data away entirely, so hosts could no longer find/override them.
+        extra_link_flags += " -Wl,--export-dynamic"
+        for sym in sorted(set(lto_wrap_syms)):
+            extra_link_flags += " -Wl,--wrap=%s" % sym
     link_data = {"input": " ".join(objects), "output": output, "ld": linker_script, "mcpu": args.mcpu, "fpu": args.fpu_flag, "float_abi": args.float_abi_flag, "extra_link_flags": extra_link_flags}
     debug("Linking (%s -> %s)" % (" + ".join(objects), output), args)
     execute(get_tool("gcc") + " " + link_cmd.format(**link_data), args)
-    # Change visibility of wrapped symbols to "local"
-    debug("Changing visiblity of wrapped symbols to 'local' in %s" % output, args)
-    make_symbols_local(output, all_sym_renames, args)
+    if args.lto and lto_wrap_syms:
+        # Two objcopy passes on the final (real-code) ELF: binutils applies
+        # --redefine-sym and -L inside one invocation in an order not
+        # guaranteed across versions, so localize strictly after renaming.
+        # Pass 1 hides the IR-derived bodies under a collision-proof name.
+        hidden = {n: get_wrapped_name(n) for n in sorted(set(lto_wrap_syms))}
+        cmdline = get_tool("objcopy")
+        for n, h in hidden.items():
+            cmdline += " --redefine-sym %s=%s" % (n, h)
+        execute(cmdline + " " + output + " " + output, args)
+        # Pass 2 promotes the --wrap wrappers to the public names and makes
+        # the hidden bodies local (nameless INTERNAL entries in the image).
+        cmdline = get_tool("objcopy")
+        for n, h in hidden.items():
+            cmdline += " --redefine-sym __wrap_%s=%s -L %s" % (n, n, h)
+        execute(cmdline + " " + output + " " + output, args)
+    if args.lto and getattr(args, 'lto_weak_defined', None):
+        # Pass 3: GCC's LTRANS re-emits prevailing weak definitions as
+        # GLOBAL; weaken them back so the image classifies them as WEAK and
+        # the loader keeps the host-override path alive.
+        cmdline = get_tool("objcopy")
+        for n in sorted(args.lto_weak_defined):
+            cmdline += " -W %s" % n
+        execute(cmdline + " " + output + " " + output, args)
+        # paranoia gate: if whole-program opt still folded a weak symbol
+        # away, the host override point is gone — say so loudly.
+        final_syms = {s["name"] for s in get_symbols_in_elf(output)}
+        for n in sorted(args.lto_weak_defined):
+            if n not in final_syms:
+                warn("--lto: weak symbol '%s' no longer exists in the linked "
+                     "module and cannot be overridden by the host (declare it "
+                     "volatile, or build without --lto)" % n)
+    else:
+        # Change visibility of wrapped symbols to "local"
+        debug("Changing visiblity of wrapped symbols to 'local' in %s" % output, args)
+        make_symbols_local(output, all_sym_renames, args)
 
 def process(output, args):
     # Read actual data and verify proper section placement
@@ -210,6 +324,17 @@ def process(output, args):
     check(bs["size"] % 4 == 0, "Length of section '%s' is not a multiple of 4" % sectname_bss)
     check(bs["addr"] >= crt_off, "Section '%s' doesn't begin after section '%s'" % (sectname_bss, sectname_data))
     bss_sect = bs["data"]
+    # The loader places .bss immediately after .data in the RAM arena, but
+    # symbol values are .data-relative LINKER addresses — they include the
+    # alignment gap between .data and .bss (e.g. .bss 32-byte aligned). Pad
+    # the packed .bss with that gap so the arena covers every .bss byte the
+    # symbols can reach; otherwise the tail of .bss writes past the arena
+    # into whatever block the allocator placed next (e.g. the task stack).
+    bss_gap = bs["addr"] - (ds["addr"] + ds["size"])
+    check(bss_gap % 4 == 0, ".bss alignment gap '%d' is not a multiple of 4" % bss_gap)
+    if bss_gap > 0:
+        debug("Padding %d bytes of .data->.bss alignment gap into the RAM arena" % bss_gap, args)
+        bss_sect = bytes(bss_gap) + bss_sect
     sect_idx_mapping[bs["index"]] = sectname_bss
     # Add a special key for undefined symbols
     sect_idx_mapping["SHN_UNDEF"] = None
@@ -639,6 +764,11 @@ parser.add_argument("--target", dest="target", default=targets.DEFAULT_TARGET, h
 parser.add_argument("--mod-version", dest="mod_version", default="1.0", help="Module ABI version (default: 1.0)")
 parser.add_argument("--udynlink-version", dest="udynlink_version", default="3.0", help="Loader ABI version (default: 3.0)")
 parser.add_argument("--no-prologue", dest="no_prologue", action="store_true", help="Skip assembly prologue generation for exported functions (default: false)")
+parser.add_argument("--lto", dest="lto", action="store_true",
+    help="Enable link-time optimization (GCC -flto). Compiles to fat LTO "
+    "objects, splits exported functions into prologue wrappers via linker "
+    "--wrap (binutils refuses symbol renames on LTO IR), and optimizes "
+    "across translation units at link time. GCC-based toolchains only.")
 parser.add_argument("--workdir", dest="workdir", default=None,
     help="Directory for intermediate files (*.o, *.elf, *.s) and the default .bin output (default: next to source). "
          "Also via UDYNLINK_WORKDIR env var.")

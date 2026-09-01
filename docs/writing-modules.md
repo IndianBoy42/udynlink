@@ -638,6 +638,7 @@ Source files are compiled with:
 | `--no-verbose` | Do not print executed commands. |
 | `--no-debug` | Do not print debug output. |
 | `--no-prologue` | Skip the assembly prologue/wrapper on exported functions. The host must use `UDYNLINK_PREPARE_CALL()` to set `r9` before every call. |
+| `--lto` | Enable link-time optimization (GCC `-flto`). See [LTO Mode](#lto-mode). |
 | `--workdir <dir>` | Directory for intermediate files (`*.o`, `*.elf`, `*.s`) and the default `.bin` output, keeping the source tree clean. Default: next to the source file. |
 | `--strip-hidden-syms` | Demote defined symbols whose ELF visibility is `STV_HIDDEN`/`STV_INTERNAL` to nameless internal entries. Pair with `-fvisibility=hidden -fvisibility-inlines-hidden` in `--build-flags`. |
 | `--strip-non-public-syms` | When `--public-symbols` is set, demote every defined symbol not in the list to nameless internal. No-op without `--public-symbols`. |
@@ -650,6 +651,54 @@ Source files are compiled with:
 |----------|-------------|
 | `UDYNLINK_WORKDIR` | Default value for `--workdir`. Set to route intermediate files out of the source tree. |
 | `UDYNLINK_CC_PREFIX` | Compiler prefix. Default: `arm-none-eabi-`. |
+
+### LTO Mode
+
+`--lto` enables GCC link-time optimization: sources compile to *fat* LTO
+objects (serialized IR plus real code) and the final link runs the LTO
+plugin, letting GCC inline and constant-fold across translation units.
+For multi-TU modules this typically shrinks the image meaningfully; for
+single-TU modules the effect is small.
+
+```bash
+python3 mkmodule --lto source1.c source2.c
+```
+
+Implementation notes (why the pipeline differs from the default mode):
+
+- binutils refuses `objcopy --redefine-sym` on LTO IR, so exported functions
+  are split into wrapper/body via the linker's `--wrap` instead of object-level
+  renaming: references to a wrapped function resolve to the `.text_nogc`
+  prologue wrapper, which calls the body through `__real_<name>`. Cross-TU
+  calls that survive inlining therefore go through the wrapper (identical
+  semantics to the default mode).
+- The link passes `-Wl,--export-dynamic`. Without it the plugin resolution
+  marks module symbols internal and GCC internalizes exported data
+  (`D g` becomes local `d g`) or folds reads of weak data away entirely —
+  hosts could no longer find or override them.
+- `-fno-section-anchors` keeps user-visible names on GOT relocations
+  (whole-program data pooling would otherwise fold variables into
+  `.LANCHORn` symbols; `UDYNLINK_REQUIRES()` declarations depend on their
+  names surviving).
+- A post-link `objcopy -W` pass restores `STB_WEAK` on weak symbols: LTO
+  re-emits prevailing weak definitions as GLOBAL, which would otherwise
+  switch them from the loader's weak (host-overridable) class to exported.
+
+Constraints and caveats:
+
+- **GCC-based toolchains only** (default `arm-none-eabi-` prefix). Clang
+  LTO (`-flto=thin`) is not supported by this pipeline.
+- Intermediate `.o` files are fat LTO objects (larger than default objects);
+  compile time roughly doubles.
+- Weak data whose every read GCC can prove constant is folded even with the
+  countermeasures above if the module never references it in a non-constant
+  way; mkmodule prints a warning if a weak symbol disappears entirely.
+  Declare such overrides `volatile` or reference them through a volatile
+  pointer, as the loader's weak-override contract is a runtime mechanism the
+  compiler cannot see.
+- Passing `-flto` via `--build-flags` without `--lto` is rejected: slim LTO
+  objects hide function types from the discovery pass, which would silently
+  break the wrapper mechanism.
 
 ## Building and Distributing Modules
 
