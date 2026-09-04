@@ -26,6 +26,8 @@ SECTIONS
     . = ALIGN(4);
     *(.data)                 /* .data sections */
     *(.data*)                /* .data* sections */
+    *(.sdata)                /* small-data section (ARM EABI small data area) */
+    *(.sdata*)
 . = ALIGN(4);
 		KEEP(*(.init))
 		__preinit_array_start = .;
@@ -42,6 +44,9 @@ SECTIONS
     . = ALIGN(4);
     *(.bss)
     *(.bss*)
+    *(.sbss)                 /* small-bss section (ARM EABI small data area) */
+    *(.sbss*)
+    *(COMMON)
     /* Thunk-export stub/gateway slots (UDYNLINK_THUNK_EXPORT).
      * Unreferenced, so KEEP is required to survive --gc-sections. */
     KEEP(*(.bss.udynlink_thunk_pool))
