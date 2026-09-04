@@ -1,14 +1,3 @@
-## Repository Map
-
-A full codemap is available at `codemap.md` in the project root.
-
-Before working on any task, read `codemap.md` to understand:
-- Project architecture and entry points
-- Directory responsibilities and design patterns
-- Data flow and integration points between modules
-
-For deep work on a specific folder, also read that folder's `codemap.md`.
-
 ## What This Repo Is
 
 `udynlink` is a **micro dynamic linker for ARM Cortex-M MCUs**. It loads position-independent C/C++ binary modules at runtime on embedded targets. The core runtime is ~800 lines of C; the build toolchain is a set of Python 3 scripts that compile C/C++ to a custom loadable module format.
@@ -96,6 +85,7 @@ Additional flags:
 - `--mod-version <ver>` — module ABI version (default: `1.0`)
 - `--udynlink-version <ver>` — loader ABI version (default: `3.0`)
 - `--no-prologue` — omit assembly prologue wrappers; sets `UDYNLINK_ARCH_FLAG_NO_PROLOGUE` in the module header
+- `--lto` — link-time optimization (GCC `-flto`, fat objects, `--wrap`-based prologues; see `docs/writing-modules.md` → LTO Mode)
 - `--workdir <dir>` — directory for intermediate files (`*.o`, `*.elf`, `*.s`) and the default `.bin` output, keeping the source tree clean (default: next to source; also via `UDYNLINK_WORKDIR` env var)
 
 For C++ sources (`.cpp`/`.cxx`), the toolchain automatically adds `-fno-exceptions -fno-rtti -fno-use-cxa-atexit` and compiles `cpp_init_fini.c` for `__init_array` support.
