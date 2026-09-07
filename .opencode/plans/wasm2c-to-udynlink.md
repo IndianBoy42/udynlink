@@ -1,442 +1,390 @@
-# Plan: wasm2c → udynlink Module Compilation
+# Plan: wasm2c → udynlink v2 (Redesign)
 
-## Goal
-Determine feasibility and, if viable, implement a toolchain that compiles a WebAssembly binary module (`.wasm`) into a udynlink-compatible loadable module for ARM Cortex-M via `wasm2c` + ARM GCC.
-
-## Executive Summary
-
-**Yes, it is possible.** The technical barriers are surmountable with targeted integration work. The main challenges are:
-1.  Compiling wasm2c's generated C with udynlink's strict PIC flags (`-fPIE`, `r9` base register).
-2.  Providing a bare-metal-compatible `wasm2c` runtime (replacing `setjmp`/`longjmp` and `malloc` dependencies).
-3.  Bridging the wasm2c "instance" model with udynlink's load-and-call model.
-
-This plan outlines a proof-of-concept path and asks the user to clarify scope and constraints.
+> Supersedes the v1 plan (Phases 1–2 PoC, see git history for the original document
+> and its recorded results). Created 2026-09-07 after a ground-truth review of the
+> prototype: core loader/PIC integration verified working; build script has
+> verified defects (no-op flags, broken imports, missing wasm2c-mandated compile
+> flags); Phases 2.5–5 never started.
 
 ---
 
-## 1. Context: What We Are Bridging
+## 0. Prototype status snapshot (reviewed 2026-09-07)
 
-### 1.1 udynlink Requirements (from codebase analysis)
+**Verified working** (evidence: QEMU + built artifacts):
 
-| Requirement | Details |
-|-------------|---------|
-| **Target** | ARM Cortex-M (M0/M0+/M3/M4/M4F/M7/M33/M55/M85) |
-| **PIC Model** | `-fPIE -msingle-pic-base -mno-pic-data-is-text-relative -mlong-calls` |
-| **Base Register** | `r9` reserved; host must set `r9 = p_mod->ram_base` before every call |
-| **Linker** | `-nostartfiles -nodefaultlibs -nostdlib -Wl,--emit-relocs,--gc-sections` |
-| **Format** | Custom binary (`UDLM` header, LOT, relocs, symtab, .text, .data) |
-| **Relocations** | `R_ARM_GOT_BREL` (LOT), `R_ARM_ABS32`/`R_ARM_TARGET1` (data), ignored `R_ARM_THM_CALL` |
-| **Host Hooks** | `udynlink_external_malloc/free`, `udynlink_external_resolve_symbol`, `udynlink_external_vprintf` |
-| **Runtime** | No libc/CRT; host provides all external symbols |
+| Capability | Evidence |
+|---|---|
+| wasm2c 1.0.34 output → udynlink module (PIC/LOT/prologues) | `test-wasm2c-{add,fac,hello}` green on MPS2-AN386, `-O3`+`-Os`, all 3 load modes |
+| End-to-end script build for import-free modules | `hello.wasm` → 2972 B valid UDLM module |
+| Custom bare-metal runtime (no libc, no setjmp) | ~1.6 KB text after `--gc-sections`; no unresolved symbols |
+| Binary-format coverage | parser contract tests round-trip wasm2c-shaped bins |
 
-### 1.2 wasm2c Output Model (from WABT docs/source)
+**Verified defects** (all reproduced or proven by TU-level compile experiments):
 
-| Aspect | Details |
-|--------|---------|
-| **Output** | Plain C99/C11 source + header |
-| **Instance Model** | All state (memory, globals, tables) lives in a `w2c_<modname>` struct |
-| **Exports** | Functions like `w2c_modname_funcname(w2c_modname* instance, ...)` |
-| **Runtime** | Requires `wasm_rt_allocate_memory`, `wasm_rt_trap`, `memset`, `memcpy`, etc. |
-| **Traps** | Default uses `setjmp`/`longjmp`; **overridable via `WASM_RT_TRAP_HANDLER`** |
-| **Memory** | Linear memory allocated via `wasm_rt_allocate_memory` (calls `malloc` in default runtime) |
-| **Optimization** | Requires `-fno-optimize-sibling-calls -frounding-math` (and maybe `-fsignaling-nans` on GCC) |
-
-### 1.3 The Compatibility Matrix
-
-| Component | Compatibility | Notes |
-|-----------|-------------|-------|
-| **C99/C11 source output** | ✅ Compatible | Compiles with `arm-none-eabi-gcc` |
-| **PIC flags (`-fPIE`, `r9`)** | ⚠️ **Needs verification** | Must compile wasm2c generated code + runtime with udynlink PIC flags. Standard `-fPIC` is **not** the same as `-fPIE -msingle-pic-base`. |
-| **GOT/LOT indirection** | ✅ Compatible | wasm2c accesses globals via the instance struct; GCC will route static globals through LOT if PIC flags are correct. |
-| **Function pointer tables (`CALL_INDIRECT`)** | ✅ Compatible | Stored in `.data`; udynlink's `R_ARM_ABS32` relocation fixes function pointers at load time. |
-| **Data relocations** | ✅ Compatible | Absolute pointers in `.data` are patched by loader. |
-| **Linear memory (`wasm_rt_memory_t`)** | ⚠️ **Needs custom runtime** | Default runtime calls `malloc`. Must replace with `udynlink_external_malloc` or pre-allocate in module data. |
-| **Trap handling (`wasm_rt_trap`)** | ⚠️ **Needs custom runtime** | Default uses `setjmp`/`longjmp` (requires libc). Must define `WASM_RT_TRAP_HANDLER` with a bare-metal handler (e.g., return error code, or `udynlink_external_vprintf` + halt). |
-| **Runtime functions (`memset`, `memcpy`)** | ⚠️ **Host must provide** | These are extern symbols resolved via `udynlink_external_resolve_symbol`. The host firmware must export them. |
-| **Instance initialization (`*_instantiate`)** | ⚠️ **Needs integration** | wasm2c requires calling an init function before use. This is analogous to C++ `udynlink_cpp_init`. Host must call it after `udynlink_load_module`. |
-| **Module size / symbol count** | ⚠️ **Potential limit** | udynlink uses 16-bit fields for `num_lot` and `num_rels` (max 65535). Large wasm modules may exceed this. |
-| **No standard library** | ⚠️ **Must strip** | wasm2c default runtime includes `<stdlib.h>`, `<string.h>`, `<setjmp.h>`. These must be removed or replaced. |
+| # | Defect | Where |
+|---|---|---|
+| D1 | `--static-memory` / auto-static / `--custom-page-size` are no-ops: defines land in shim TU only; runtime TU compiles dynamic-malloc path (proof: e2e module `bss=52` vs 65540 with define reaching runtime) | `scripts/mkwasm2c-module` `generate_shim` |
+| D2 | Modules with imports fail to build: shim calls `wasm2c_X_instantiate(inst)` but wasm2c emits `(inst, w2c_env*)` | shim generator |
+| D3 | `--trap-handler` dead: runtime calls weak `wasm_rt_trap_handler`; never reads `WASM_RT_TRAP_HANDLER` macro | `wasm-rt-udynlink.c:140` vs shim |
+| D4 | `wasm_rt_mem_realloc` fallback copies **new** size from old buffer → OOB read on every `memory.grow` | `wasm-rt-udynlink.c:96` |
+| D5 | Funcref/externref tables malloc'd, never zeroed → garbage funcref instead of null; `call_indirect` on unfilled slot = wild call | `wasm-rt-udynlink.c:248-269` |
+| D6 | Export parser silently drops pointer-returning exports (e.g. `memory`) and anything sret/multi-value-shaped | `mkwasm2c-module` regex |
+| D7 | wasm2c-mandated flags `-fno-optimize-sibling-calls -frounding-math` never passed → latent float-miscompilation (tests are integer-only, so hidden) | module compile command |
+| D8 | `--gen-c-header` default `--header-path .` resolves **after** `chdir(tmpdir)` → header written into temp dir and deleted | `mkwasm2c-module:401` |
+| D9 | Symtab bloat: 46 symbols / 1060 B (36% of image) for a 2-function module; runtime internals, wasm2c internals, libc names all exported | mkmodule defaults, no `--public-symbols` default |
+| D10 | Test assets drift: `test-wasm2c-add` carries stale spike runtime; committed generated C; no `.wat` source; script path has zero CI coverage | `tests/test-wasm2c-*` |
+| D11 | Stack exhaustion = real MCU stack overflow (depth counting disabled), not a wasm trap | `wasm-rt.h:86` |
 
 ---
 
-## 2. Architecture Options
+## 1. Locked design decisions (2026-09-07)
 
-### Option A: Custom Bare-Metal wasm2c Runtime (Recommended)
+| # | Decision | Choice | Rationale |
+|---|---|---|---|
+| K1 | First capability after stabilization | **Imports / host interop** | Prerequisite for nearly all real modules (anything touching a HAL/driver/SDK); gates OTA logic patches and scripting FFI |
+| K2 | Import binding | **Symbol contract** | Host exports wasm2c-named symbols; loader resolves at load; tool generates the exact host header. Zero overhead, zero glue, zero runtime RAM — matches "udynlink is just a linker" |
+| K3 | Instance model | **Singleton default, instances opt-in** | Keep today's DX (`add(1,2)` just works); `--instances` generates full create/destroy + instance-taking wrappers for per-connection/fleet state |
+| K4 | Default linear-memory model | **Static (.bss)** | Deterministic, zero-malloc, heap-less-firmware friendly; RAM cost visible in module header; all modes available via `--memory=` |
+| K5 | Trap recovery | **Both mechanisms**: host-registered recovery point (primary) + baked wrapper recovery (`--wrappers-recover`, opt-in) | Host-decided at runtime as primary; wrapper flavor for hosts wanting plain calls; fatal loop remains the zero-cost default |
 
-Create a replacement for `wasm-rt-impl.c` / `wasm-rt-impl.h` that is bare-metal friendly and uses udynlink host callbacks.
-
-**Key pieces:**
-1.  **Memory allocation:** Implement `wasm_rt_allocate_memory` using `udynlink_external_malloc` (and `udynlink_external_free`).
-2.  **Trap handling:** Compile with `-DWASM_RT_TRAP_HANDLER=my_trap_handler`. The handler logs the error (via `udynlink_external_vprintf`) and returns control (since `noreturn` is tricky on bare metal without OS process model, we may need a custom `wasm_rt_unreachable()` that halts or returns a sentinel).
-3.  **String/memory ops:** Provide `memset`/`memcpy` from the host firmware or compile `newlib` `memset` into the module.
-4.  **No `setjmp`:** Remove all `jmp_buf` usage by providing the trap handler macro.
-
-**Pros:** Clean separation; wasm2c generated code is unchanged.  
-**Cons:** Requires writing and maintaining a parallel runtime.
-
-### Option B: Static Linear Memory (Simpler, Less Flexible)
-
-Instead of `wasm_rt_allocate_memory`, modify the wasm2c output (or pre-process it) to embed the linear memory as a `.bss` array inside the instance struct. This avoids dynamic allocation entirely.
-
-**Pros:** No `malloc` dependency; simpler.  
-**Cons:** Requires either (a) patching wasm2c source, or (b) post-processing generated C to replace `wasm_rt_allocate_memory` with static initialization. Wasm memory max must be known at build time.
-
-### Option C: Full wasm2c Runtime Compiled into Module
-
-Compile the standard `wasm-rt-impl.c` into the module with PIC flags, and let the linker resolve `malloc` → `udynlink_external_malloc` via the host symbol table.
-
-**Pros:** Minimal changes to existing files.  
-**Cons:** `setjmp`/`longjmp` is the blocker — bare-metal ARM GCC has `setjmp` in newlib but it may pull in unwanted libc baggage. Also, the standard runtime includes OS-specific signal handlers. This is **not recommended** for a clean solution.
+Principle applied throughout: **host decides > build-time flag > never hardcode**. A feature is only baked into a module when the mechanism cannot live host-side. Every feature costs exactly zero when unused.
 
 ---
 
-## 3. Proposed Proof-of-Concept (PoC) Steps
+## 2. Design principles & threat model
 
-### Phase 1: Feasibility Spike (No file changes yet)
-1.  **Select a tiny wasm module** (e.g., `fac.wasm` or a simple `add.wasm`).
-2.  **Generate C with wasm2c:** `wasm2c tiny.wasm -o tiny.c`
-3.  **Audit generated C:** Verify it has no inline assembly, no hardcoded addresses, no x86-specific intrinsics (segue).
-4.  **Create bare-metal runtime stub:** A minimal `wasm-rt-impl.c` replacement that defines:
-    *   `wasm_rt_allocate_memory` (calls `udynlink_external_malloc`)
-    *   `wasm_rt_trap` (calls `udynlink_external_vprintf` then halts/returns)
-    *   `memset`, `memcpy` (host-resolved or local implementation)
-    *   Compile with `-DWASM_RT_TRAP_HANDLER=my_trap_handler`
-5.  **Compile with udynlink flags:** Use `arm-none-eabi-gcc -fPIE -msingle-pic-base -mno-pic-data-is-text-relative ...` and inspect ELF for `R_ARM_GOT_BREL` and `R_ARM_ABS32`.
-6.  **Run through `mkmodule`:** Attempt to build a `.bin` module. Check if `mkmodule` handles the symbols correctly.
+### Principles
 
-### Phase 2: Integration (If Phase 1 succeeds)
-1.  **Write a `wasm2c` bare-metal runtime** (`wasm2c/wasm-rt-udynlink.c` / `.h`) in the repo.
-2.  **Write a wrapper script** (`scripts/mkwasm2c-module`) that:
-    *   Runs `wasm2c` on input `.wasm`
-    *   Compiles generated `.c` + bare-metal runtime with udynlink flags
-    *   Runs `mkmodule`-equivalent logic to produce the final `.bin`
-3.  **Write a QEMU test case:** A host firmware that loads the wasm-derived module, instantiates it, calls an exported function, and verifies the result.
+1. **Unopinionated, usage-agnostic** (repo charter): no imposed lifecycle, allocator, or trap policy. Defaults exist to make simple things simple; flags exist so users make the tradeoffs.
+2. **Fail loudly**: no silent guessing. Unsupported wasm features (sret/multi-value exports, memory64, multi-memory in static mode) produce a named error with a fix hint, never a silently degraded module.
+3. **Zero-cost when unused**: every optional feature compiles out completely when disabled.
+4. **One source of truth for the runtime**: `udynlink/wasm2c_runtime/`. Test dirs consume it; never vendored copies.
+5. **Every phase ships its test through the script**: a feature isn't done until a QEMU test builds *via `mkwasm2c-module`* and passes. (D1–D3 existed precisely because CI tested around the script.)
 
-### Phase 3: Hardening
-1.  Handle `CALL_INDIRECT` function tables.
-2.  Handle multiple memories (if needed).
-3.  Address the 16-bit `num_rels`/`num_lot` limit for large modules.
-4.  Optimize: static linear memory option, dead-code stripping.
+### Threat model (explicit, per project owner)
+
+- **Primary concern: defective / misimplemented modules must not take down the whole system** — recoverable traps, stack-depth limits, and allocation-failure handling. **All containment is optional**, decided by the host (runtime hooks / registered recovery point) or at build time (flags), never imposed.
+- **Not a goal: defense against malicious code.** wasm2c/udynlink is a native-code plugin mechanism with wasm-derived memory safety *within linear memory accesses* (bounds checks are mandatory and always on). It is **not** an interpreter-grade sandbox: module code runs on the host C stack, calls host imports with full privilege, and any memory-safety bug in wasm2c-emitted code is native code. Hosts needing hostile-code isolation should use an interpreter runtime (WAMR/wasm3) instead; the docs will say this plainly.
+- Free partial isolation retained regardless of flags: wasm linear memory is bounds-checked (module cannot address outside its memory), and module code is PIC with r9-based data access.
 
 ---
 
-## 4. User Requirements (Clarified)
+## 3. Architecture v2
 
-| Question | Answer |
-|----------|--------|
-| **Q1: Use case** | **B** — Build-time compilation toolchain (`mkmodule`-style) that accepts `.wasm` instead of C source. |
-| **Q2: Trap handling** | **Reject/fatal** — Traps are not recoverable. The toolchain can reject wasm modules with trap instructions at compile time, or the runtime halts/abort on trap. No `setjmp`/`longjmp` needed. |
-| **Q3: Linear memory** | **B if no `memory.grow`; A if `memory.grow` exists** — Start with static `.bss` for PoC; add dynamic allocation later. |
-| **Q4: Wasm features** | **Core MVP** — No SIMD, threads, exceptions, multi-memory for now. |
-| **Q5: Target** | **All Cortex-M targets** — Design for portability; PoC on a single target (Cortex-M4 recommended). |
+### 3.1 Build pipeline
 
----
-
-## 5. Updated Architecture
-
-### Chosen Approach: Custom Bare-Metal Runtime + Static Memory (Phase 1)
-
-Since traps are fatal and we start with MVP, we can build a minimal runtime that:
-1.  **Omits `setjmp`/`longjmp` entirely** — `wasm_rt_trap()` calls `udynlink_external_vprintf()` and then loops forever (or calls a host-provided abort).
-2.  **Uses static linear memory** for PoC — embed the wasm memory as a `.bss` array in the instance struct. This avoids `malloc` and `udynlink_external_malloc` entirely for the first iteration.
-3.  **Provides `memset`/`memcpy`** as local, inlined, or host-resolved symbols.
-4.  **Compiles the generated C + runtime with udynlink PIC flags** and feeds it into the existing `mkmodule` toolchain.
-
-### Memory Model: Static (Phase 1)
-
-```c
-typedef struct {
-  // ... existing wasm2c instance fields (globals, tables)
-  wasm_rt_memory_t w2c_memory;
-  // Static linear memory buffer embedded directly in the instance struct
-  // The instance struct itself is allocated in the module's .bss
-} w2c_modname;
+```
+foo.wat ──wat2wasm──▶ foo.wasm
+                         │
+                mkwasm2c-module  (pinned wabt, version-checked)
+                         │
+        ┌────────────────┼──────────────────────────┐
+        ▼                ▼                          ▼
+  wasm2c → foo.c/.h   wasm_rt_config.h          (optional) host header
+  (patched: NDEBUG,     (generated: memory model,   foo_imports.h: required
+   string builtins)      page size, trap flags,      host symbols + exact
+                         hook overrides)             C prototypes
+        └────────────────┴──────────────────────────┘
+                         │
+              mkmodule (udynlink flags + wasm2c-mandated flags)
+                         │
+              mod_foo.bin (+ optional mod_foo_module_data.h)
 ```
 
-The `wasm_rt_allocate_memory` stub simply sets `mem->data` to point to the pre-allocated buffer and sets `size`/`pages`. No actual allocation occurs.
+Config header fixes D1/D3 at the root: `wasm-rt.h` picks it up via
+`#if __has_include("wasm_rt_config.h")`, so the defines reach **every TU**
+(runtime, generated code, shim) instead of only the shim.
 
-### Memory Model: Dynamic (Phase 2)
+### 3.2 Import binding: symbol contract (K2)
 
-If the wasm module uses `memory.grow`, replace the static buffer with:
-```c
-void wasm_rt_allocate_memory(...) {
-  mem->data = udynlink_external_malloc(initial_pages * page_size);
-  // ... set size, pages
-}
-```
-And implement `wasm_rt_grow_memory` using `udynlink_external_realloc` (or malloc+memcpy+free if realloc unavailable).
+- Script parses `/* import: '<env>' '<name>' */` declarations from generated header.
+- The **shim defines `struct w2c_env { void* user; }`** (env is embedder-defined by
+  wasm2c's contract; the shim is the embedder) and passes it to
+  `wasm2c_X_instantiate(&inst, &__wasm_env)`. Host may set `user` via a generated
+  setter for per-instance context.
+- Import functions (`w2c_<env>_<name>`) remain **undefined symbols** in the module;
+  the loader binds them through the existing `udynlink_external_resolve_symbol`.
+  Host firmware implements them with the exact wasm2c signatures (leading
+  `struct w2c_env*` parameter, usually ignored).
+- Tool emits **`<mod>_imports.h`** from the `.wasm`: required symbol names + exact
+  C prototypes + a comment block documenting the contract. (Synergy: `mkhostsyms`
+  builds the host's O(1) table; this header tells the host *what to put in it*.)
+- No mangled glue, no indirection, no per-import RAM. Namespace coupling is
+  wasm's own: distinct import module names (`env`, `wasi_*`, vendor names) give
+  natural namespacing.
+- Future option (not built now): `--import-glue` vtable dispatch, if multi-vendor
+  name decoupling is ever needed.
 
----
+### 3.3 Trap policy (K5)
 
-## 6. Risks & Mitigations
+Three-tier, host decides at runtime wherever possible:
 
-| Risk | Likelihood | Mitigation |
-|------|------------|------------|
-| wasm2c generated C fails to compile with `-fPIE -msingle-pic-base` | Medium | **Spike first.** If it fails, try `-fPIC` + `-shared -symbolic` as a workaround (per ARM community findings). |
-| `R_ARM_ABS32` in `.text` section (unhandled by mkmodule) | Low | Audit generated assembly. If present, extend `mkmodule` or linker script. |
-| `num_rels`/`num_lot` 16-bit overflow for non-trivial wasm | Medium | Only affects large modules. MVP modules are small. |
-| PIC performance overhead on Cortex-M0 | Low | Expected ~1 extra load per global access. Acceptable. |
-| wasm2c generated code calls `memset`/`memcpy` on large blocks | Low | Provide local implementations or host hooks. |
+1. **Fatal (default, zero-cost)**: `wasm_rt_trap` → optional weak
+   `wasm_rt_trap_handler` hook (D3 fixed: wired via config macro override) →
+   `bkpt` loop. For hosts that treat module faults as system faults.
+2. **Host-registered recovery (primary containment, opt-in)**:
+   - Module built with `--recoverable-traps`: runtime references `longjmp`
+     (resolved from host like any import; `<setjmp.h>` used header-only) —
+     measured cost on Cortex-M4: **32 B text + 164 B bss per registered context**.
+   - Host API: `wasm_rt_set_recovery(jmp_buf*)` before the call;
+     `wasm_rt_last_trap()` / `wasm_rt_strerror()` after. If a trap fires with no
+     recovery point registered → falls back to fatal tier.
+   - Works with prebuilt modules; the decision is the host's, per call site, at
+     runtime.
+3. **Baked wrapper recovery (opt-in `--wrappers-recover`)**: generated export
+   wrappers `setjmp` internally and return an error sentinel on trap
+   (0 / NULL / void-return). Documented ambiguity: sentinel values are
+   indistinguishable from real results; hosts wanting clean error channels use
+   tier 2. One shared `jmp_buf` in the shim.
 
----
+Related containment (all optional, build-time):
+- `--stack-depth-limit=N`: enables `WASM_RT_USE_STACK_DEPTH_COUNT` with max N →
+  wasm recursion becomes `TRAP_EXHAUSTION` (recoverable) instead of a silent
+  native stack overflow (D11). ~3 instructions per call when enabled.
+- Allocation failure during instantiate → new `WASM_RT_TRAP_OOM` code → same
+  three-tier policy. (wasm2c's `*_instantiate` returns void, so trap is the only
+  channel; static mode cannot fail.)
 
-## 7. Execution Plan & Task Breakdown
+### 3.4 Linear memory models (K4)
 
-### Phase 1: Feasibility Spike
-**Goal:** Verify that a tiny wasm module can be converted to a working udynlink module.
+`--memory=static|dynamic|external`, default **static**; auto-refinement: a module
+with `memory.grow` always builds dynamic unless the user forces static (grow then
+fails at runtime, as today).
 
-**Tasks:**
-1.  **Install `wasm2c` / WABT** in the environment.
-2.  **Create a tiny test wasm module** (`add.wasm` or `fac.wasm`).
-3.  **Generate C** with `wasm2c`.
-4.  **Write a minimal bare-metal runtime stub** (`wasm-rt-udynlink.c`):
-    *   `wasm_rt_allocate_memory` → sets `data` pointer to static buffer
-    *   `wasm_rt_trap` → fatal loop
-    *   `memset`, `memcpy` → simple local implementations
-    *   No `setjmp`, no `malloc`, no `<stdlib.h>`
-5.  **Compile with udynlink PIC flags** and inspect relocations (`R_ARM_GOT_BREL`, `R_ARM_ABS32`).
-6.  **Run through `mkmodule`** to produce a `.bin`.
-7.  **Write a minimal QEMU host test** that loads the module, instantiates, calls an export, and checks the result.
+| Mode | Mechanics | Host obligation | RAM story |
+|---|---|---|---|
+| `static` (default) | Buffer in module `.bss` (`WASM_RT_INITIAL_PAGES` × `WASM_RT_PAGE_SIZE`) | none — no allocator needed | full initial size in module RAM footprint (host sizes from header); grow impossible |
+| `dynamic` | `wasm_rt_malloc/realloc/free` hooks (default → `udynlink_external_*`) | host allocator | small image; grow up to max_pages |
+| `external` | host passes buffer before first call: `mod_set_memory(void* buf, size_t bytes)`; `wasm_rt_allocate_memory` validates `bytes >= initial_pages × page_size` | carved arena, DMA-capable RAM, MPU region, shared pool | host controls placement; grow supported if host manages the buffer (re-set after grow) |
 
-**Deliverable:** A working end-to-end PoC with one tiny wasm module on one QEMU platform.
+- **Custom page size**: `--custom-page-size=N` shrinks `WASM_RT_PAGE_SIZE`
+  (module must not rely on 64 KiB addresses; tool prints the resulting memory
+  size). Toolchain-native custom page sizes (wat2wasm support) preferred once
+  available; the runtime define remains the portable mechanism.
+- Table allocations always come from the same hook family as the selected mode;
+  zeroed after allocation (D5); failure → `WASM_RT_TRAP_OOM`.
 
-### Phase 2: Toolchain Integration
-**Goal:** Build a reusable `mkwasm2c-module` script.
+### 3.5 Instance model (K3)
 
-**Tasks:**
-1.  **Refine the bare-metal runtime** into a proper `wasm-rt-udynlink.h` / `.c` with both static and dynamic memory options.
-2.  **Write `scripts/mkwasm2c-module`** — a Python script (or shell) that:
-    *   Accepts `.wasm` + target + options
-    *   Runs `wasm2c`
-    *   Compiles generated `.c` + runtime + udynlink flags
-    *   Invokes `mkmodule`-equivalent logic to output `.bin` and optionally C header
-3.  **Add QEMU test cases** for:
-    *   `add.wasm` (no memory)
-    *   `fac.wasm` (no memory, recursion)
-    *   `hello.wasm` (linear memory, data segment)
-    *   `memory_grow.wasm` (dynamic memory, Phase 2.5)
-4.  **Validate all Cortex-M targets** via `just validate-all-targets` equivalent.
+- **Default (singleton)**: as today — `static w2c_X __wasm_instance;` +
+  lazy `__wasm_ensure_instantiated()` + bare wrappers named after the wasm
+  exports. One instance per loaded module copy.
+- **`--instances`**: generates
+  `mod_inst_t* mod_create(void* mem_buf)` / `void mod_destroy(mod_inst_t*)` and
+  instance-taking wrappers (`u32 add(mod_inst_t*, u32, u32)`).
+  `mem_buf` is required for `external` memory, optional (NULL → dynamic) for
+  dynamic; **`static` memory is rejected in `--instances` builds** (per-instance
+  `.bss` cannot be baked — fail loudly with the two supported alternatives).
+- State isolation test proves two instances have independent globals/memory.
 
-**Deliverable:** A production-ready toolchain script and passing tests.
+### 3.6 Export wrappers & symbol-table policy (D6, D9)
 
-### Phase 3: Hardening & Extensions
-**Goal:** Support more wasm features and edge cases.
+- Wrappers named after wasm exports (nice DX), with **collision detection**:
+  reject/warn on names colliding with libc memfuncs, `wasm_rt_*`, `wasm2c_*`,
+  `w2c_*`; `--wrapper-prefix` as escape hatch.
+- Pointer-returning exports parsed and wrapped (D6); sret/multi-value signatures
+  → named build error (until Phase 4 multi-value support), never silent.
+- **Default `--public-symbols` = wrapper names only** (+ module-name entry).
+  `--export-all` restores today's behavior for debugging (symtab bloat becomes
+  an informed choice).
+- Singleton internals (`__wasm_ensure_instantiated`) stay `static` — unreachable
+  from the symtab, closing the "host bypasses lazy-init" hole.
 
-**Tasks:**
-1.  Support `memory.grow` (dynamic memory allocation via host `malloc`).
-2.  Support bulk memory / sign-extension (wasm2c already generates C for these; mainly compile flags).
-3.  Handle large modules (address 16-bit `num_rels`/`num_lot` limit if hit).
-4.  Optimize dead code stripping (`--gc-sections` effectiveness on wasm2c output).
-5.  Document the toolchain in `docs/wasm2c-integration.md`.
+### 3.7 Compile flags (D7)
 
-**Deliverable:** Full documentation and feature-complete toolchain.
+Always added for wasm2c-generated sources:
+`-fno-optimize-sibling-calls -frounding-math` (wasm2c requirements), on top of
+udynlink's PIC flags. Never "relaxed" for tail-calls (see Appendix — tail-call
+support, if ever added, must use wasm2c's tailcallee machinery, not flag
+relaxation). Target/float-ABI notes: soft-float module on hard-float host is
+compatible but slower; `--target cortex-m4f` etc. selects hard-float; arch_tag
+gate applies as for C modules.
 
----
+### 3.8 Toolchain hygiene
 
-## Phase 1 Results (Completed)
+- **wabt pinning**: `just setup-wabt` downloads a pinned wabt release into
+  `tools/` (mirroring `setup-qemu`); `mkwasm2c-module` parses `wasm2c --version`,
+  errors on missing, warns below minimum (emit details are load-bearing for the
+  script's parsers); CI uses the pinned version.
+- `os.system` string-building replaced with the repo's `execute` util +
+  argument lists; compiler/wasm2c stderr passed through on failure;
+  `--workdir`/`--keep` for debugging intermediates.
 
-**Status: ✅ SUCCESS** — The feasibility spike proved that a tiny wasm module can be compiled into a working udynlink loadable module.
+## 4. Feature flag matrix
 
-### What was accomplished
-- Created `add.wat` → assembled to `add.wasm` → generated `add.c`/`add.h` via `wasm2c`
-- Wrote a minimal bare-metal runtime stub (`wasm-rt-udynlink.c` + `wasm-rt.h`) with:
-  - Fatal trap handler (infinite loop, no `setjmp`/`longjmp`)
-  - Static linear memory (pre-allocated `.bss` buffer)
-  - `wasm_rt_memcpy` via compiler builtin
-  - No libc dependencies
-- Successfully compiled through `scripts/mkmodule` into `mod_wasm2c_add.bin`
-- QEMU tests **passed** on:
-  - **MPS2-AN386** (mainline QEMU 9.2.4, Cortex-M4)
-  - **STM32F429** (legacy xPack QEMU 7.2.5, Cortex-M4)
-- Both `-O3` and `-Os` builds pass (4/4 test runs)
+Build-time flags (baked per module; all default to zero-cost):
 
-### Key technical findings
-1. **PIC compatibility is clean** — wasm2c-generated code accesses globals via the instance struct; compiled with `-fPIE -msingle-pic-base -mno-pic-data-is-text-relative`, GCC emits `R_ARM_GOT_BREL` relocations that udynlink's loader patches correctly into the LOT at `r9` base.
-2. **Dead-code elimination is essential** — wasm2c emits ~700 lines of boilerplate for a 3-instruction function. With `-ffunction-sections -fdata-sections -Wl,--gc-sections`, the final `.text` is stripped to ~424 bytes (actual `add` logic is a single `adds` instruction).
-3. **No stdlib dependency achieved** — `-DNDEBUG` neutralizes `assert`, compiler builtins replace `memcpy`, and `--gc-sections` strips unused math helpers / `va_list` code.
-4. **Prologue wrappers work transparently** — `mkmodule` auto-generated assembly prologues save/restore `r9` around module calls, so the host doesn't need manual `UDYNLINK_PREPARE_CALL`.
-5. **Minimal runtime is sufficient for MVP** — Only `wasm_rt_is_initialized()`, `wasm_rt_trap()`, and `wasm_rt_memcpy()` were actually needed for a memory-less module.
+| Flag | Default | Cost when off | Cost when on |
+|---|---|---|---|
+| `--memory=static\|dynamic\|external` | `static` (auto→`dynamic` if grow) | — | per mode (§3.4) |
+| `--custom-page-size=N` | 65536 | 0 | smaller linear memory |
+| `--recoverable-traps` | off | 0 | ~32 B text + `longjmp` import; 164 B bss per registered recovery point (host-side) |
+| `--wrappers-recover` | off | 0 | setjmp per wrapper entry + one shared `jmp_buf` (164 B bss) |
+| `--stack-depth-limit=N` | off | 0 | ~3 instr/call + 4 B global |
+| `--instances` | off | 0 | create/destroy + instance-taking wrappers |
+| `--trap-handler=NAME` | none | 0 | call per trap |
+| `--malloc=NAME` / `--free=NAME` | `udynlink_external_*` | 0 | — |
+| `--public-symbols=...` / `--export-all` | wrappers only | 0 | symtab size (informed choice) |
+| `--wrapper-prefix=PFX` | none | 0 | — |
+| `--gen-imports-header` (auto with `--gen-c-header`) | auto | 0 | host header file |
 
-### Issues encountered and resolved
-| Issue | Resolution |
-|-------|------------|
-| `NULL` undeclared in custom header | Added `#include <stddef.h>` |
-| `assert()` pulled in libc `__assert_func` | Prepended `#define NDEBUG` to wasm2c output |
-| `va_arg` promotion warnings in dead code | Harmless; stripped by `--gc-sections` |
-| Test harness regex mismatch | Adjusted `test_data.py` pattern for single-test output |
+Runtime decisions (host-side, work with prebuilt modules):
 
-### Files created in the spike
-- `tests/wasm2c_poc/add.wat`, `add.wasm`, `add.c`, `add.h` — source and generated code
-- `tests/test-wasm2c-add/wasm-rt.h` — minimal bare-metal runtime header
-- `tests/test-wasm2c-add/wasm-rt-udynlink.c` — runtime stub implementation
-- `tests/test-wasm2c-add/add.c`, `add.h` — patched wasm2c output
-- `tests/test-wasm2c-add/mod_wasm2c_add.c` — module wrapper (instantiate + call export)
-- `tests/test-wasm2c-add/test_qemu.c` — host firmware test
-- `tests/test-wasm2c-add/test_data.py` — test harness metadata
+| Host API | Default | Effect |
+|---|---|---|
+| `wasm_rt_set_recovery(jmp_buf*)` | none registered | trap → `longjmp` to caller + `wasm_rt_last_trap()`; without it → fatal tier |
+| `wasm_rt_trap_handler` (weak) | no-op | logging/policy hook on the fatal path |
+| `wasm_rt_malloc/mem_free/mem_realloc` (weak) | `udynlink_external_*` | allocator policy, static pools |
+| `mod_set_memory(buf, bytes)` (external mode) | required before first call | buffer placement/pools/MPU regions |
 
----
+## 5. Roadmap
 
-## Updated Status & Next Steps
+Ordering per K1: stabilize → imports → traps → grow → instances. Docs and CI are
+**per-phase acceptance criteria**, not a final phase (v1's ordering allowed
+broken flags to ship green).
 
-| Phase | Status | Action |
-|-------|--------|--------|
-| Phase 1: Feasibility Spike | ✅ **DONE** | — |
-| Phase 2: Toolchain Integration | ⏳ **READY** | Write `scripts/mkwasm2c-module`; add tests for `fac`, `hello` (data segments), `memory_grow` |
-| Phase 3: Hardening | ⏳ **PENDING** | Dynamic memory, bulk memory, documentation |
+### Phase 2.1 — Stabilize the tool (gate for everything)
 
----
+> **Status: implemented (2026-09-07).** All D1–D9/D11 fixes in; wasm QEMU tests green through
+> the script on MPS2-AN386 + STM32F429 (both opt levels); 22 script unit tests in
+> `tests/py/test_mkwasm2c_module.py`; `just setup-wabt` pins wabt 1.0.34; docs + AGENTS.md updated.
+> Remaining for follow-up: run full `just ci`, then start Phase 2.2 (imports).
+Fixes: D1 (config header, all TUs), D3 (wire trap handler via config), D4
+(realloc old-size: hook becomes `(ptr, old_size, new_size)`; fallback copies
+`old_size`), D5 (zero tables, NULL checks → `WASM_RT_TRAP_OOM`), D6 (pointer
+exports; loud errors for sret/multi-value), D7 (wasm2c-mandated flags), D8
+(header path resolved before chdir), D9 (default public symbols), D10 partial
+(runtime single-source: test dirs include canonical runtime via build flags, no
+copies), D11 (`--stack-depth-limit`), toolchain hygiene (§3.8), collision
+detection (§3.6).
 
----
+New tests (pytest, no QEMU needed): config-header generation per flag combination;
+export parsing incl. pointer returns; collision rejection; memory-mode selection
+(static/dynamic/external/grow-auto); header-path regression.
 
-## 8. Full Roadmap: Wasm Feature Support for Cortex-M
+**Acceptance:** all three existing wasm2c QEMU tests still green (unchanged
+`.wat` sources, now built *through the script* on CI); script unit tests green;
+`just ci` unaffected for non-wasm tests.
 
-### Design Philosophy: udynlink Is Just a Linker
+### Phase 2.2 — Imports via symbol contract (K2) — *first big capability*
 
-The core `wasm-rt-udynlink` runtime must stay **lean, flexible, and unopinionated**. It is not a full WebAssembly runtime — it is a thin adapter that lets wasm2c-generated C code link against the user's existing firmware.
+- `--gen-imports-header` (+ auto with `--gen-c-header`): required host symbols,
+  exact prototypes, contract docs.
+- Shim: defines `struct w2c_env { void* user; }`, passes it to instantiate
+  (singleton: internal env + `mod_set_env_user()`; instances: per `mod_create`).
+- Runtime: no changes (imports are loader-resolved undefined symbols).
+- Docs: host-side how-to (implement, resolve, `mkhostsyms` synergy).
 
-**Core principle:** The runtime defines the interface; the user's firmware provides the implementation via hooks and callbacks. The user controls:
-- How memory is allocated (static buffer, heap, pool, etc.)
-- What happens on trap (halt, reset, log, or return an error code)
-- How host functions are resolved (symbol table, hardcoded, dynamic)
-- Whether features like threads or exceptions are supported (compile-time flags)
+New QEMU test `test-wasm2c-imports`: `.wat` with `(import "env" "host_add")`;
+host implements `w2c_env_host_add`, asserts `calc(20,3) == 64`; all 3 load
+modes; built through the script.
 
-This mirrors udynlink's existing model: `udynlink_external_malloc`, `udynlink_external_resolve_symbol`, etc. are user-provided callbacks.
+**Acceptance:** import module loads and calls host functions on MPS2-AN386 +
+STM32F429, both opt levels; missing import → clean loader error naming the
+symbol.
 
-### Runtime Hook Interface
+### Phase 2.3 — Trap policy & containment (K5, optional containment)
 
-The user provides these callbacks (declared weak so default no-op/fatal stubs exist):
+- Runtime: **new** host APIs `wasm_rt_set_recovery(jmp_buf*)` /
+  `wasm_rt_last_trap()` (only `wasm_rt_strerror` exists today);
+  `--recoverable-traps` builds reference `longjmp` (host-resolved); fatal
+  fallback preserved.
+- Script: `--wrappers-recover` (setjmp in wrappers, sentinel returns),
+  `--stack-depth-limit=N`.
+- New trap code `WASM_RT_TRAP_OOM` for allocation failure.
+- Docs: three-tier policy, RTOS guidance (task-per-call isolation as an
+  alternative), explicit "not a hostile-code sandbox" statement.
 
-| Hook | Signature | Default | Purpose |
-|------|-----------|---------|---------|
-| `wasm_rt_malloc` | `void* (size_t)` | `udynlink_external_malloc` | Allocate linear memory, tables, etc. |
-| `wasm_rt_free` | `void (void*)` | `udynlink_external_free` | Free linear memory, tables |
-| `wasm_rt_realloc` | `void* (void*, size_t)` | `malloc+memcpy+free` | Memory grow |
-| `wasm_rt_trap_handler` | `void (wasm_rt_trap_t)` | Infinite loop | Trap policy: user decides |
-| `wasm_rt_resolve_import` | `void* (const char* module, const char* name)` | `udynlink_external_resolve_symbol` | Resolve imported functions |
-| `wasm_rt_vprintf` | `int (const char* fmt, va_list)` | `udynlink_external_vprintf` | Debug output |
-| `wasm_rt_get_time_ms` | `uint32_t (void)` | `0` | Optional: for `clock_time_get` |
-| `wasm_rt_sleep_ms` | `void (uint32_t)` | No-op | Optional: yield/sleep |
-| `wasm_rt_memory_protection_check` | `void (wasm_rt_memory_t*, u64 addr, u64 n)` | No-op | Optional: guard pages / MPU |
+New QEMU test `test-wasm2c-trap`: `unreachable` + div-by-zero module; host
+registers recovery, calls, asserts error code and continued execution; repeated
+call after trap works (recovery point reset). Fatal tier covered by unit tests
+of `wasm_rt_trap` control flow (QEMU cannot test an intentional hang).
 
-### WebAssembly Feature Priority Matrix
+**Acceptance:** trapped module returns error to host; device keeps running;
+`--recoverable-traps` off → fatal (verified by inspection + unit test); size
+delta measured and documented (~50–100 B + host-side jmp_buf).
 
-| # | Feature | Priority | Rationale | Implementation Strategy |
-|---|---------|----------|-----------|------------------------|
-| 1 | **Core MVP** | ✅ **DONE** | Foundation | Already working |
-| 2 | **Bulk memory** (`memory.copy`, `memory.fill`, `memory.init`, `data.drop`) | **HIGH** | Rust/Zig emit this by default. Critical for data-heavy modules. | wasm2c generates `memcpy`/`memset` calls. Already works if host provides them. Just need to verify dead-code stripping doesn't remove them. |
-| 3 | **Sign-extension** (`i32.extend8_s`, etc.) | **HIGH** | Very common in modern toolchains. Trivial C code. | wasm2c already generates plain C. Just pass `--enable-sign-extension` or rely on default. No runtime work needed. |
-| 4 | **Mutable globals** | **HIGH** | Already in MVP by default. Used for module state. | Already supported. wasm2c puts globals in the instance struct. |
-| 5 | **Non-trapping float-to-int** | **MEDIUM** | Common in modern toolchains. Avoids trap branches. | wasm2c generates C with saturating conversions. No runtime needed. |
-| 6 | **Multi-value** | **MEDIUM** | Enables functions returning multiple values (e.g., `(i32, i32)`). Rust uses this. | wasm2c generates struct returns. C ABI handles it. No runtime needed. |
-| 7 | **Tail-call** | **MEDIUM** | Functional languages (Lisp/Scheme→Wasm) use this. Prevents stack exhaustion. | wasm2c generates `goto` or regular calls with `-fno-optimize-sibling-calls`. May need to relax that flag for true tail calls. |
-| 8 | **Custom page sizes** | **MEDIUM** | Allows memory smaller than 64KiB. Useful on memory-constrained MCUs (e.g., 4KiB heap). | Replace `WASM_DEFAULT_PAGE_SIZE` at compile time. Runtime already uses `page_size` field. |
-| 9 | **Multi-memory** | **LOW** | Separates stack, heap, data into distinct memories. Could be useful for MPU isolation. | Requires multiple `wasm_rt_memory_t` instances in the instance struct. Runtime already supports this. |
-| 10 | **Extended const** | **LOW** | Better constant expressions in global initializers. | Already supported by wasm2c. No runtime work. |
-| 11 | **SIMD** (`v128`) | **NOT APPLICABLE** | Cortex-M has no vector units (except M55/M85 Helium, which is niche). | **Skip.** Even if supported, the performance gain on 32-bit scalar MCUs is minimal vs. code size cost. |
-| 12 | **Threads / atomics** | **NOT APPLICABLE** | Bare-metal Cortex-M has no OS threads. Only interrupt contexts. Atomic ops can be done with `cpsid`/`cpsie` but the wasm thread model doesn't map. | **Skip.** If needed later, implement via single-threaded fake atomics (all sequentially consistent). |
-| 13 | **Exceptions** (`try`/`catch`/`throw`) | **NOT APPLICABLE** | Requires heavy runtime (`setjmp`-like unwinding) and is rarely used in embedded Rust/Zig. | **Skip.** The `panic=abort` model (trap on panic) is the embedded default. |
-| 14 | **Memory64** (`i64` addresses) | **NOT APPLICABLE** | 64-bit pointers on a 32-bit MCU is wasteful and unnecessary. | **Skip.** Cortex-M address space is 32-bit. |
-| 15 | **Reference types / GC** | **NOT APPLICABLE** | Managed references and garbage collection are irrelevant for bare-metal C/Rust firmware. | **Skip.** |
-| 16 | **Function references** | **LOW** | Typed function references. Improves type safety of indirect calls. | wasm2c supports it. May add minor table size overhead. Low priority. |
-| 17 | **Wide arithmetic** (`i64.*_wide`) | **LOW** | 128-bit arithmetic for crypto. Niche on Cortex-M. | Only if user specifically needs it. |
+### Phase 2.5 — Dynamic memory & `memory.grow` completion
 
-### Runtime Feature Flags (Compile-Time)
+- Realloc hook final shape (old_size passed); grow returns old page count;
+  max_pages enforced; `external` grow = host re-set (`mod_set_memory`) or fails
+  cleanly.
+- QEMU test `test-wasm2c-grow`: module grows memory, writes beyond initial
+  size, host allocator hooked to a static pool (proves heap-less viability).
 
-The user controls what runtime support is compiled into the module via `-D` flags passed through `mkwasm2c-module`:
+**Acceptance:** grow test green via script on both QEMU platforms; OOB-read
+regression test at TU level (realloc fallback copies exactly `old_size`).
 
-```bash
-mkwasm2c-module --enable-bulk-memory --enable-custom-page-sizes=4096 \
-    --trap-handler=my_trap --malloc=my_malloc \
-    input.wasm -o output.bin
-```
+### Phase 3 — Instance model (K3) + numeric coverage
 
-| Flag | Effect |
-|------|--------|
-| `-DUDYNLINK_WASM_TRAP_HANDLER=my_handler` | Override `wasm_rt_trap` behavior |
-| `-DUDYNLINK_WASM_MALLOC=my_malloc` | Override memory allocator |
-| `-DUDYNLINK_WASM_CUSTOM_PAGE_SIZE=N` | Set wasm page size (default 65536) |
-| `-DUDYNLINK_WASM_ENABLE_BULK_MEMORY` | Ensure `memcpy`/`memset` are preserved from `--gc-sections` |
-| `-DUDYNLINK_WASM_ENABLE_MULTI_MEMORY` | Reserve space for multiple `wasm_rt_memory_t` structs |
-| `-DUDYNLINK_WASM_NO_MPU_CHECKS` | Disable optional `memory_protection_check` hook |
+- `--instances`: create/destroy, instance-taking wrappers, static-memory
+  rejection with fix hint; env `user` per instance.
+- QEMU test `test-wasm2c-instances`: two instances, independent globals and
+  linear memory; destroy frees (dynamic) and create re-succeeds.
+- Float test `test-wasm2c-float`: f32/f64 arithmetic + float→int conversions
+  (validates D7 flags on hard-float target `olimex_stm32_h405` too); i64 export
+  wrapper test (AAPCS r0:r1 return documented).
 
-### Estimated Timeline
+**Acceptance:** instance isolation green; float/i64 tests green on soft and
+hard float targets.
 
-| Phase | Features | Effort | Est. Time |
-|-------|----------|--------|-----------|
-| **Phase 2** | Toolchain script (`mkwasm2c-module`); `fac`, `hello` tests; static + dynamic memory modes; bulk memory validation | Medium | 1–2 sessions |
-| **Phase 2.5** | Dynamic memory (`memory.grow`); `wasm_rt_realloc` hook; `memory_grow` test | Small | 1 session |
-| **Phase 3** | Multi-value, tail-call, custom page sizes, non-trapping float-to-int tests | Medium | 1 session |
-| **Phase 4** | Multi-memory support; MPU isolation hooks; advanced test cases | Large | 2 sessions |
-| **Phase 5** | Documentation (`docs/wasm2c-integration.md`); CI integration; Justfile targets | Small | 1 session |
+### Phase 4 — Optional / deferred (explicitly not scheduled)
 
----
+| Item | Trigger | Note |
+|---|---|---|
+| Metering / fuel | If untrusted-ish code ever matters | wasm→wasm gas-instrumentation pass (no upstream binaryen pass exists — checked v125); injected `gas` import rides the K2 contract. Backlog only. |
+| Multi-value / sret exports | Demand | Export parser + wrapper codegen for struct returns |
+| Tail-call | Demand | Must use wasm2c tailcallee machinery + verification; never relax sibling-call flag |
+| Multi-memory | Demand | Static mode needs per-memory buffers; LOW per v1 matrix, keep LOW |
+| Host-side MPU recipe | Doc-only | MPU region over linear memory at load (host's job; no per-access callbacks) |
+| Toolchain custom page size | wabt support | Prefer toolchain-native over runtime define |
 
----
+## 6. Testing strategy
 
-## Phase 2 Results (Completed)
+1. **Script unit tests (pytest)** — every codegen decision (config header,
+   shim shape, import header, collision checks, mode selection). Fast; runs
+   without ARM toolchain. Guards against D1-class regressions permanently.
+2. **QEMU integration** — `test_driver.py` learns wasm tests: `test_data.py`
+   gains `"wasm": "foo.wat"`; driver invokes `mkwasm2c-module` (pinned wabt),
+   then builds the host firmware against the generated `.bin`/header. All wasm
+   tests therefore exercise the real script path on CI.
+3. **Platform gate** — every wasm test runs MPS2-AN386 (mainline M4) +
+   STM32F429 (legacy M4); float tests add `olimex_stm32_h405`.
+4. **Parser fixtures** — wasm2c bins stay in the round-trip contract suite.
 
-**Status: ✅ SUCCESS** — The toolchain integration is complete and all tests pass with zero regressions.
+## 7. Cleanup (with Phase 2.1)
 
-### What was accomplished
-1. **Created `scripts/mkwasm2c-module`** — A Python CLI that wraps `wasm2c` + `mkmodule`. It runs `wasm2c` on `.wasm`, patches generated C with `#define NDEBUG`, auto-generates a setup shim, and compiles everything into a `.bin`. Supports `--static-memory`, `--dynamic-memory`, `--custom-page-size`, `--trap-handler`, `--malloc`, `--free`, and all standard `mkmodule` flags.
-2. **Created `udynlink/wasm2c_runtime/wasm-rt.h` and `wasm-rt-udynlink.c`** — A proper hook-based bare-metal runtime:
-   - Weak hook declarations: `wasm_rt_malloc`, `wasm_rt_mem_free`, `wasm_rt_mem_realloc`, `wasm_rt_trap_handler`, `wasm_rt_resolve_import`
-   - Defaults delegate to `udynlink_external_malloc`/`free`/`resolve_symbol`
-   - Static memory mode: pre-allocated `.bss` buffer
-   - Dynamic memory mode: `malloc`/`realloc`/`free`
-   - `__attribute__((used))` on essential functions to survive `--gc-sections`
-   - Hand-rolled `memcpy`/`memset`/`memmove`/`memcmp` (no libc)
-3. **Added new tests:**
-   - `tests/test-wasm2c-fac/` — Recursive factorial (`fac(5) == 120`)
-   - `tests/test-wasm2c-hello/` — Static linear memory with data segment (`"hello, world"`)
-4. **Modified existing files (minimal, safe):**
-   - `tests/qemu_host/src/main.c` — Added `udynlink_external_malloc`/`free`/`resolve_symbol` to the host resolver so the runtime hooks can link
-   - `tests/test_driver.py` — Fixed objdump target filename when leading `-D` flags are present
+- Regenerate `tests/test-wasm2c-{add,fac,hello}` from committed `.wat` sources
+  through the script; delete stale spike runtime copies, committed generated C,
+  and redundant `udynlink_externals.h` copies (driver already passes
+  `-I<repo>/udynlink`).
+- `test-wasm2c-add` gains its `add.wat` (lost in v1 spike).
+- README + `docs/` gain `docs/wasm2c-modules.md` (Phase 2.2 ships the first
+  cut); AGENTS.md updated: toolchain requirements (wabt), public-headers table
+  (`wasm2c_runtime/`), docs table.
 
-### Test Results
-**Platform:** MPS2-AN386 (Cortex-M4, mainline QEMU 9.2.4)
-**Command:** `just test-mps2`
+## 8. Non-goals
 
-| Test | `-O3` | `-Os` | Notes |
-|------|-------|-------|-------|
-| `test-wasm2c-add` (spike) | ✅ | ✅ | Baseline still passes |
-| `test-wasm2c-fac` | ✅ | ✅ | **New** — recursion |
-| `test-wasm2c-hello` | ✅ | ✅ | **New** — static memory + data segment |
-| All 20 existing tests | ✅ | ✅ | **0 regressions** |
-| **Total** | **46/46** | **46/46** | **All pass** |
+- Hostile-code sandboxing, metering-as-default, threads/atomics, SIMD, GC,
+  exceptions, memory64 (per v1 matrix — still correct), multi-memory beyond
+  opt-in future work.
+- Recoverable-trap-by-default (fatal stays default; containment is opt-in).
+- Any udynlink core/loader changes: the entire roadmap lives in the wasm
+  runtime + script + tests + docs.
 
-### Runtime Size
-| Module | `.text` | `.data` | `.bss` | Notes |
-|--------|---------|---------|--------|-------|
-| `test-wasm2c-fac` | 1336 B | 104 B | 4 B | Full runtime, dead-code stripped |
-| `test-wasm2c-hello` | 1416 B | 124 B | 65540 B | Includes 64 KiB static linear memory |
-| **Runtime overhead** | **~912 B** | — | — | Well under the 2 KB MVP budget |
+## 9. Appendix — corrected wasm feature matrix (supersedes v1 §8)
 
-### Issues encountered and resolved
-| Issue | Resolution |
-|-------|------------|
-| `wasm_rt_free` conflicting with upstream lifecycle `wasm_rt_free()` | Renamed hook to `wasm_rt_mem_free` |
-| `udynlink_externals.h` not found during build | `mkwasm2c-module` now copies it alongside runtime sources |
-| Unresolved `udynlink_external_malloc`/`free` in host test | Added them to `tests/qemu_host/src/main.c` resolver |
-| `memcpy` unresolved (GCC lowers builtin to libcall for large copies) | Provided hand-rolled `memcpy`/`memset`/`memmove`/`memcmp` |
-| Test driver objdump failure on `-D` flags | Fixed `test_driver.py` to skip leading `-D` when computing ELF basename |
-
----
-
-## Updated Status & Next Steps
-
-| Phase | Status | Action |
-|-------|--------|--------|
-| Phase 1: Feasibility Spike | ✅ **DONE** | — |
-| Phase 2: Toolchain Integration | ✅ **DONE** | — |
-| Phase 2.5: Dynamic Memory (`memory.grow`) | ⏳ **READY** | Create `test-wasm2c-memgrow`; validate `wasm_rt_grow_memory` end-to-end |
-| Phase 3: Bulk Memory, Multi-value, Tail-call, Custom Page Sizes | ⏳ **PENDING** | Add tests and validate newer Wasm proposals |
-| Phase 4: Multi-memory, MPU Hooks, Imports | ⏳ **PENDING** | Advanced features for power users |
-| Phase 5: Documentation & CI | ⏳ **PENDING** | Write `docs/wasm2c-integration.md`; add Justfile targets |
-
----
-
-*Plan created: 2026-05-28*  
-*Phase 1 completed: 2026-05-28*  
-*Phase 2 completed: 2026-05-28*  
-*Status: Ready for Phase 2.5 / 3*
+| # | Feature | Priority | v2 assessment |
+|---|---|---|---|
+| 1 | Core MVP | ✅ done (verify in 2.1) | integer-only proven; float coverage owed |
+| 2 | Bulk memory | HIGH | works via memfunc hooks; perf note: byte-loop fallbacks fine for small ops, word-wise copy worth it for large fills |
+| 3 | Sign-extension, non-trapping f2i | HIGH | plain C; only needs the mandated flags (D7) + tests |
+| 4 | Mutable globals | ✅ | instance struct; proven |
+| 5 | Multi-value / sret | MEDIUM | blocked on export parser + wrapper codegen (Phase 4) |
+| 6 | Tail-call | MEDIUM-risk | v1's "relax the flag" is wrong and unsafe; tailcallee machinery unverified on this pipeline |
+| 7 | Custom page sizes | MEDIUM | runtime define works now (fix via config header); toolchain-native preferred later |
+| 8 | Multi-memory | LOW | "runtime already supports" was false in v1; per-memory static buffers = real work |
+| 9 | Imports | **HIGH (elevated)** | v1 had it in Phase 4; it gates most real modules → Phase 2.2 |
+| 10 | Trap recovery / containment | **HIGH (new)** | absent from v1 matrix; the feature that separates demo from deployment |
+| 11 | Metering | optional | backlog; only if threat model ever expands |
+| 12 | SIMD / threads / EH / memory64 / GC / refs | skip | unchanged rationale; correct for Cortex-M |

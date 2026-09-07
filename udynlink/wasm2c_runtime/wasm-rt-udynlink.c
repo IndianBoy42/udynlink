@@ -4,9 +4,9 @@
  * resolution default to the udynlink host callbacks.  The host firmware can
  * override any of them by providing a strong definition.
  *
- * Supports both static and dynamic linear memory models.  Static mode is
- * triggered by defining WASM_RT_STATIC_MEMORY and WASM_RT_INITIAL_PAGES in
- * the per-module shim.
+ * Supports three linear-memory models, selected by defines in the generated
+ * wasm_rt_config.h: static (.bss buffer), dynamic (allocation hooks), and
+ * external (host-registered buffer via wasm_rt_set_external_memory).
  */
 
 #include "wasm-rt.h"
@@ -81,19 +81,18 @@ __attribute__((weak)) void wasm_rt_mem_free(void* p) {
     udynlink_external_free(p);
 }
 
-__attribute__((weak)) void* wasm_rt_mem_realloc(void* p, size_t size) {
-    /* Fallback: malloc + memcpy + free.  Host can override with a real
-     * realloc to avoid the copy. */
-    if (size == 0) {
+__attribute__((weak)) void* wasm_rt_mem_realloc(void* p, size_t old_size, size_t new_size) {
+    /* Fallback: malloc + copy + free.  The caller supplies the old buffer
+     * size (bare-metal allocators don't track it), so the copy is exact.
+     * Host can override with a real realloc to avoid the copy. */
+    if (new_size == 0) {
         if (p) wasm_rt_mem_free(p);
         return NULL;
     }
-    void* np = wasm_rt_malloc(size);
+    void* np = wasm_rt_malloc(new_size);
     if (!np) return NULL;
     if (p) {
-        /* We don't know the old size; copy what we can.  For grow_memory
-         * the new size is always >= old size, so this is safe. */
-        wasm_rt_memcpy(np, p, size);
+        wasm_rt_memcpy(np, p, old_size < new_size ? old_size : new_size);
         wasm_rt_mem_free(p);
     }
     return np;
@@ -128,6 +127,7 @@ static const char* const trap_names[] = {
     [WASM_RT_TRAP_UNCAUGHT_EXCEPTION] = "uncaught exception",
     [WASM_RT_TRAP_UNALIGNED]          = "unaligned",
     [WASM_RT_TRAP_EXHAUSTION]         = "exhaustion",
+    [WASM_RT_TRAP_OOM]                = "out of memory",
 };
 
 const char* wasm_rt_strerror(wasm_rt_trap_t trap) {
@@ -138,7 +138,14 @@ const char* wasm_rt_strerror(wasm_rt_trap_t trap) {
 }
 
 WASM_RT_NO_RETURN void wasm_rt_trap(wasm_rt_trap_t trap) {
+#ifdef WASM_RT_TRAP_HANDLER
+    /* Handler name baked at build time (mkwasm2c-module --trap-handler).
+     * It is not defined inside the module: the host provides it and the
+     * loader resolves it at load time like any other import. */
+    WASM_RT_TRAP_HANDLER(trap);
+#else
     wasm_rt_trap_handler(trap);
+#endif
     while (1) {
         __asm__ volatile("bkpt #0" ::: "memory");
     }
@@ -162,6 +169,11 @@ __attribute__((used)) void wasm_rt_free(void) {
     g_initialized = false;
 }
 
+#if WASM_RT_USE_STACK_DEPTH_COUNT
+/* Referenced by wasm2c-generated FUNC_PROLOGUE / FUNC_EPILOGUE. */
+uint32_t wasm_rt_call_stack_depth = 0;
+#endif
+
 /* -------------------------------------------------------------------------- */
 /*  Static linear memory buffer (one per compiled module)                      */
 /* -------------------------------------------------------------------------- */
@@ -178,6 +190,19 @@ static uint8_t wasm_rt_linear_memory[WASM_RT_INITIAL_PAGES * WASM_RT_PAGE_SIZE]
     __attribute__((used, section(".bss")));
 #endif
 
+#ifdef WASM_RT_EXTERNAL_MEMORY
+/* Host-registered linear memory buffer (external memory mode).  The whole
+ * capacity is reserved up front, so growth within the registered capacity
+ * needs no reallocation. */
+static uint8_t* g_ext_mem_buf = NULL;
+static size_t   g_ext_mem_capacity = 0;
+
+void wasm_rt_set_external_memory(void* buf, size_t capacity_bytes) {
+    g_ext_mem_buf = (uint8_t*)buf;
+    g_ext_mem_capacity = capacity_bytes;
+}
+#endif
+
 /* -------------------------------------------------------------------------- */
 /*  Memory API                                                                */
 /* -------------------------------------------------------------------------- */
@@ -186,6 +211,7 @@ __attribute__((used)) void wasm_rt_allocate_memory(wasm_rt_memory_t* mem,
                                                    uint64_t initial_pages,
                                                    uint64_t max_pages,
                                                    bool is64) {
+    mem->is64 = is64;
 #ifdef WASM_RT_STATIC_MEMORY
     (void)initial_pages;
     (void)max_pages;
@@ -193,51 +219,68 @@ __attribute__((used)) void wasm_rt_allocate_memory(wasm_rt_memory_t* mem,
     mem->pages = WASM_RT_INITIAL_PAGES;
     mem->max_pages = WASM_RT_INITIAL_PAGES;
     mem->size = WASM_RT_INITIAL_PAGES * WASM_RT_PAGE_SIZE;
-    mem->is64 = is64;
 #else
     size_t page_size = is64 ? (1ULL << 48) : WASM_RT_PAGE_SIZE;
-    size_t alloc_size = (size_t)(initial_pages * page_size);
-    mem->data = (uint8_t*)wasm_rt_malloc(alloc_size);
+    size_t need = (size_t)(initial_pages * page_size);
     mem->pages = initial_pages;
+#ifdef WASM_RT_EXTERNAL_MEMORY
+    if (g_ext_mem_buf == NULL || g_ext_mem_capacity < need) {
+        /* Almost always means wasm_rt_set_external_memory() was never
+         * called, or the buffer is too small. */
+        wasm_rt_trap(WASM_RT_TRAP_OOM);
+    }
+    mem->data = g_ext_mem_buf;
+    uint64_t capacity_pages = g_ext_mem_capacity / page_size;
+    mem->max_pages = max_pages < capacity_pages ? max_pages : capacity_pages;
+    mem->size = need;
+#else /* dynamic */
+    mem->data = (uint8_t*)wasm_rt_malloc(need);
+    if (need != 0 && mem->data == NULL) {
+        wasm_rt_trap(WASM_RT_TRAP_OOM);
+    }
     mem->max_pages = max_pages;
-    mem->size = alloc_size;
-    mem->is64 = is64;
+    mem->size = need;
+#endif
 #endif
 }
 
 __attribute__((used)) uint64_t wasm_rt_grow_memory(wasm_rt_memory_t* mem,
                                                    uint64_t pages) {
-#ifdef WASM_RT_STATIC_MEMORY
-    (void)mem;
-    (void)pages;
-    /* Static memory cannot grow. */
-    return 0xffffffffu;
-#else
     if (mem->pages + pages > mem->max_pages) {
         return 0xffffffffu;
     }
+    uint64_t old_pages = mem->pages;
+#ifdef WASM_RT_EXTERNAL_MEMORY
+    /* The host reserved the full capacity up front; growing within it is a
+     * pure bookkeeping update.  For static memory the check above always
+     * fails because max_pages == initial pages, so grow fails, as designed. */
     size_t page_size = mem->is64 ? (1ULL << 48) : WASM_RT_PAGE_SIZE;
-    size_t old_size = (size_t)(mem->pages * page_size);
+    mem->pages += pages;
+    mem->size = (size_t)(mem->pages * page_size);
+    return old_pages;
+#else /* dynamic */
+    size_t page_size = mem->is64 ? (1ULL << 48) : WASM_RT_PAGE_SIZE;
+    size_t old_size = (size_t)mem->size;
     size_t new_size = old_size + (size_t)(pages * page_size);
-    uint8_t* new_data = (uint8_t*)wasm_rt_mem_realloc(mem->data, new_size);
-    if (!new_data) {
-        return 0xffffffffu;
+    uint8_t* new_data = (uint8_t*)wasm_rt_mem_realloc(mem->data, old_size, new_size);
+    if (new_data == NULL) {
+        return 0xffffffffu; /* legal wasm outcome: grow may fail */
     }
     mem->data = new_data;
     mem->pages += pages;
     mem->size = new_size;
-    return (mem->pages - pages); /* old page count on success */
+    return old_pages;
 #endif
 }
 
 __attribute__((used)) void wasm_rt_free_memory(wasm_rt_memory_t* mem) {
-#ifndef WASM_RT_STATIC_MEMORY
+#if !defined(WASM_RT_STATIC_MEMORY) && !defined(WASM_RT_EXTERNAL_MEMORY)
     if (mem->data) {
         wasm_rt_mem_free(mem->data);
         mem->data = NULL;
     }
 #else
-    (void)mem;
+    (void)mem; /* memory not owned by the runtime */
 #endif
 }
 
@@ -248,7 +291,19 @@ __attribute__((used)) void wasm_rt_free_memory(wasm_rt_memory_t* mem) {
 __attribute__((used)) void wasm_rt_allocate_funcref_table(wasm_rt_funcref_table_t* table,
                                                           uint32_t elements,
                                                           uint32_t max_elements) {
+    if (max_elements == 0) {
+        table->data = NULL;
+        table->size = 0;
+        table->max_size = 0;
+        return;
+    }
     table->data = (wasm_rt_funcref_t*)wasm_rt_malloc(max_elements * sizeof(wasm_rt_funcref_t));
+    if (table->data == NULL) {
+        wasm_rt_trap(WASM_RT_TRAP_OOM);
+    }
+    /* Wasm semantics: unfilled table slots are null funcrefs; a garbage
+     * slot would turn call_indirect into a wild call. */
+    wasm_rt_memset(table->data, 0, max_elements * sizeof(wasm_rt_funcref_t));
     table->size = elements;
     table->max_size = max_elements;
 }
@@ -263,7 +318,17 @@ __attribute__((used)) void wasm_rt_free_funcref_table(wasm_rt_funcref_table_t* t
 __attribute__((used)) void wasm_rt_allocate_externref_table(wasm_rt_externref_table_t* table,
                                                              uint32_t elements,
                                                              uint32_t max_elements) {
+    if (max_elements == 0) {
+        table->data = NULL;
+        table->size = 0;
+        table->max_size = 0;
+        return;
+    }
     table->data = (wasm_rt_externref_t*)wasm_rt_malloc(max_elements * sizeof(wasm_rt_externref_t));
+    if (table->data == NULL) {
+        wasm_rt_trap(WASM_RT_TRAP_OOM);
+    }
+    wasm_rt_memset(table->data, 0, max_elements * sizeof(wasm_rt_externref_t));
     table->size = elements;
     table->max_size = max_elements;
 }

@@ -263,6 +263,51 @@ qemu-f429:
 # QEMU Setup & Status
 # =============================================================================
 
+# wabt version pinned for mkwasm2c-module: its emitted-code shape is
+# load-bearing for the script's parsers (see TESTED_WABT_VERSION there).
+wabt_version := "1.0.34"
+wabt_ubuntu_sha256 := "5c182fd639b28bd4d014d37127d398be7fbd37422152b697a74c37b1e8122e1c"
+
+# Download and extract the pinned wabt release into tools/ (wasm2c + wat2wasm)
+setup-wabt:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    WABT_VER="{{wabt_version}}"
+    WABT_DIR="tools/wabt"
+
+    if [ -x "${WABT_DIR}/bin/wasm2c" ]; then
+        echo "wabt ${WABT_VER} already present at ${WABT_DIR}"
+        "${WABT_DIR}/bin/wasm2c" --version
+        exit 0
+    fi
+
+    URL="https://github.com/WebAssembly/wabt/releases/download/${WABT_VER}/wabt-${WABT_VER}-ubuntu.tar.gz"
+    TARBALL="/tmp/wabt-${WABT_VER}-ubuntu.tar.gz"
+
+    echo "Downloading wabt ${WABT_VER} (linux x64)..."
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL -o "${TARBALL}" "${URL}"
+    else
+        wget -q -O "${TARBALL}" "${URL}"
+    fi
+
+    echo "Verifying checksum..."
+    ACTUAL=$(sha256sum "${TARBALL}" 2>/dev/null | cut -d' ' -f1 || shasum -a 256 "${TARBALL}" | cut -d' ' -f1)
+    if [ "${ACTUAL}" != "{{wabt_ubuntu_sha256}}" ]; then
+        echo "Checksum mismatch: expected {{wabt_ubuntu_sha256}}, got ${ACTUAL}"
+        exit 1
+    fi
+
+    echo "Extracting to ${WABT_DIR}..."
+    mkdir -p "${WABT_DIR}"
+    tar -xzf "${TARBALL}" -C "${WABT_DIR}" --strip-components=1
+    rm -f "${TARBALL}"
+
+    "${WABT_DIR}/bin/wasm2c" --version
+    echo ""
+    echo "wabt ${WABT_VER} installed at ${WABT_DIR}."
+    echo "mkwasm2c-module prefers tools/wabt/bin over PATH automatically."
+
 # Download and extract the latest xPack QEMU into tests/ (mainline qemu-system-arm)
 setup-qemu:
     #!/usr/bin/env bash

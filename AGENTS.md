@@ -34,6 +34,7 @@ All user-facing documentation lives under `docs/` and is summarized in `docs/REA
 | `docs/integrating-as-host.md` | Adding udynlink to your firmware, implementing callbacks, symbol tables, lifecycle, thread safety |
 |`docs/writing-modules.md`|Creating loadable C/C++ modules, consuming symbols, mkmodule reference|
 |`docs/protobuf-modules.md`|Compiling `.proto` definitions into parse/write UDLM modules (`scripts/proto2module`), 1-module-per-struct overhead analysis|
+|`docs/wasm2c-modules.md`|Compiling `.wasm`/`.wat` into UDLM modules (`scripts/mkwasm2c-module`); memory models, trap policy, symbol-table policy, testing|
 | `docs/api-reference.md` | Complete reference for all public functions, structs, macros, and callbacks |
 | `docs/examples.md` | Working code examples for every major feature |
 | `docs/testing.md` | Running tests, adding test cases and platforms, debugging **MUST READ before testing** |
@@ -54,10 +55,16 @@ All user-facing documentation lives under `docs/` and is summarized in `docs/REA
   - Quick setup: `just setup-qemu` (mainline) and `just setup-qemu-legacy` (legacy) — downloads into `tests/`. The Justfile prefers local copies over system-wide installations.
   - Override via `UDYNLINK_QEMU_BIN` and `UDYNLINK_QEMU_LEGACY_BIN` environment variables.
 - **[just](https://github.com/casey/just)** for running tests and build commands
+- **wabt 1.0.34** (`wasm2c` + `wat2wasm`) for wasm module builds: `just setup-wabt` downloads a
+  checksum-pinned release into `tools/wabt/`; `scripts/mkwasm2c-module` prefers it over PATH and
+  warns when the installed wasm2c is older than the tested minimum (`UDYNLINK_WASM2C` overrides).
 
 **Optional tools:**
 - **`scripts/mkhostsyms`** — reads a host firmware ELF and generates a C header with a const GNU hash table (`--format gnu-hash`, default) or search trie (`--format trie`) for O(1)/O(k) symbol resolution
 - **`scripts/proto2module`** — compiles `.proto` files into protobuf codec modules (parse/write per message) via protoc + nanopb. Requires `protoc` and the nanopb generator plugin (`uv pip install nanopb`); the nanopb C runtime is vendored at `third_party/nanopb` (see `docs/protobuf-modules.md`)
+- **`scripts/mkwasm2c-module`** — compiles `.wasm`/`.wat` into UDLM modules via wasm2c + mkmodule
+  (bare-metal wasm runtime in `udynlink/wasm2c_runtime/`). Memory models (`--memory=static|dynamic|external`),
+  `--custom-page-size`, `--stack-depth-limit`, `--trap-handler`, symbol-table policy. See `docs/wasm2c-modules.md`
 
 ## Build & Test Commands
 
@@ -93,6 +100,27 @@ For C++ sources (`.cpp`/`.cxx`), the toolchain automatically adds `-fno-exceptio
 The compiler prefix can be overridden via the `UDYNLINK_CC_PREFIX` environment variable (default: `arm-none-eabi-`).
 
 **Building via CMake (downstream projects):** a host firmware that consumes udynlink via `add_subdirectory`/`FetchContent`/`find_package` can build a module as a CMake target with `udynlink_add_module(<name> SOURCES ... GENERATE_HEADER)`. It produces a custom target `<name>` (→ `<name>.bin` in the build tree) and an `udynlink::module::<name>` INTERFACE library a firmware target links to consume the generated `*_module_data.h` with correct rebuild ordering. The helper (`cmake/udynlinkAddModule.cmake`) is installed alongside `udynlinkGenerateHostSyms.cmake`. See `docs/writing-modules.md` → "Building Modules with CMake".
+
+### Build a WebAssembly module
+```bash
+python3 scripts/mkwasm2c-module --gen-c-header --header-path /some/path module.wat
+```
+
+Accepts `.wat` or `.wasm`. Key flags (full reference: `docs/wasm2c-modules.md`):
+- `--memory=static|dynamic|external` — linear-memory model (default `auto`: static unless the module uses `memory.grow`)
+- `--custom-page-size=N` — shrink the 64 KiB wasm page
+- `--stack-depth-limit=N` — wasm recursion traps (`WASM_RT_TRAP_EXHAUSTION`) instead of native stack overflow
+- `--trap-handler=NAME` — host-provided trap handler symbol (resolved at load)
+- `--malloc=NAME` / `--free=NAME` — allocator hook overrides
+- `--export-all` — export every symbol (default: export wrappers only, minimal symtab)
+- `--public-symbols a,b` / `--wrapper-prefix PFX` / `--no-export-wrappers` — symbol-table control
+- `--workdir <dir>` / `--keep` — keep intermediates for debugging
+
+The wasm runtime lives in `udynlink/wasm2c_runtime/` (`wasm-rt.h`, `wasm-rt-udynlink.c`) — the single
+source of truth; the script copies it into the build, and per-module settings are generated into
+`wasm_rt_config.h` (picked up by every TU via `__has_include`). Test modules (`tests/test-wasm2c-*`)
+are built through the script by `test_driver.py` (a test dir carries `<name>.wat` and a
+`"wasm": "<name>.wat"` entry in `test_data.py`).
 
 ### Run all tests (via `just` — recommended)
 
@@ -179,6 +207,8 @@ The platform is selected via `-DUDYNLINK_PLATFORM=<name>` (default: `stm32f429_d
 | `udynlink_host_utils.h` | Optional (inline) | Tiny host-side symbol cache with LRU eviction | Speeding up repeated `udynlink_external_resolve_symbol` calls |
 | `udynlink_cpp_abi.h` | Optional (inline) | Weak stubs + resolver for the C++ ABI symbols (`operator delete`, `__cxa_pure_virtual`, ...) referenced by loadable C++ modules | C-only bare-metal hosts loading C++ modules with virtual destructors, abstract classes, or `new`/`delete` |
 | `udynlink.hpp` | Optional (C++23 inline) | `Module` (RAII lifecycle), `Func<Sig>` (typed function handle), `Context` (RAII r9 manager), `Symbol`/`SymbolView` (C++23 range over a module's symbol table, pre- or post-load) | C++ hosts wanting type safety and automatic cleanup |
+| `udynlink/wasm2c_runtime/wasm-rt.h` | Wasm runtime (wasm modules only) | wasm2c runtime types, trap codes, memory/table API, weak host hooks; per-module config via generated `wasm_rt_config.h` | Compiled into wasm modules by `scripts/mkwasm2c-module` |
+| `udynlink/wasm2c_runtime/wasm-rt-udynlink.c` | Wasm runtime (wasm modules only) | Bare-metal wasm2c runtime: static/dynamic/external linear memory, zeroed tables, trap dispatch, wasm call-depth counting | Same |
 
 ## Architecture & Key Constraints
 

@@ -14,6 +14,14 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y gcc-arm-none-eabi cmake python3 python3-pip
         pip3 install pyelftools Jinja2
+    - name: Install wabt 1.0.34 (pinned; mkwasm2c-module checks the version)
+      run: |
+        curl -L -o wabt.tgz https://github.com/WebAssembly/wabt/releases/download/1.0.34/wabt-1.0.34-ubuntu.tar.gz
+        echo "5c182fd639b28bd4d014d37127d398be7fbd37422152b697a74c37b1e8122e1c  wabt.tgz" | sha256sum -c -
+        mkdir -p tools/wabt
+        tar -xzf wabt.tgz -C tools/wabt --strip-components=1
+        rm wabt.tgz
+        tools/wabt/bin/wasm2c --version
     - name: Install xPack QEMU
       run: |
         curl -L -o qemu.tgz https://github.com/xpack-dev-tools/qemu-arm-xpack/releases/download/v7.2.5-1/xpack-qemu-arm-7.2.5-1-linux-x64.tar.gz

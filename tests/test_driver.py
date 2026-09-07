@@ -180,35 +180,68 @@ def test_one(full_path, opt):
 
     # Compile modules in the isolated src directory
     os.chdir(src_dir)
-    if not "modules" in test_data:
-        return False, "No modules!"
-    for m in test_data["modules"]:
-        srcs = " ".join(m)
-        extra_module_args = test_data.get("mkmodule_args", "")
-        # Modules may #include udynlink headers (e.g. udynlink_deps_api.h);
-        # the include path points at the repo's udynlink/ directory.
-        include_flag = "-I%s" % os.path.join(repo_root, "udynlink")
-        compile_cmd = '%s ../../scripts/mkmodule --disasm --gen-c-header --header-path . %s%s%s%%s%%s %%s' % (sys.executable, include_flag, module_target_flag, module_lto_flag)
-        cmd = compile_cmd % ("" if opt else "-O3 ", extra_module_args, srcs)
-        res, out = run_cmd(cmd, show_output=False)
+    wasm_src = test_data.get("wasm")
+    if wasm_src:
+        # wasm test: a single mkwasm2c-module invocation does wat2wasm +
+        # wasm2c + shim + mkmodule.  Produces mod_wasm2c_<name>.bin and its
+        # *_module_data.h in src_dir, the same contract as the mkmodule path
+        # below, so the host firmware build is unchanged.
+        base = os.path.splitext(wasm_src)[0]
+        bin_base = "mod_wasm2c_%s" % base
+        cmd = [sys.executable, os.path.join("..", "..", "scripts", "mkwasm2c-module"),
+               "--gen-c-header", "--header-path", ".",
+               "--bin-name", bin_base + ".bin",
+               "--workdir", "."]
+        if not opt:
+            cmd += ["-O", "3"]
+        if module_target_flag.strip():
+            cmd += module_target_flag.strip().split()
+        cmd += test_data.get("wasm_args", "").split()
+        cmd.append(wasm_src)
+        res, out = run_cmd(" ".join(cmd), show_output=False)
         out = out.decode()
         if not res:
-            return False, "Unable to compile module(s) " + srcs
+            return False, "Unable to build wasm module(s) " + wasm_src
         with open(full_path + "/output_build_%s.txt" % aopt, 'w') as fout:
             fout.write(out)
         objdump = f"{os.environ.get('UDYNLINK_CC_PREFIX', 'arm-none-eabi-')}objdump"
-        # Skip leading -D flags when determining the objdump target (they are not files)
-        objdump_target = m[0]
-        idx = 0
-        while idx < len(m) and m[idx].startswith("-D"):
-            idx += 1
-        if idx < len(m):
-            objdump_target = m[idx]
-        cmd = f"{objdump} -Dztr --source ./{os.path.splitext(objdump_target)[0]}.elf"
+        # mkwasm2c-module names the intermediate elf after the wasm module
+        # (mkmodule --workdir + --module-name)
+        cmd = f"{objdump} -Dztr --source ./{base}.elf"
         res, out = run_cmd(cmd)
         out = out.decode()
         with open(full_path + "/output_objdump_%s.txt" % aopt, 'w') as fout:
             fout.write(out)
+    else:
+        if not "modules" in test_data:
+            return False, "No modules!"
+        for m in test_data["modules"]:
+            srcs = " ".join(m)
+            extra_module_args = test_data.get("mkmodule_args", "")
+            # Modules may #include udynlink headers (e.g. udynlink_deps_api.h);
+            # the include path points at the repo's udynlink/ directory.
+            include_flag = "-I%s" % os.path.join(repo_root, "udynlink")
+            compile_cmd = '%s ../../scripts/mkmodule --disasm --gen-c-header --header-path . %s%s%s%%s%%s %%s' % (sys.executable, include_flag, module_target_flag, module_lto_flag)
+            cmd = compile_cmd % ("" if opt else "-O3 ", extra_module_args, srcs)
+            res, out = run_cmd(cmd, show_output=False)
+            out = out.decode()
+            if not res:
+                return False, "Unable to compile module(s) " + srcs
+            with open(full_path + "/output_build_%s.txt" % aopt, 'w') as fout:
+                fout.write(out)
+            objdump = f"{os.environ.get('UDYNLINK_CC_PREFIX', 'arm-none-eabi-')}objdump"
+            # Skip leading -D flags when determining the objdump target (they are not files)
+            objdump_target = m[0]
+            idx = 0
+            while idx < len(m) and m[idx].startswith("-D"):
+                idx += 1
+            if idx < len(m):
+                objdump_target = m[idx]
+            cmd = f"{objdump} -Dztr --source ./{os.path.splitext(objdump_target)[0]}.elf"
+            res, out = run_cmd(cmd)
+            out = out.decode()
+            with open(full_path + "/output_objdump_%s.txt" % aopt, 'w') as fout:
+                fout.write(out)
 
     # Build qemu test in isolated build directory
     cmake_flags = os.environ.get("UDYNLINK_CMAKE_FLAGS", "")
