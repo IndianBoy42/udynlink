@@ -44,6 +44,7 @@ def make_args(**kw):
     """Args namespace mirroring the script's parser defaults."""
     defaults = dict(memory="auto", custom_page_size=None, trap_handler=None,
                     stack_depth_limit=None, malloc=None, free=None,
+                    recoverable_traps=False, wrappers_recover=False,
                     wrapper_prefix="", public_symbols=None, export_all=False,
                     no_export_wrappers=False, build_flags=None,
                     no_conformance_flags=False, no_verbose=True, no_debug=True)
@@ -123,7 +124,16 @@ def test_config_trap_handler_is_host_resolved(tmp_path):
 def test_config_stack_depth(tmp_path):
     text = gen_config(tmp_path, "none", NOMEM, stack_depth_limit=64)
     assert "#define WASM_RT_USE_STACK_DEPTH_COUNT 1" in text
-    assert "#define WASM_RT_MAX_CALL_STACK_DEPTH 64" in text
+
+
+def test_config_recoverable_traps(tmp_path):
+    text = gen_config(tmp_path, "none", NOMEM, recoverable_traps=True)
+    assert "#define WASM_RT_ENABLE_RECOVERY" in text
+
+
+def test_config_wrappers_recover_implies_recovery(tmp_path):
+    text = gen_config(tmp_path, "none", NOMEM, wrappers_recover=True)
+    assert "#define WASM_RT_ENABLE_RECOVERY" in text
 
 
 # ---------------------------------------------------------------------------

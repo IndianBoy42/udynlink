@@ -137,7 +137,44 @@ const char* wasm_rt_strerror(wasm_rt_trap_t trap) {
     return "unknown trap";
 }
 
+/* -------------------------------------------------------------------------- */
+/*  Trap reporting & recovery                                                  */
+/* -------------------------------------------------------------------------- */
+
+static wasm_rt_trap_t g_last_trap = WASM_RT_TRAP_NONE;
+
+wasm_rt_trap_t wasm_rt_last_trap(void) {
+    return g_last_trap;
+}
+
+#ifdef WASM_RT_ENABLE_RECOVERY
+/* One-shot recovery point, registered by the host (wasm_rt_set_recovery)
+ * or by --wrappers-recover wrappers.  Consumed by the first trap. */
+static jmp_buf* g_recovery = NULL;
+
+void wasm_rt_set_recovery(jmp_buf* jb) {
+    g_recovery = jb;
+}
+#endif
+
 WASM_RT_NO_RETURN void wasm_rt_trap(wasm_rt_trap_t trap) {
+    g_last_trap = trap;
+#ifdef WASM_RT_ENABLE_RECOVERY
+    if (g_recovery != NULL) {
+        /* Host-registered recovery point: unwind to the host frame instead
+         * of halting.  One-shot — the registration is consumed so a stale
+         * frame is never longjmp'd into.  longjmp is resolved from the host
+         * at load time like any other import. */
+        jmp_buf* jb = g_recovery;
+        g_recovery = NULL;
+#if WASM_RT_USE_STACK_DEPTH_COUNT
+        /* The longjmp abandons every wasm frame; without the reset the
+         * depth counter would leak and falsely exhaust later calls. */
+        wasm_rt_call_stack_depth = 0;
+#endif
+        longjmp(*jb, 1);
+    }
+#endif
 #ifdef WASM_RT_TRAP_HANDLER
     /* Handler name baked at build time (mkwasm2c-module --trap-handler).
      * It is not defined inside the module: the host provides it and the
@@ -147,7 +184,13 @@ WASM_RT_NO_RETURN void wasm_rt_trap(wasm_rt_trap_t trap) {
     wasm_rt_trap_handler(trap);
 #endif
     while (1) {
+#if defined(__arm__) || defined(__thumb__) || defined(__aarch64__)
         __asm__ volatile("bkpt #0" ::: "memory");
+#else
+        /* Host-native test builds (docs/host-testing.md): trap visibly
+         * instead of assembling an ARM bkpt instruction. */
+        __builtin_trap();
+#endif
     }
 }
 

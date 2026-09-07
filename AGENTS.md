@@ -112,6 +112,7 @@ Accepts `.wat` or `.wasm`. Key flags (full reference: `docs/wasm2c-modules.md`):
 - `--custom-page-size=N` — shrink the 64 KiB wasm page
 - `--stack-depth-limit=N` — wasm recursion traps (`WASM_RT_TRAP_EXHAUSTION`) instead of native stack overflow
 - `--trap-handler=NAME` — host-provided trap handler symbol (resolved at load)
+- `--recoverable-traps` / `--wrappers-recover` — optional trap containment: host-registered one-shot `longjmp` recovery point (exported `wasm_rt_set_recovery`/`wasm_rt_last_trap`) or baked wrapper sentinels; fatal `bkpt` loop stays the zero-cost default
 - `--malloc=NAME` / `--free=NAME` — allocator hook overrides
 - `--export-all` — export every symbol (default: export wrappers only, minimal symtab)
 - `--public-symbols a,b` / `--wrapper-prefix PFX` / `--no-export-wrappers` — symbol-table control

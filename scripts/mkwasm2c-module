@@ -129,6 +129,14 @@ def generate_config_header(config_path, memory_mode, mem_info, args):
             "#define WASM_RT_USE_STACK_DEPTH_COUNT 1",
             "#define WASM_RT_MAX_CALL_STACK_DEPTH %d" % args.stack_depth_limit,
         ]
+    if args.recoverable_traps or args.wrappers_recover:
+        lines += [
+            "/* Recoverable traps: wasm_rt_trap() longjmps to the one-shot",
+            " * recovery point registered via wasm_rt_set_recovery() (host-side,",
+            " * or baked into the export wrappers with --wrappers-recover)",
+            " * instead of halting.  longjmp is resolved from the host at load. */",
+            "#define WASM_RT_ENABLE_RECOVERY",
+        ]
     lines += ["", "#endif /* WASM_RT_CONFIG_H_ */"]
     with open(config_path, "w") as f:
         f.write("\n".join(lines) + "\n")
@@ -450,6 +458,16 @@ def generate_shim(shim_path, module_name, h_name, mem_info, exports, imports, ar
         lines.append("}")
         lines.append("")
 
+    # Baked wrapper recovery (--wrappers-recover): one shared one-shot
+    # recovery buffer, armed by every wrapper on entry.  Not re-entrant:
+    # do not nest module-export calls through host imports while armed.
+    if args.wrappers_recover and exports:
+        lines.append("/* Shared one-shot recovery buffer for the baked wrappers.  A trapped")
+        lines.append(" * wrapper returns the 0 sentinel; query wasm_rt_last_trap() for the")
+        lines.append(" * code.  Not re-entrant: do not nest module-export calls through")
+        lines.append(" * host imports while a wrapper is on the stack. */")
+        lines.append("static jmp_buf __wasm_recovery_buf;")
+        lines.append("")
     # Export wrappers — exported for the host, named after the wasm export
     # (plus --wrapper-prefix)
     for exp in exports:
@@ -471,11 +489,26 @@ def generate_shim(shim_path, module_name, h_name, mem_info, exports, imports, ar
             wrapper_name,
             ", ".join(wrapper_params) if wrapper_params else "void"
         ))
-        lines.append("    __wasm_ensure_instantiated();")
-        if ret == "void":
-            lines.append("    %s(%s);" % (c_name, ", ".join(call_args)))
+        if args.wrappers_recover:
+            lines.append("    if (setjmp(__wasm_recovery_buf) == 0) {")
+            lines.append("        wasm_rt_set_recovery(&__wasm_recovery_buf);")
+            lines.append("        __wasm_ensure_instantiated();")
+            call = "%s(%s);" % (c_name, ", ".join(call_args))
+            if ret == "void":
+                lines.append("        %s" % call)
+                lines.append("    }")
+            else:
+                lines.append("        return %s" % call)
+                lines.append("    }")
+                # Sentinel ambiguity is documented: callers that need a
+                # clean error channel use --recoverable-traps instead.
+                lines.append("    return (%s)0; /* trap sentinel */" % ret)
         else:
-            lines.append("    return %s(%s);" % (c_name, ", ".join(call_args)))
+            lines.append("    __wasm_ensure_instantiated();")
+            if ret == "void":
+                lines.append("    %s(%s);" % (c_name, ", ".join(call_args)))
+            else:
+                lines.append("    return %s(%s);" % (c_name, ", ".join(call_args)))
         lines.append("}")
         lines.append("")
 
@@ -585,6 +618,14 @@ def main():
     parser.add_argument("--memory", choices=["auto", "static", "dynamic", "external"], default="auto",
                         help="Linear memory model (default: auto — static unless the module uses "
                              "memory.grow; external = host registers a buffer before first call)")
+    parser.add_argument("--recoverable-traps", action="store_true",
+                        help="Traps longjmp to a host-registered one-shot recovery point "
+                             "(wasm_rt_set_recovery, exported) instead of halting; fatal "
+                             "fallback when none is registered")
+    parser.add_argument("--wrappers-recover", action="store_true",
+                        help="Bake recovery into the export wrappers: a trapped wrapper returns "
+                             "the 0 sentinel and wasm_rt_last_trap() (exported) reports the code; "
+                             "implies --recoverable-traps machinery")
     parser.add_argument("--custom-page-size", type=int, default=None,
                         help="Override the default 65536-byte wasm page size")
     parser.add_argument("--no-conformance-flags", action="store_true",
@@ -729,6 +770,11 @@ def main():
                 public_symbols.add("%s_set_env_user" % module_name)
             if memory_mode == "external" and mem_info["has_memory"]:
                 public_symbols.add("%s_set_memory" % module_name)
+            if args.recoverable_traps or args.wrappers_recover:
+                # The host reaches the trap state through the symtab.
+                public_symbols.add("wasm_rt_last_trap")
+            if args.recoverable_traps:
+                public_symbols.add("wasm_rt_set_recovery")
 
         # Run mkmodule from the work directory
         old_cwd = os.getcwd()

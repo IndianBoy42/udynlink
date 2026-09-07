@@ -72,6 +72,8 @@ debugging.
 | `--wrapper-prefix=PFX` | none | Prefix generated wrapper names (collision escape hatch) |
 | `--no-prologue` | off | Skip prologue wrappers (host must manage r9 itself) |
 | `--workdir` / `--keep` | temp dir | Keep intermediates (`.c/.h/.o/.elf`, `wasm_rt_config.h`) for inspection |
+| `--recoverable-traps` | off | Export `wasm_rt_set_recovery` / `wasm_rt_last_trap`; traps longjmp to the host's one-shot recovery point (three-tier policy, below) |
+| `--wrappers-recover` | off | Bake setjmp recovery into the export wrappers; trapped wrappers return the 0 sentinel |
 
 wasm2c conformance flags (`-fno-optimize-sibling-calls -frounding-math
 -fsignaling-nans`) are always added; `--no-conformance-flags` restores the old
@@ -127,18 +129,42 @@ dependencies never loads half-bound.
 
 ## Trap policy
 
-`wasm_rt_trap()` runs the policy in this order:
+`wasm_rt_trap()` runs a three-tier policy; the host decides how much
+containment it wants:
 
-1. `--trap-handler=NAME` (if configured): calls the host-provided handler.
-2. weak `wasm_rt_trap_handler` (host may override for logging).
-3. fatal `bkpt` loop.
+1. **Host-registered recovery** (modules built with `--recoverable-traps`):
+   before a module call the host arms a one-shot recovery point —
+   `setjmp(jb); wasm_rt_set_recovery(&jb);` (both looked up in the module's
+   symtab; `longjmp` is resolved from the host at load time).  A trap
+   unwinds to the host frame with `wasm_rt_last_trap()` reporting the code.
+   Registration is consumed by the first trap (or disarmed with
+   `wasm_rt_set_recovery(NULL)`), so a stale frame is never longjmp'd into;
+   re-arm before the next call.
+2. **Baked wrapper recovery** (opt-in `--wrappers-recover`): every export
+   wrapper setjmps internally; a trapped wrapper returns the 0 sentinel
+   (`0` / `NULL`) and `wasm_rt_last_trap()` (exported) says what happened.
+   The sentinel is ambiguous by design — hosts wanting a clean error
+   channel use tier 1.  Not re-entrant: do not nest module-export calls
+   through host imports while a wrapper is on the stack.
+3. **Fatal** (default, zero-cost): the baked `--trap-handler=NAME` (if
+   configured) or the weak `wasm_rt_trap_handler` hook runs, then the core
+   halts in a `bkpt` loop.  For hosts that treat a module fault as a system
+   fault.
 
-Traps are *not* recoverable in this release: a trapping module halts the core.
-Recoverable traps (host-registered `longjmp` recovery points, opt-in baked
-wrapper recovery) are planned — see
-`.opencode/plans/wasm2c-to-udynlink.md` (Phase 2.3). If a module must not be
-able to halt the system today, run it on a dedicated RTOS task or pin it behind
-a watchdog.
+Containment companions: `--stack-depth-limit=N` counts wasm call depth and
+turns runaway recursion into a recoverable `WASM_RT_TRAP_EXHAUSTION`
+instead of a native stack overflow (the depth counter is reset on
+recovery); allocation failures trap `WASM_RT_TRAP_OOM` through the same
+policy.  This is containment for *mistakes* — module code is native code
+calling host imports with full privilege; **this is not a hostile-code
+sandbox**.  Hosts wanting stronger isolation without recovery machinery
+can run the module on a dedicated RTOS task or pin it behind a watchdog.
+
+Measured cost on the 4-function traps module (`-Os`, 608 B fatal baseline):
+`--stack-depth-limit` +104 B (a depth check per generated function),
+`--recoverable-traps` +184 B (recovery state, longjmp path, two exported
+API functions), `--wrappers-recover` +336 B (adds the setjmp pattern per
+wrapper).  With everything off, the fatal tier costs nothing.
 
 ## Runtime layout
 
@@ -162,26 +188,28 @@ Generated per module into the workdir (kept by `--workdir`/`--keep`):
 /* #define WASM_RT_TRAP_HANDLER my_handler   (--trap-handler) */
 /* #define WASM_RT_USE_STACK_DEPTH_COUNT 1   (--stack-depth-limit) */
 /* #define WASM_RT_MAX_CALL_STACK_DEPTH 64 */
+/* #define WASM_RT_ENABLE_RECOVERY        (--recoverable-traps / --wrappers-recover) */
 ```
 
 ## Testing
 
 The QEMU suite builds wasm modules *through the script* (see
-`tests/test-wasm2c-add`, `-fac`, `-hello`, `-imports`): `tests/test_data.py` entries with a
+`tests/test-wasm2c-add`, `-fac`, `-hello`, `-imports`, `-trap`, `-trap-wrappers`):
+`tests/test_data.py` entries with a
 `"wasm": "foo.wat"` field are handled by `tests/test_driver.py`, which invokes
 `scripts/mkwasm2c-module` and then builds the host firmware as usual. Script
 internals (config-header generation, export parsing, import parsing and the
 generated symbol contract, collision checks, memory-mode selection,
 header-path resolution) are covered by
-`tests/py/test_mkwasm2c_module.py` (`just test-py`).
+`tests/py/test_mkwasm2c_module.py`; the runtime's trap tiers and one-shot
+recovery semantics are exercised host-natively by
+`tests/py/test_wasm2c_runtime.py` (`just test-py`).
 
 wabt is pinned (`just setup-wabt`): wasm2c's emitted-code shape is load-bearing
 for the script's parsers, so `mkwasm2c-module` warns when the installed wasm2c
 is older than the tested minimum.
 
 ## Limitations
-
-- Traps are fatal-only (Phase 2.3 adds recovery).
 - Multi-value/sret exports are rejected with a named error.
 - memory64, SIMD, threads, exceptions, GC: out of scope.
 - This is **not** a hostile-code sandbox: module code is native code that calls

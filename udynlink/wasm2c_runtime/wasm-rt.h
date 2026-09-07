@@ -2,7 +2,8 @@
  *
  * This is a drop-in replacement for the upstream wabt wasm-rt.h.
  * It provides everything wasm2c-generated code needs without pulling
- * in libc (no setjmp, no stdlib, no assert).
+ * in libc code (setjmp/longjmp are only referenced when the host opts
+ * into recoverable traps; they resolve from the host at load time).
  *
  * The companion implementation lives in wasm-rt-udynlink.c.
  */
@@ -223,6 +224,20 @@ extern uint32_t wasm_rt_call_stack_depth;
 #ifdef WASM_RT_TRAP_HANDLER
 void WASM_RT_TRAP_HANDLER(wasm_rt_trap_t);
 #endif
+
+/* Recoverable traps (WASM_RT_ENABLE_RECOVERY, set by mkwasm2c-module
+ * --recoverable-traps / --wrappers-recover): wasm_rt_trap() longjmps to
+ * the one-shot recovery point registered by the host instead of halting.
+ * The host calls setjmp() around the module call; longjmp is resolved
+ * from the host at load time like any other import.  Registration is
+ * consumed by the first trap (wasm_rt_set_recovery(NULL) disarms early),
+ * so a stale frame can never be longjmp'd into.  After a recovered trap,
+ * wasm_rt_last_trap() reports the code. */
+#ifdef WASM_RT_ENABLE_RECOVERY
+#include <setjmp.h>
+void wasm_rt_set_recovery(jmp_buf* jb);
+#endif
+wasm_rt_trap_t wasm_rt_last_trap(void);
 void wasm_rt_set_external_memory(void* buf, size_t capacity_bytes);
 
 /* -------------------------------------------------------------------------- */
