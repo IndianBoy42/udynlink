@@ -108,6 +108,7 @@ python3 scripts/mkwasm2c-module --gen-c-header --header-path /some/path module.w
 
 Accepts `.wat` or `.wasm`. Key flags (full reference: `docs/wasm2c-modules.md`):
 - `--memory=static|dynamic|external` — linear-memory model (default `auto`: static unless the module uses `memory.grow`)
+- `--gen-imports-header` — emit `<bin>_imports.h`, the host-side symbol contract (auto with `--gen-c-header` when the module has imports); host implements the listed wasm2c-named functions and resolves them via `udynlink_external_resolve_symbol`
 - `--custom-page-size=N` — shrink the 64 KiB wasm page
 - `--stack-depth-limit=N` — wasm recursion traps (`WASM_RT_TRAP_EXHAUSTION`) instead of native stack overflow
 - `--trap-handler=NAME` — host-provided trap handler symbol (resolved at load)

@@ -62,6 +62,7 @@ debugging.
 | `-O` | `s` | Optimization level |
 | `--bin-name` | `mod_<name>.bin` | Output image path |
 | `--gen-c-header` / `--header-path` | off / `.` | Emit `<bin>_module_data.h` for `add_subdirectory`-style hosts |
+| `--gen-imports-header` | auto with `--gen-c-header` | Emit `<bin>_imports.h`: the host-side symbol contract for import-bearing modules (below) |
 | `--memory` | `auto` | Linear-memory model (below) |
 | `--custom-page-size` | 65536 | Shrink the wasm page size (memory must be present; ignored for memory64) |
 | `--trap-handler=NAME` | off | Call host-provided `void NAME(wasm_rt_trap_t)` before the fatal halt; the symbol is undefined in the module and resolved at load time |
@@ -91,6 +92,38 @@ will fail at runtime (a warning is printed at build time).
 Table (funcref/externref) allocations always go through the same hook family,
 are zero-filled after allocation, and trap with `WASM_RT_TRAP_OOM` when the
 allocator fails — an unfilled table slot is a null funcref, never garbage.
+
+## Importing host functions (symbol contract)
+
+Wasm imports become **undefined symbols** in the module; the udynlink loader
+binds them at load time from host-provided functions named exactly as wasm2c
+names them (`w2c_<env>_<name>`). No glue, no indirection, no per-import RAM.
+
+For a module with imports the tool emits **`<bin>_imports.h`** (also
+automatically with `--gen-c-header`):
+
+```c
+struct w2c_env { void* user; };
+
+/* import: 'env' 'host_add' */
+u32 w2c_env_host_add(struct w2c_env*, u32, u32);
+```
+
+The host firmware implements each listed function with exactly this signature
+and returns its address from `udynlink_external_resolve_symbol()` (the
+QEMU test's `test_resolve_symbol` is the example pattern). The first
+parameter is the import environment: wasm2c leaves `struct w2c_env` opaque
+and the generated shim defines it as a single context word, mirrored in the
+imports header so host and module agree on the layout. The host attaches
+per-module context through the exported `<mod>_set_env_user()` wrapper and
+reads it as `((struct w2c_env*)env)->user` inside the import.
+
+An import the host cannot resolve **fails the load** with
+`UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL` naming the symbol — a module missing its
+dependencies never loads half-bound.
+
+`mkhostsyms` synergy: feed the symbol names from `<bin>_imports.h` to
+`scripts/mkhostsyms` to build an O(1) host-side resolution table.
 
 ## Trap policy
 
@@ -134,21 +167,20 @@ Generated per module into the workdir (kept by `--workdir`/`--keep`):
 ## Testing
 
 The QEMU suite builds wasm modules *through the script* (see
-`tests/test-wasm2c-add`, `-fac`, `-hello`): `tests/test_data.py` entries with a
+`tests/test-wasm2c-add`, `-fac`, `-hello`, `-imports`): `tests/test_data.py` entries with a
 `"wasm": "foo.wat"` field are handled by `tests/test_driver.py`, which invokes
 `scripts/mkwasm2c-module` and then builds the host firmware as usual. Script
-internals (config-header generation, export parsing, collision checks,
-memory-mode selection, header-path resolution) are covered by
+internals (config-header generation, export parsing, import parsing and the
+generated symbol contract, collision checks, memory-mode selection,
+header-path resolution) are covered by
 `tests/py/test_mkwasm2c_module.py` (`just test-py`).
 
 wabt is pinned (`just setup-wabt`): wasm2c's emitted-code shape is load-bearing
 for the script's parsers, so `mkwasm2c-module` warns when the installed wasm2c
 is older than the tested minimum.
 
-## Limitations (Phase 2.1)
+## Limitations
 
-- **Imports are not wired yet** (Phase 2.2): modules with imports fail to
-  build; the symbol-contract design is in the plan.
 - Traps are fatal-only (Phase 2.3 adds recovery).
 - Multi-value/sret exports are rejected with a named error.
 - memory64, SIMD, threads, exceptions, GC: out of scope.

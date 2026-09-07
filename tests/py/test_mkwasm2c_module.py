@@ -1,9 +1,10 @@
-"""Unit tests for scripts/mkwasm2c-module (wasm2c plan Phase 2.1).
+"""Unit tests for scripts/mkwasm2c-module (wasm2c plan Phases 2.1+).
 
 These defend the script's codegen decisions without invoking the ARM
 toolchain: config-header generation per flag combination (the D1/D3
 regressions), export parsing including pointer returns and loud sret
-rejection (D6), export-name collision rejection, memory-mode selection,
+rejection (D6), import parsing and the generated host-side symbol
+contract (K2), export-name collision rejection, memory-mode selection,
 and the --header-path resolution order (D8, exercised through the real
 script and skipped when wabt/arm-gcc are unavailable).
 """
@@ -241,3 +242,90 @@ def test_header_path_lands_outside_workdir(tmp_path):
     # Pre-fix this file landed in the (deleted) temp workdir instead.
     assert (outdir / "mod_add_module_data.h").is_file()
     assert (outdir / "mod_add.bin").is_file()
+
+
+# ---------------------------------------------------------------------------
+# Imports (K2 symbol contract): parsing, generated host header, shim env
+# ---------------------------------------------------------------------------
+
+IMPORT_HEADER = """\
+/* import: 'env' 'host_add' */
+u32 w2c_env_host_add(struct w2c_env*, u32, u32);
+"""
+
+
+def test_parse_imports_full_contract(tmp_path):
+    imports = mkwasm.parse_imports(write_header(tmp_path, IMPORT_HEADER))
+    assert len(imports) == 1
+    imp = imports[0]
+    assert imp["module"] == "env"
+    assert imp["name"] == "host_add"
+    assert imp["c_name"] == "w2c_env_host_add"
+    # The prototype is emitted verbatim in the generated host header; the
+    # leading env parameter must survive it (that is how the host receives
+    # its per-module context pointer).
+    assert imp["proto"] == "u32 w2c_env_host_add(struct w2c_env*, u32, u32)"
+
+
+def test_parse_imports_warns_on_unrecognized(tmp_path, capfd):
+    text = "/* import: 'env' 'weird' */\nextern const u32 w2c_env_weird;\n"
+    assert mkwasm.parse_imports(write_header(tmp_path, text)) == []
+    assert "not recognized" in capfd.readouterr().err
+
+
+def _shim(tmp_path, name, exports, imports):
+    mem = {"has_memory": False, "has_grow": False, "initial_pages": 0,
+           "max_pages": 0, "is64": False}
+    shim = str(tmp_path / "shim.c")
+    mkwasm.generate_shim(shim, name, name + ".h", mem, exports, imports,
+                         make_args(), "none")
+    with open(shim) as f:
+        return f.read()
+
+
+def test_shim_with_imports_defines_env_and_two_arg_instantiate(tmp_path):
+    imports = [{"module": "env", "name": "host_add",
+                "c_name": "w2c_env_host_add",
+                "proto": "u32 w2c_env_host_add(struct w2c_env*, u32, u32)"}]
+    exports = [{"wasm_name": "calc", "c_name": "w2c_calc_calc",
+                "ret": "u32", "params": ["w2c_calc*", "u32", "u32"]}]
+    text = _shim(tmp_path, "calc", exports, imports)
+    # The shim is the wasm2c embedder: it defines the env struct + instance
+    # and passes both to instantiate; the host gets a context setter.
+    assert "struct w2c_env { void* user; };" in text
+    assert "static struct w2c_env __wasm_env;" in text
+    assert "void calc_set_env_user(void* user)" in text
+    assert "wasm2c_calc_instantiate(&__wasm_instance, &__wasm_env);" in text
+
+
+def test_shim_without_imports_keeps_single_arg_instantiate(tmp_path):
+    exports = [{"wasm_name": "add", "c_name": "w2c_add_add",
+                "ret": "u32", "params": ["w2c_add*", "u32", "u32"]}]
+    text = _shim(tmp_path, "add", exports, [])
+    assert "wasm2c_add_instantiate(&__wasm_instance);" in text
+    assert "w2c_env" not in text
+
+
+@pytest.mark.skipif(not _tools_available(), reason="wabt / arm-none-eabi-gcc not installed")
+def test_imports_header_generation_end_to_end(tmp_path):
+    wat = tmp_path / "calc.wat"
+    wat.write_text(
+        '(module (import "env" "host_add" (func $host_add (param i32 i32) (result i32)))'
+        ' (func (export "calc") (param i32 i32) (result i32)'
+        ' local.get 0 local.get 1 i32.mul local.get 1 i32.const 1 i32.add'
+        ' call $host_add))')
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    res = subprocess.run(
+        [sys.executable, _SCRIPT, "--gen-c-header", "--header-path", str(outdir),
+         "--bin-name", str(outdir / "mod_calc.bin"), str(wat)],
+        capture_output=True, text=True, timeout=120)
+    assert res.returncode == 0, res.stderr
+    # --gen-c-header auto-emits the imports contract for import-bearing
+    # modules: prototypes the host implements + the env struct it shares
+    # with the shim.
+    imports_h = outdir / "mod_calc_imports.h"
+    assert imports_h.is_file()
+    text = imports_h.read_text()
+    assert "u32 w2c_env_host_add(struct w2c_env*, u32, u32);" in text
+    assert "struct w2c_env { void* user; };" in text
