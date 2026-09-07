@@ -8,11 +8,12 @@ control flow directly — the tiers QEMU cannot exercise:
 - baked --trap-handler dispatch (the D3 regression: the macro path must
   actually reach the host-provided handler);
 - recoverable traps: one-shot recovery semantics of wasm_rt_set_recovery
-  (consumed by the first trap, NULL disarms, re-arm works).
+  (consumed by the first trap, NULL disarms, re-arm works);
+- the realloc old-size contract (the D4 regression) with a guard page.
 
-The fatal-tier handler override lives in a separate TU that does not
-include wasm-rt.h: the header's weak declaration would otherwise bleed
-into the definition, and two weak symbols link in an unspecified order.
+Weak-hook overrides live in separate TUs that do not include wasm-rt.h:
+the header's weak declaration would otherwise bleed into the definition,
+and two weak symbols link in an unspecified order.
 """
 
 import os
@@ -77,17 +78,32 @@ void wasm_rt_trap_handler(wasm_rt_trap_t code) {
 }
 """
 
+# Strong override of the runtime's weak wasm_rt_mem_free: the realloc test
+# hands the runtime an mmap'd old buffer that must never reach free().
+FREE_NOOP_TU = """\
+#include <stddef.h>
+
+void wasm_rt_mem_free(void *p) { (void)p; }
+"""
+
+HANDLER_MAIN_DECLS = """\
+extern jmp_buf g_handler_escape;
+extern int g_handler_code;
+extern int g_handler_called;
+#define HANDLER_ESCAPE g_handler_escape
+#define HANDLER_CODE ((wasm_rt_trap_t)g_handler_code)
+"""
 
 
-def build_and_run(tmp_path, name, main_tu, extra_defs=(), use_handler_tu=False):
+def build_and_run(tmp_path, name, main_tu, extra_defs=(), extra_tus=()):
     srcs = []
     src = tmp_path / (name + "_main.c")
     src.write_text(HOST_PREAMBLE + main_tu)
     srcs.append(str(src))
-    if use_handler_tu:
-        hsrc = tmp_path / (name + "_handler.c")
-        hsrc.write_text(HANDLER_TU)
-        srcs.append(str(hsrc))
+    for i, content in enumerate(extra_tus):
+        esrc = tmp_path / (name + "_tu%d.c" % i)
+        esrc.write_text(content)
+        srcs.append(str(esrc))
     binary = tmp_path / name
     cmd = [_CC,
            "-I", os.path.join(_REPO_ROOT, "udynlink"),
@@ -101,12 +117,8 @@ def build_and_run(tmp_path, name, main_tu, extra_defs=(), use_handler_tu=False):
     assert res.returncode == 0, res.stdout + res.stderr
     return res.stdout
 
-FATAL_MAIN = """\
-extern jmp_buf g_handler_escape;
-extern int g_handler_code;
-extern int g_handler_called;
-#define HANDLER_ESCAPE g_handler_escape
-#define HANDLER_CODE ((wasm_rt_trap_t)g_handler_code)
+
+FATAL_MAIN = HANDLER_MAIN_DECLS + """\
 int main(void) {
     if (setjmp(HANDLER_ESCAPE) == 0) {
         wasm_rt_trap(WASM_RT_TRAP_UNREACHABLE);
@@ -128,14 +140,11 @@ int main(void) {
 
 
 def test_fatal_tier_invokes_handler(tmp_path):
-    out = build_and_run(tmp_path, "fatal", FATAL_MAIN, use_handler_tu=True)
+    out = build_and_run(tmp_path, "fatal", FATAL_MAIN, extra_tus=[HANDLER_TU])
     assert "fatal-tier handler OK" in out
 
 
 BAKED_MAIN = """\
-#include "wasm-rt.h"
-#include <setjmp.h>
-
 static jmp_buf g_escape;
 static wasm_rt_trap_t g_handler_code = WASM_RT_TRAP_NONE;
 
@@ -170,16 +179,7 @@ def test_baked_trap_handler_macro_dispatch(tmp_path):
     assert "baked handler OK" in out
 
 
-RECOVERY_MAIN = """\
-extern jmp_buf g_handler_escape;
-extern int g_handler_code;
-extern int g_handler_called;
-#define HANDLER_ESCAPE g_handler_escape
-#define HANDLER_CODE ((wasm_rt_trap_t)g_handler_code)
-
-#include "wasm-rt.h"
-#include <setjmp.h>
-
+RECOVERY_MAIN = HANDLER_MAIN_DECLS + """\
 int main(void) {
     jmp_buf jb;
 
@@ -237,6 +237,55 @@ int main(void) {
 
 def test_recovery_one_shot_semantics(tmp_path):
     out = build_and_run(tmp_path, "recover", RECOVERY_MAIN,
-                        extra_defs=["WASM_RT_ENABLE_RECOVERY"], use_handler_tu=True)
+                        extra_defs=["WASM_RT_ENABLE_RECOVERY"],
+                        extra_tus=[HANDLER_TU])
     for line in ("recovery OK", "one-shot OK", "re-arm OK", "disarm OK"):
         assert line in out
+
+
+REALLOC_MAIN = """\
+#include <sys/mman.h>
+#include <unistd.h>
+
+/* Allocate `usable` bytes ending exactly at a PROT_NONE guard page: any
+ * read past the old buffer size faults instead of silently succeeding. */
+static uint8_t *guarded_alloc(size_t usable) {
+    long ps = sysconf(_SC_PAGESIZE);
+    uint8_t *pages = mmap(NULL, 2 * (size_t)ps, PROT_READ | PROT_WRITE,
+                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (pages == MAP_FAILED) { perror("mmap"); exit(1); }
+    if (mprotect(pages + ps, (size_t)ps, PROT_NONE) != 0) { perror("mprotect"); exit(1); }
+    return pages + ps - usable;
+}
+
+int main(void) {
+    /* D4 regression: the realloc fallback must copy exactly old_size bytes
+     * from the old buffer — the pre-fix code copied new_size and read past
+     * the end (here: straight into the guard page). */
+    uint8_t *old = guarded_alloc(16);
+    for (int i = 0; i < 16; i++)
+        old[i] = (uint8_t)(0xA0 ^ i);
+
+    void *n = wasm_rt_mem_realloc(old, 16, 64);
+    if (n == NULL) {
+        printf("FAIL: realloc returned NULL\\n");
+        return 1;
+    }
+    for (int i = 0; i < 16; i++) {
+        if (((uint8_t *)n)[i] != (uint8_t)(0xA0 ^ i)) {
+            printf("FAIL: contents not preserved at %d\\n", i);
+            return 1;
+        }
+    }
+    printf("realloc old-size contract OK\\n");
+    return 0;
+}
+"""
+
+
+def test_realloc_fallback_copies_exactly_old_size(tmp_path):
+    """D4 regression at the TU level: growing a memory buffer must not read
+    past the old allocation (guard page faults on any overread)."""
+    out = build_and_run(tmp_path, "realloc", REALLOC_MAIN,
+                        extra_tus=[FREE_NOOP_TU])
+    assert "realloc old-size contract OK" in out

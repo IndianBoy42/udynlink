@@ -95,11 +95,22 @@ Table (funcref/externref) allocations always go through the same hook family,
 are zero-filled after allocation, and trap with `WASM_RT_TRAP_OOM` when the
 allocator fails — an unfilled table slot is a null funcref, never garbage.
 
+### Dynamic memory & `memory.grow`
+
+In `dynamic` mode `memory.grow` goes through the realloc hook — it receives
+the **old buffer size** (bare-metal allocators don't track it), copies the
+old contents, and returns the **previous page count** on success or `-1`
+when the request exceeds `max_pages` (or the allocator fails).  Content
+written before a grow survives it.  For heap-less firmware, point the
+`--malloc`/`--free` hooks at a static pool: `tests/test-wasm2c-grow` runs
+grows against a 32 KiB bump pool with `--custom-page-size=1024`.
+
 ## Importing host functions (symbol contract)
 
 Wasm imports become **undefined symbols** in the module; the udynlink loader
 binds them at load time from host-provided functions named exactly as wasm2c
 names them (`w2c_<env>_<name>`). No glue, no indirection, no per-import RAM.
+
 
 For a module with imports the tool emits **`<bin>_imports.h`** (also
 automatically with `--gen-c-header`):
@@ -194,8 +205,8 @@ Generated per module into the workdir (kept by `--workdir`/`--keep`):
 ## Testing
 
 The QEMU suite builds wasm modules *through the script* (see
-`tests/test-wasm2c-add`, `-fac`, `-hello`, `-imports`, `-trap`, `-trap-wrappers`):
-`tests/test_data.py` entries with a
+`tests/test-wasm2c-add`, `-fac`, `-hello`, `-imports`, `-trap`,
+`-trap-wrappers`, `-grow`): `tests/test_data.py` entries with a
 `"wasm": "foo.wat"` field are handled by `tests/test_driver.py`, which invokes
 `scripts/mkwasm2c-module` and then builds the host firmware as usual. Script
 internals (config-header generation, export parsing, import parsing and the
