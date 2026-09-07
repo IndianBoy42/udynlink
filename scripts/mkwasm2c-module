@@ -16,6 +16,7 @@ Usage:
 import os
 import sys
 import re
+import shlex
 import shutil
 import tempfile
 import subprocess
@@ -35,6 +36,13 @@ from udynlink_utils import execute, error, debug, warn, get_tool, split_fname, c
 RUNTIME_DIR = os.path.join(REPO_ROOT, "udynlink", "wasm2c_runtime")
 RUNTIME_C = os.path.join(RUNTIME_DIR, "wasm-rt-udynlink.c")
 RUNTIME_H = os.path.join(RUNTIME_DIR, "wasm-rt.h")
+
+
+# wasm2c-generated code needs these at -O2+ for spec conformance (sNaN->qNaN
+# conversion, infinite recursion must trap); see wasm2c README "Compiling the
+# wasm2c output".  Appended before user --build-flags so the user can override
+# toggle-style with last-wins semantics.
+WASM2C_CONFORMANCE_FLAGS = "-fno-optimize-sibling-calls -frounding-math -fsignaling-nans"
 
 # ---------------------------------------------------------------------------
 # Patch wasm2c-generated .c for bare-metal
@@ -262,14 +270,19 @@ def build_with_mkmodule(sources, output_bin, output_header_dir, args):
         cmd_parts += ["--gen-c-header", "--header-path", output_header_dir]
     if args.public_symbols:
         cmd_parts += ["--public-symbols", args.public_symbols]
+    build_flags = args.build_flags or ""
+    if not args.no_conformance_flags:
+        build_flags = (WASM2C_CONFORMANCE_FLAGS + " " + build_flags).strip()
+    if build_flags:
+        # Quoted so multi-word values survive the os.system shell round-trip
+        # instead of shattering into positional source arguments.
+        cmd_parts += ["--build-flags", shlex.quote(build_flags)]
     if args.no_prologue:
         cmd_parts += ["--no-prologue"]
     if args.mod_version:
         cmd_parts += ["--mod-version", args.mod_version]
     if args.udynlink_version:
         cmd_parts += ["--udynlink-version", args.udynlink_version]
-    if args.build_flags:
-        cmd_parts += ["--build-flags", args.build_flags]
     if getattr(args, 'no_verbose', False):
         cmd_parts.append("--no-verbose")
     if getattr(args, 'no_debug', False):
@@ -313,6 +326,8 @@ def main():
                         help="Force dynamic linear memory model")
     parser.add_argument("--custom-page-size", type=int, default=None,
                         help="Override default 65536-byte Wasm page size")
+    parser.add_argument("--no-conformance-flags", action="store_true",
+                        help="Omit wasm2c conformance flags (%s)" % WASM2C_CONFORMANCE_FLAGS)
     parser.add_argument("--trap-handler", default=None,
                         help="Custom trap handler function name")
     parser.add_argument("--malloc", default=None,
