@@ -64,7 +64,9 @@ All user-facing documentation lives under `docs/` and is summarized in `docs/REA
 - **`scripts/proto2module`** — compiles `.proto` files into protobuf codec modules (parse/write per message) via protoc + nanopb. Requires `protoc` and the nanopb generator plugin (`uv pip install nanopb`); the nanopb C runtime is vendored at `third_party/nanopb` (see `docs/protobuf-modules.md`)
 - **`scripts/mkwasm2c-module`** — compiles `.wasm`/`.wat` into UDLM modules via wasm2c + mkmodule
   (bare-metal wasm runtime in `udynlink/wasm2c_runtime/`). Memory models (`--memory=static|dynamic|external`),
-  `--custom-page-size`, `--stack-depth-limit`, `--trap-handler`, symbol-table policy. See `docs/wasm2c-modules.md`
+  `--custom-page-size`, `--stack-depth-limit`, `--trap-handler`, optional trap containment
+  (`--recoverable-traps` / `--wrappers-recover`), imports via the symbol contract
+  (`--gen-imports-header`), symbol-table policy. See `docs/wasm2c-modules.md`
 
 ## Build & Test Commands
 

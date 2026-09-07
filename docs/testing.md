@@ -249,6 +249,30 @@ exit:
 
 The function `test_qemu()` is called by `tests/qemu_host/src/main.c`. It must return non-zero on success and zero on failure. `main.c` prints `*** TEST OK ***` or `*** TEST FAILED! ***` based on this return value.
 
+### WebAssembly (wasm2c) test cases
+
+A test whose `test_data.py` carries a `"wasm"` key builds its module through
+`scripts/mkwasm2c-module` instead of `mkmodule` (see `tests/test-wasm2c-*` for
+full examples, and `docs/wasm2c-modules.md` for the tool):
+
+```python
+test_data = {
+    "desc": "wasm2c add test",
+    "wasm": "add.wat",                        # .wat or .wasm; must be committed
+    "wasm_args": "--memory=dynamic ...",      # extra mkwasm2c-module flags
+    "required": [r"^add: 30 \+ 70 = 100$"],
+}
+```
+
+The driver invokes `mkwasm2c-module --gen-c-header --header-path . --bin-name
+mod_wasm2c_<base>.bin --workdir . [wasm_args] <name>.wat`, producing
+`mod_wasm2c_<base>.bin` + `mod_wasm2c_<base>_module_data.h` (and, for
+import-bearing modules, `mod_wasm2c_<base>_imports.h`) in the staged source
+directory. The host harness includes the generated headers directly and calls
+wasm wrappers via `udynlink_lookup_symbol` + `UDYNLINK_PREPARE_CALL` before
+every call. Host-resolved symbols (imports, `--malloc`/`--free` hooks,
+`longjmp` for recoverable traps) come from the usual `test_resolve_symbol`.
+
 ### Test Utilities (`test_utils.h`)
 
 The following helpers are available from `tests/qemu_host/src/test_utils.h`:

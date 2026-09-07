@@ -5,6 +5,13 @@
 > prototype: core loader/PIC integration verified working; build script has
 > verified defects (no-op flags, broken imports, missing wasm2c-mandated compile
 > flags); Phases 2.5–5 never started.
+>
+> **Status 2026-09-08: Phase 2 complete.** 2.1 (stabilize, D1–D11), 2.2 (imports
+> via the symbol contract), 2.3 (three-tier trap policy + containment) and 2.5
+> (dynamic memory + `memory.grow`) are implemented, tested (QEMU: MPS2-AN386 +
+> STM32F429, both opt levels, all 3 load modes; host-native runtime unit tests;
+> pytest script tests) and documented. Next: Phase 3 (instances, float/i64
+> coverage). Metering stays backlog per the threat model.
 
 ---
 
@@ -12,9 +19,6 @@
 
 **Verified working** (evidence: QEMU + built artifacts):
 
-| Capability | Evidence |
-|---|---|
-| wasm2c 1.0.34 output → udynlink module (PIC/LOT/prologues) | `test-wasm2c-{add,fac,hello}` green on MPS2-AN386, `-O3`+`-Os`, all 3 load modes |
 | End-to-end script build for import-free modules | `hello.wasm` → 2972 B valid UDLM module |
 | Custom bare-metal runtime (no libc, no setjmp) | ~1.6 KB text after `--gc-sections`; no unresolved symbols |
 | Binary-format coverage | parser contract tests round-trip wasm2c-shaped bins |
