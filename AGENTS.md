@@ -34,6 +34,7 @@ All user-facing documentation lives under `docs/` and is summarized in `docs/REA
 | `docs/integrating-as-host.md` | Adding udynlink to your firmware, implementing callbacks, symbol tables, lifecycle, thread safety |
 |`docs/writing-modules.md`|Creating loadable C/C++ modules, consuming symbols, mkmodule reference|
 |`docs/protobuf-modules.md`|Compiling `.proto` definitions into parse/write UDLM modules (`scripts/proto2module`), 1-module-per-struct overhead analysis|
+|`docs/codegen-integrations.md`|The artifact→module pattern: shape test, relocation-free table rules, `scripts/codegen_common.py` API, `scripts/sm2module` example|
 |`docs/wasm2c-modules.md`|Compiling `.wasm`/`.wat` into UDLM modules (`scripts/mkwasm2c-module`); memory models, trap policy, symbol-table policy, testing|
 | `docs/api-reference.md` | Complete reference for all public functions, structs, macros, and callbacks |
 | `docs/examples.md` | Working code examples for every major feature |
@@ -62,6 +63,8 @@ All user-facing documentation lives under `docs/` and is summarized in `docs/REA
 **Optional tools:**
 - **`scripts/mkhostsyms`** — reads a host firmware ELF and generates a C header with a const GNU hash table (`--format gnu-hash`, default) or search trie (`--format trie`) for O(1)/O(k) symbol resolution
 - **`scripts/proto2module`** — compiles `.proto` files into protobuf codec modules (parse/write per message) via protoc + nanopb. Requires `protoc` and the nanopb generator plugin (`uv pip install nanopb==0.4.9.*`; keep it in sync with the vendored runtime at `third_party/nanopb`, currently nanopb-0.4.9.1). Extra mkmodule args go after `--` (see `docs/protobuf-modules.md`)
+- **`scripts/sm2module`** — compiles JSON state charts into state-machine modules (transition matrix + name tables; action hooks become host externs, action-free charts are fully self-contained with zero externs). The worked example of a custom codegen integration — see `docs/codegen-integrations.md`
+- **`scripts/codegen_common.py`** — shared helper for codegen integration pipelines (tool discovery, mkmodule invocation, contract-header conventions, size reporting); documented, stable-ish surface for end-user integrations
 - **`scripts/mkwasm2c-module`** — compiles `.wasm`/`.wat` into UDLM modules via wasm2c + mkmodule
   (bare-metal wasm runtime in `udynlink/wasm2c_runtime/`). Memory models (`--memory=static|dynamic|external`),
   `--custom-page-size`, `--stack-depth-limit`, `--trap-handler`, optional trap containment

@@ -456,6 +456,14 @@ proto2module proto_file *args="":
         {{args}} \
         {{proto_file}}
 
+# Build a state-chart module (JSON chart -> UDLM image) via scripts/sm2module
+# — the codegen-integration example; see docs/codegen-integrations.md
+sm2module chart *args="":
+    {{python_cmd}} {{scripts_dir}}/sm2module \
+        --target {{module_target}} \
+        {{args}} \
+        {{chart}}
+
 # Compile test-helloworld for all 9 supported targets (validation)
 validate-all-targets:
     #!/usr/bin/env bash

@@ -22,6 +22,7 @@ All of udynlink is guided by seven principles. When evaluating a feature or chan
 | [Integrating as a Host](integrating-as-host.md) | Adding udynlink to your firmware, implementing callbacks, symbol tables, lifecycle, thread safety, dependency system, non-contiguous loading, C++ API |
 | [Writing Modules](writing-modules.md) | Creating loadable C/C++ modules, consuming symbols, cross-module calls, mkmodule reference, dependency declarations |
 | [Protobuf Modules](protobuf-modules.md) | Compiling `.proto` files into parse/write UDLM modules via `scripts/proto2module`; 1-module-per-struct overhead analysis |
+| [Writing Codegen Integrations](codegen-integrations.md) | The artifact→module pattern (shape test, table rules, `scripts/codegen_common.py` API), with `scripts/sm2module` (JSON state chart) as the worked example |
 | [Wasm2c Modules](wasm2c-modules.md) | Compiling `.wasm`/`.wat` into UDLM modules via `scripts/mkwasm2c-module`; memory models, trap policy, symbol-table policy, testing |
 | [API Reference](api-reference.md) | Complete reference for all public functions, structs, macros, callbacks, and C++ API |
 | [Examples](examples.md) | Working code examples for every major feature |

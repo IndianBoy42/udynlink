@@ -77,7 +77,19 @@ class TestProto2Module:
         assert names["telemetry_write"].type_name == "EXPORTED"
         exported = sorted(s.name for s in mod.symbols
                           if s.type_name == "EXPORTED" and s.name)
-        assert exported == ["telemetry_parse", "telemetry_write"]
+        # Thunk mode (default): the two codec functions plus the preallocated
+        # cross-module thunk machinery (gateway + one marker slot per export).
+        assert exported == [
+            ".udynlink.thunk_export.telemetry_parse",
+            ".udynlink.thunk_export.telemetry_write",
+            "telemetry_parse",
+            "telemetry_write",
+            "udynlink_thunk_gateway",
+        ]
+        assert names["udynlink_thunk_gateway"].location_name == "DATA"
+        for fn in ("telemetry_parse", "telemetry_write"):
+            marker = names[".udynlink.thunk_export." + fn]
+            assert marker.location_name == "DATA"
         externs = sorted(s.name for s in mod.symbols
                          if s.type_name == "EXTERN")
         assert externs == ["pb_decode", "pb_encode",
@@ -87,18 +99,36 @@ class TestProto2Module:
         """--export-prefix '' restores the bare parse/write names."""
         out = _run_pipeline(tmp_path, SIMPLE_PROTO, "--export-prefix", "")
         mod = parse_module((out / "telemetry_mod.bin").read_bytes())
+        # Codec functions only; thunk machinery is covered by the default-
+        # mode test above.
+        funcs = sorted(s.name for s in mod.symbols
+                       if s.type_name == "EXPORTED"
+                       and s.location_name == "CODE")
+        assert funcs == ["parse", "write"]
+
+    def test_plain_exports_skips_thunks(self, tmp_path):
+        """--plain-exports reverts to bare function exports: no gateway or
+        thunk marker symbols, no .bss thunk slots."""
+        out = _run_pipeline(tmp_path, SIMPLE_PROTO, "--plain-exports")
+        mod = parse_module((out / "telemetry_mod.bin").read_bytes())
         exported = sorted(s.name for s in mod.symbols
                           if s.type_name == "EXPORTED" and s.name)
-        assert exported == ["parse", "write"]
+        assert exported == ["telemetry_parse", "telemetry_write"]
+        assert not any(s.name and ".udynlink.thunk_export." in s.name
+                       for s in mod.symbols)
+        assert mod.header.bss_size == 0
 
     def test_default_prefix_sanitizes_proto_name(self, tmp_path):
         """Non-identifier chars in the .proto basename become '_'."""
         out = _run_pipeline(tmp_path, SIMPLE_PROTO,
                             proto_name="my-sensor.proto")
         mod = parse_module((out / "my-sensor_mod.bin").read_bytes())
-        exported = sorted(s.name for s in mod.symbols
-                          if s.type_name == "EXPORTED" and s.name)
-        assert exported == ["my_sensor_parse", "my_sensor_write"]
+        # Codec functions only; thunk machinery is covered by the default-
+        # mode test above.
+        funcs = sorted(s.name for s in mod.symbols
+                       if s.type_name == "EXPORTED"
+                       and s.location_name == "CODE")
+        assert funcs == ["my_sensor_parse", "my_sensor_write"]
 
     def test_single_struct_size_budget(self, tmp_path):
         """1 module == 1 struct must stay small (fixed overhead dominated)."""
@@ -114,10 +144,14 @@ class TestProto2Module:
         out = _run_pipeline(tmp_path, TWO_MSG_PROTO,
                             "--struct", "Alpha", "--struct", "Beta")
         mod = parse_module((out / "telemetry_mod.bin").read_bytes())
-        exported = sorted(s.name for s in mod.symbols
-                          if s.type_name == "EXPORTED" and s.name)
-        assert exported == ["telemetry_parse_alpha", "telemetry_parse_beta",
-                            "telemetry_write_alpha", "telemetry_write_beta"]
+        funcs = sorted(s.name for s in mod.symbols
+                       if s.type_name == "EXPORTED"
+                       and s.location_name == "CODE")
+        assert funcs == ["telemetry_parse_alpha", "telemetry_parse_beta",
+                         "telemetry_write_alpha", "telemetry_write_beta"]
+        # One gateway per module regardless of export count.
+        assert sum(1 for s in mod.symbols
+                   if s.name == "udynlink_thunk_gateway") == 1
 
     def test_multi_struct_api_header_declares_all_prototypes(self, tmp_path):
         """The host-side ABI header declares one parse/write pair per
@@ -140,9 +174,10 @@ class TestProto2Module:
         """An explicit --export-prefix replaces the proto-basename default."""
         out = _run_pipeline(tmp_path, SIMPLE_PROTO, "--export-prefix", "tele")
         mod = parse_module((out / "telemetry_mod.bin").read_bytes())
-        exported = sorted(s.name for s in mod.symbols
-                          if s.type_name == "EXPORTED" and s.name)
-        assert exported == ["tele_parse", "tele_write"]
+        funcs = sorted(s.name for s in mod.symbols
+                       if s.type_name == "EXPORTED"
+                       and s.location_name == "CODE")
+        assert funcs == ["tele_parse", "tele_write"]
 
     def test_ambiguous_proto_requires_struct(self, tmp_path):
         proto = tmp_path / "multi.proto"

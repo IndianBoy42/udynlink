@@ -1,0 +1,11 @@
+{
+  "name": "door",
+  "initial": "closed",
+  "states": ["closed", "open", "locked"],
+  "events": ["push", "lock", "unlock"],
+  "transitions": [
+    {"from": "closed", "event": "push", "to": "open"},
+    {"from": "open", "event": "lock", "to": "locked", "action": "lock"},
+    {"from": "locked", "event": "unlock", "to": "open", "action": "unlock"}
+  ]
+}

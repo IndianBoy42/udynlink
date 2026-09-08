@@ -43,7 +43,7 @@ Follow this checklist to integrate udynlink into your firmware:
 1. **Add libudynlink to your build** — as a CMake subdirectory, an installed package, or vendored source files.
 2. **Define compile-time constants** — `UDYNLINK_HOST_ARCH_TAG`.
 3. **Implement all external callbacks** — the 5 functions declared in `udynlink_externals.h`.
-4. **Set up the LOT base** before calling any module function using `UDYNLINK_PREPARE_CALL()` (`udynlink_cpp_init()` sets it internally, so you only need to re-set it before other module calls).
+4. **Set up the LOT base** before calling any module function using `UDYNLINK_PREPARE_CALL()` (`udynlink_cpp_init()` sets it internally, so you only need to re-set it before other module calls). `r9` is caller-owned PIC state: any host call in between (symbol lookups, `printf`, callbacks) may clobber it, so re-arm `UDYNLINK_PREPARE_CALL()` **immediately before every module invocation** — the assembly prologue only preserves `r9` around the call, it does not set it.
 5. **Build a host symbol table** — decide how your firmware will resolve symbols requested by modules.
 6. **Write module loading/unloading code** — call `udynlink_load_module()`, manage handles, and call `udynlink_unload_module()` when done. **Remember to zero-initialize the module handle before the first load.**
 7. **(Optional) Set up hash-based or trie-based symbol resolution** — use `scripts/mkhostsyms` for O(1) hash or O(k) trie lookup when you export many symbols.
@@ -412,13 +412,15 @@ The dependency system generates the trampoline automatically at load time:
 1. The calling module declares `UDYNLINK_REQUIRES(<codec_module_name>)` — see
    `docs/writing-modules.md` → "Declaring Explicit Dependencies".
 2. The host resolver routes the reference through `udynlink_dep_resolve_func()`
-   (step 2 of the pattern below), which allocates a 10-byte per-function stub
-   plus an 18-byte per-module gateway from the thunk pool. The stub loads the
-   target address into `r12` and branches to the gateway, which switches `r9`
-   to the callee's LOT base, calls, and restores the caller's `r9`.
+   (step 2 of the pattern below). For an ordinary exporting module it
+   allocates a 10-byte per-function stub plus an 18-byte per-module gateway
+   from the thunk pool; the stub loads the target address into `r12` and
+   branches to the gateway, which switches `r9` to the callee's LOT base,
+   calls, and restores the caller's `r9`.
 
    If the exporting module instead declared **preallocated thunk exports**
-   (`UDYNLINK_THUNK_GATEWAY()`/`UDYNLINK_THUNK_EXPORT(fn)` — see
+   (`UDYNLINK_THUNK_GATEWAY()`/`UDYNLINK_THUNK_EXPORT(fn)` — the default for
+   protobuf codec modules built by current `scripts/proto2module`; see
    `docs/writing-modules.md` → "Preallocating Cross-Module Thunk Exports"),
    `udynlink_dep_load()` already generated the thunks into the module's own
    `.bss` at load time, and `udynlink_dep_resolve_func()` serves those
@@ -443,16 +445,15 @@ for a single codec module that no other module calls.
 
 Thunk-pool sizing must account for cross-module codec references: 10 bytes
 per referenced export plus 18 bytes per callee module (see "Thunk Pool
-Sizing" below), not the module image sizes.
+Sizing" below), not the module image sizes. Codec modules built with
+preallocated thunk exports (the proto2module default) consume their own
+`.bss` instead and place no demand on the shared pool.
 
 ### Required Setup
 
 Before loading any modules, initialize the dependency manager and the thunk pool:
 
 ```c
-#include "udynlink.h"
-#include "udynlink_deps.h"
-
 #define MAX_MODULES     8
 #define THUNK_POOL_SIZE 512
 

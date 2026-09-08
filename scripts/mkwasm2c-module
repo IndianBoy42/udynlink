@@ -16,21 +16,21 @@ wasm_rt_config.h that reaches every translation unit via wasm-rt.h, not
 just the shim.
 """
 
+import argparse
 import os
-import sys
 import re
 import shutil
-import tempfile
 import subprocess
-import argparse
+import sys
+import tempfile
 
-# Ensure we can import scripts/ modules
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_ROOT = os.path.dirname(SCRIPT_DIR)
-sys.path.insert(0, SCRIPT_DIR)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import codegen_common as cc  # noqa: E402
 
 import targets
-from udynlink_utils import error, warn, debug, split_fname
+from udynlink_utils import error, warn, debug, split_fname  # noqa: E402
+
+REPO_ROOT = cc.REPO_ROOT
 
 # ---------------------------------------------------------------------------
 # Runtime source paths (relative to repo root)
@@ -46,16 +46,10 @@ TESTED_WABT_VERSION = (1, 0, 34)
 def find_wasm2c():
     """Resolve wasm2c: UDYNLINK_WASM2C env var, then the pinned wabt install
     (just setup-wabt), then PATH."""
-    env = os.environ.get("UDYNLINK_WASM2C")
-    if env:
-        return env
-    pinned = os.path.join(TOOLS_DIR, "wabt", "bin", "wasm2c")
-    if os.path.isfile(pinned):
-        return pinned
-    found = shutil.which("wasm2c")
-    if found:
-        return found
-    error("wasm2c not found; install wabt or run 'just setup-wabt'")
+    return cc.find_tool(None, "UDYNLINK_WASM2C",
+                        [os.path.join(TOOLS_DIR, "wabt", "bin", "wasm2c"),
+                         "wasm2c"],
+                        "wasm2c not found; install wabt or run 'just setup-wabt'")
 
 
 def check_wasm2c_version(wasm2c):
@@ -520,72 +514,6 @@ def generate_shim(shim_path, module_name, h_name, mem_info, exports, imports, ar
     with open(shim_path, "w") as f:
         f.write("\n".join(lines))
 
-# ---------------------------------------------------------------------------
-# External tool invocation
-# ---------------------------------------------------------------------------
-
-def run_tool(cmd, args, what):
-    """Run an external tool with argv-list semantics (no shell quoting or
-    injection); output passes through, failures are loud."""
-    if not args.no_verbose:
-        print("[Executing] %s" % " ".join(cmd))
-    res = subprocess.run(cmd)
-    if res.returncode != 0:
-        error("%s failed (exit code %d)" % (what, res.returncode))
-
-
-# ---------------------------------------------------------------------------
-# Build via mkmodule
-# ---------------------------------------------------------------------------
-
-def build_with_mkmodule(sources, output_bin, output_header_dir, args, public_symbols, module_name, workdir):
-    """Invoke mkmodule on the given sources (cwd is the work directory)."""
-    cmd = [
-        sys.executable,
-        os.path.join(SCRIPT_DIR, "mkmodule"),
-        "--target", args.target,
-        "--mcpu", args.mcpu,
-        "-O", args.opt_level,
-        "--bin-name", output_bin,
-        # Keep the module-name entry clean; inferring from sources[0] would
-        # name it after the shim file.
-        "--module-name", module_name,
-        # Predictable intermediates: mkmodule writes <module_name>.elf here,
-        # which the test driver's objdump step expects.
-        "--workdir", workdir,
-    ]
-    if args.gen_c_header:
-        cmd += ["--gen-c-header", "--header-path", output_header_dir]
-    if public_symbols:
-        # Sorted for reproducible builds and deterministic symtabs
-        cmd += ["--public-symbols", ",".join(sorted(public_symbols))]
-        if not args.export_all:
-            # Demote every other defined symbol to a nameless internal
-            # entry: the wrappers are the module's API; runtime internals
-            # and wasm2c glue stay out of the symtab (relocations resolve
-            # by offset, so addressing is unaffected).
-            cmd.append("--strip-non-public-syms")
-    build_flags = args.build_flags or ""
-    if not args.no_conformance_flags:
-        build_flags = (WASM2C_CONFORMANCE_FLAGS + " " + build_flags).strip()
-    if build_flags:
-        cmd += ["--build-flags", build_flags]
-    if args.no_prologue:
-        cmd += ["--no-prologue"]
-    if args.mod_version:
-        cmd += ["--mod-version", args.mod_version]
-    if args.udynlink_version:
-        cmd += ["--udynlink-version", args.udynlink_version]
-    if args.no_verbose:
-        cmd.append("--no-verbose")
-    if args.no_debug:
-        cmd.append("--no-debug")
-    cmd += sources
-    if not args.no_verbose:
-        print("[Executing] %s" % " ".join(cmd))
-    res = subprocess.run(cmd)
-    if res.returncode != 0:
-        error("mkmodule failed (exit code %d)" % res.returncode)
 
 # ---------------------------------------------------------------------------
 # Main
@@ -698,14 +626,16 @@ def main():
             if not wat2wasm:
                 error("wat2wasm not found (needed for .wat input); install wabt or run 'just setup-wabt'")
             tmp_wasm = os.path.join(workdir, basename + ".wasm")
-            run_tool([wat2wasm, input_path, "-o", tmp_wasm], args, "wat2wasm")
+            cc.run_tool([wat2wasm, input_path, "-o", tmp_wasm], "wat2wasm",
+                        verbose=not args.no_verbose)
         else:
             tmp_wasm = input_path
 
         # Run wasm2c
         generated_c = os.path.join(workdir, basename + ".c")
         generated_h = os.path.join(workdir, basename + ".h")
-        run_tool([wasm2c, tmp_wasm, "-o", generated_c], args, "wasm2c")
+        cc.run_tool([wasm2c, tmp_wasm, "-o", generated_c], "wasm2c",
+                    verbose=not args.no_verbose)
 
         # Patch generated C file
         patch_wasm2c_generated(generated_c, args)
@@ -780,8 +710,31 @@ def main():
         old_cwd = os.getcwd()
         os.chdir(workdir)
         try:
-            build_with_mkmodule(sources, args.bin_name, args.header_path,
-                                args, public_symbols, module_name, workdir)
+            build_flags = args.build_flags or ""
+            if not args.no_conformance_flags:
+                build_flags = (WASM2C_CONFORMANCE_FLAGS + " " + build_flags).strip()
+            # --no-verbose maps to build_module(verbose=False); --no-debug is
+            # not covered by build_module, so pass it verbatim.
+            extra_args = ["--no-debug"] if args.no_debug else []
+            cc.build_module(
+                sources,
+                public_symbols=public_symbols,
+                strip_non_public=not args.export_all,
+                build_flags=build_flags,
+                target=args.target,
+                mcpu=args.mcpu,
+                opt_level=args.opt_level,
+                bin_name=args.bin_name,
+                module_name=module_name,
+                workdir=workdir,
+                gen_c_header=args.gen_c_header,
+                header_path=args.header_path,
+                no_prologue=args.no_prologue,
+                mod_version=args.mod_version,
+                udynlink_version=args.udynlink_version,
+                extra_args=extra_args,
+                verbose=not args.no_verbose,
+            )
         finally:
             os.chdir(old_cwd)
 
