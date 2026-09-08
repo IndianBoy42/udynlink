@@ -48,7 +48,7 @@ All user-facing documentation lives under `docs/` and is summarized in `docs/REA
 
 - **`arm-none-eabi-gcc`** / **`arm-none-eabi-g++`** / **`arm-none-eabi-objcopy`** (GCC ARM Embedded)
 - **CMake** ≥ 3.16
-- **Python 3** with `pyelftools`, `Jinja2` (managed via `uv` / `pyproject.toml`)
+- **Python 3** with `pyelftools`, `Jinja2` (managed via `uv` / `pyproject.toml`); optional `nanopb==0.4.9.*` for proto2module (pin matches the vendored runtime)
 - **QEMU** for tests (two variants):
   - **Mainline QEMU** (`qemu-system-arm` 9.2.4+): MPS2 and Olimex platforms.
   - **Legacy xPack QEMU** (`qemu-system-gnuarmeclipse`): Fastest for STM32F429. Discontinued in recent xPack releases.
@@ -61,7 +61,7 @@ All user-facing documentation lives under `docs/` and is summarized in `docs/REA
 
 **Optional tools:**
 - **`scripts/mkhostsyms`** — reads a host firmware ELF and generates a C header with a const GNU hash table (`--format gnu-hash`, default) or search trie (`--format trie`) for O(1)/O(k) symbol resolution
-- **`scripts/proto2module`** — compiles `.proto` files into protobuf codec modules (parse/write per message) via protoc + nanopb. Requires `protoc` and the nanopb generator plugin (`uv pip install nanopb`); the nanopb C runtime is vendored at `third_party/nanopb` (see `docs/protobuf-modules.md`)
+- **`scripts/proto2module`** — compiles `.proto` files into protobuf codec modules (parse/write per message) via protoc + nanopb. Requires `protoc` and the nanopb generator plugin (`uv pip install nanopb==0.4.9.*`; keep it in sync with the vendored runtime at `third_party/nanopb`, currently nanopb-0.4.9.1). Extra mkmodule args go after `--` (see `docs/protobuf-modules.md`)
 - **`scripts/mkwasm2c-module`** — compiles `.wasm`/`.wat` into UDLM modules via wasm2c + mkmodule
   (bare-metal wasm runtime in `udynlink/wasm2c_runtime/`). Memory models (`--memory=static|dynamic|external`),
   `--custom-page-size`, `--stack-depth-limit`, `--trap-handler`, optional trap containment
@@ -311,7 +311,7 @@ The `.gitignore` and test harness generate these artifacts; do not commit them:
 
 ## CI
 
-`.github/workflows/ci.yml` runs the test suite via GitHub Actions. It installs `gcc-arm-embedded`, CMake, Python 3 deps, and QEMU.
+`.github/workflows/ci.yml` runs the test suite via GitHub Actions. It installs `gcc-arm-embedded`, CMake, Python 3 deps, `protoc` + pinned `nanopb`, wabt 1.0.34, and QEMU; then runs `pytest tests/py` (unit + integration, including the proto2module pipeline) followed by the QEMU suite via `test_driver.py`.
 
 ## Open TODOs
 

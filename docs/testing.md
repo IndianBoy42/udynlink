@@ -83,6 +83,26 @@ Same platforms, but every test module is built with `mkmodule --lto`
 (see [LTO Mode](writing-modules.md#lto-mode)). Equivalent to setting
 `UDYNLINK_MKMODULE_LTO=1` on any test recipe.
 
+### Python Test Suite (`tests/py`)
+
+```bash
+just test-py         # unit tests only (no ARM toolchain needed)
+just test-py-all     # unit + integration (needs arm-none-eabi-gcc)
+```
+
+`tests/py/` hosts pytest suites for the Python tooling rather than QEMU
+tests: `mkhostsyms`, `mkmodule` symbol filtering, `udynlink_parser`
+(`.bin` decoding), the wasm2c runtime, `mkwasm2c-module`, and
+`proto2module`. Integration tests skip automatically when their external
+tools are missing (`protoc` + the nanopb plugin for proto2module, `wabt`
+for wasm), so the suite is safe to run on a partial toolchain.
+
+CI runs `python3 -m pytest tests/py -v` with `protoc` and
+`nanopb==0.4.9.1` installed (the pin matches the vendored runtime in
+`third_party/nanopb`; see [Protobuf Modules](protobuf-modules.md)), so the
+build pipelines are exercised on every push — not only the QEMU firmware
+suite that follows them.
+
 ### Environment Variables
 
 The following variables are read by `test_driver.py` and the `Justfile`:

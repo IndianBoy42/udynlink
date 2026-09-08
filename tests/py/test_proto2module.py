@@ -6,6 +6,7 @@ so all tests here are marked integration and skipped when a piece is missing.
 """
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -118,6 +119,23 @@ class TestProto2Module:
         assert exported == ["telemetry_parse_alpha", "telemetry_parse_beta",
                             "telemetry_write_alpha", "telemetry_write_beta"]
 
+    def test_multi_struct_api_header_declares_all_prototypes(self, tmp_path):
+        """The host-side ABI header declares one parse/write pair per
+        selected message, not just the first one."""
+        out = _run_pipeline(tmp_path, TWO_MSG_PROTO,
+                            "--struct", "Alpha", "--struct", "Beta")
+        api = (out / "telemetry_api.h").read_text()
+        for fn in ("telemetry_parse_alpha", "telemetry_write_alpha",
+                   "telemetry_parse_beta", "telemetry_write_beta"):
+            assert re.search(r"^int %s\(" % fn, api, re.M)
+        # single-struct mode still declares the bare pair
+        single = tmp_path / "single"
+        single.mkdir()
+        out = _run_pipeline(single, SIMPLE_PROTO)
+        api = (out / "telemetry_api.h").read_text()
+        assert re.search(r"^int telemetry_parse\(", api, re.M)
+        assert re.search(r"^int telemetry_write\(", api, re.M)
+
     def test_export_prefix_overrides_default(self, tmp_path):
         """An explicit --export-prefix replaces the proto-basename default."""
         out = _run_pipeline(tmp_path, SIMPLE_PROTO, "--export-prefix", "tele")
@@ -136,3 +154,15 @@ class TestProto2Module:
         res = subprocess.run(cmd, capture_output=True, text=True)
         assert res.returncode != 0
         assert "--struct" in res.stderr
+
+    def test_positional_must_be_proto_file(self, tmp_path):
+        """A stray mkmodule flag between the options and the positional
+        (bare `-O s` without '--') misassigns argparse tokens; the pipeline
+        must fail with a pointed error, not a misleading file-not-found."""
+        proto = tmp_path / "t.proto"
+        proto.write_text(SIMPLE_PROTO)
+        cmd = [sys.executable, _PROTO2MODULE, "--struct", "Telemetry",
+               "-O", "s", str(proto)]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        assert res.returncode != 0
+        assert "does not look like a .proto file" in res.stderr

@@ -2,7 +2,7 @@
  * Link the nanopb runtime (pb_common.c, pb_encode.c, pb_decode.c) into the
  * host firmware and resolve these names in udynlink_external_resolve_symbol():
  *   pb_decode, pb_encode, pb_istream_from_buffer, pb_ostream_from_buffer
- * The struct type lives in sensor.pb.h; the module owns the field tables. */
+ * The struct types live in sensor.pb.h; the module owns the field tables. */
 #ifndef SENSOR_PROTO_API_H
 #define SENSOR_PROTO_API_H
 

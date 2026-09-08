@@ -24,7 +24,8 @@ Pipeline: protoc --nanopb_out -> generated <proto>.pb.c/.pb.h -> wrapper .c
 Requirements (overridable via --protoc/--plugin/--nanopb-dir or the
 UDYNLINK_PROTOC / UDYNLINK_NANOPB_PLUGIN / UDYNLINK_NANOPB_DIR env vars):
   * protoc
-  * nanopb generator plugin (pip: `uv pip install nanopb`)
+  * nanopb generator plugin (pip: `uv pip install nanopb==0.4.9.*`; keep the
+    generator in sync with the vendored runtime, currently nanopb-0.4.9.1)
   * nanopb C runtime directory containing pb.h / pb_common.c / pb_encode.c /
     pb_decode.c / nanopb.proto (vendored at third_party/nanopb in this repo)
   * arm-none-eabi-gcc (as for mkmodule)
@@ -71,7 +72,7 @@ API_HEADER_TEMPLATE = """\
  * Link the nanopb runtime (pb_common.c, pb_encode.c, pb_decode.c) into the
  * host firmware and resolve these names in udynlink_external_resolve_symbol():
  *   pb_decode, pb_encode, pb_istream_from_buffer, pb_ostream_from_buffer
- * The struct type lives in {pb_header}; the module owns the field tables. */
+ * The struct types live in {pb_header}; the module owns the field tables. */
 #ifndef {guard}_API_H
 #define {guard}_API_H
 
@@ -82,17 +83,20 @@ API_HEADER_TEMPLATE = """\
 extern "C" {{
 #endif
 
-/* Decode in_len bytes at `in` into a {cname} struct. Returns 1 on success. */
-int {parse_fn}(const unsigned char *in, size_t in_len, void *msg);
-
-/* Encode `msg` into `out`; *out_len is capacity in, bytes written out. */
-int {write_fn}(const void *msg, unsigned char *out, size_t *out_len);
-
+{prototypes}
 #ifdef __cplusplus
 }}
 #endif
 
 #endif /* {guard}_API_H */
+"""
+
+API_PROTO_TEMPLATE = """\
+/* Decode in_len bytes at `in` into a {cname} struct. Returns 1 on success. */
+int {parse_fn}(const unsigned char *in, size_t in_len, void *msg);
+
+/* Encode `msg` into `out`; *out_len is capacity in, bytes written out. */
+int {write_fn}(const void *msg, unsigned char *out, size_t *out_len);
 """
 
 
@@ -172,6 +176,13 @@ def main():
     ap.add_argument("--verbose", action="store_true", help="print commands")
     args, mkmodule_args = ap.parse_known_args()
 
+    # A stray unknown flag before `--` (e.g. a bare `-O s`) makes argparse
+    # misassign tokens to the positional; catch it with a pointed hint
+    # instead of failing on a nonexistent file.
+    if not args.proto.endswith(".proto"):
+        sys.exit("error: '%s' does not look like a .proto file; extra "
+                 "mkmodule arguments (e.g. -O s) must go after '--': "
+                 "proto2module [options] file.proto -- -O s" % args.proto)
     proto_path = os.path.abspath(args.proto)
     if not os.path.isfile(proto_path):
         sys.exit("error: no such file: %s" % args.proto)
@@ -246,8 +257,10 @@ def main():
             proto_name=os.path.basename(proto_path),
             pb_header=os.path.basename(pb_h),
             guard=os.path.basename(proto_path).replace(".", "_").upper(),
-            cname=structs[0], fields="%s_fields" % structs[0],
-            parse_fn=pair(structs[0])[0], write_fn=pair(structs[0])[1]))
+            prototypes="\n".join(
+                API_PROTO_TEMPLATE.format(
+                    cname=s, parse_fn=pair(s)[0], write_fn=pair(s)[1])
+                for s in structs)))
 
     # 4. mkmodule: PIC compile + UDLM packaging.
     exports = []

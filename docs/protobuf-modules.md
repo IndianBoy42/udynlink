@@ -37,11 +37,24 @@ each (see [Overhead](#overhead)).
 
 ## Building a Module
 
-Requires `protoc`, the nanopb generator plugin (`uv pip install nanopb`), the
-vendored nanopb runtime (`third_party/nanopb`), and the usual
-`arm-none-eabi-gcc`. Tools are located via `--protoc` / `--plugin` /
-`--nanopb-dir` flags or the `UDYNLINK_PROTOC` / `UDYNLINK_NANOPB_PLUGIN` /
-`UDYNLINK_NANOPB_DIR` environment variables.
+Requires `protoc`, the nanopb generator plugin, the vendored nanopb runtime
+(`third_party/nanopb`), and the usual `arm-none-eabi-gcc`. Tools are located
+via `--protoc` / `--plugin` / `--nanopb-dir` flags or the `UDYNLINK_PROTOC` /
+`UDYNLINK_NANOPB_PLUGIN` / `UDYNLINK_NANOPB_DIR` environment variables.
+
+**Keep the generator pinned to the vendored runtime version.** Install the
+plugin with `uv pip install nanopb==0.4.9.*` (the vendored runtime is
+nanopb-0.4.9.1). The generated codec depends on both the plugin and the
+runtime version; mixing a newer generator with the older vendored runtime
+changes the emitted field tables and struct layouts. The generated files
+committed under `tests/test-protobuf-module/` regenerate byte-identically at
+the pinned version — a quick way to check your toolchain pairing:
+
+```bash
+python3 scripts/proto2module --struct SensorReading \
+    tests/test-protobuf-module/sensor.proto --out-dir /tmp/proto-check
+diff /tmp/proto-check/sensor.pb.c tests/test-protobuf-module/sensor.pb.c
+```
 
 ```bash
 # 1 module == 1 struct (the default deployment); exports are prefixed with
@@ -71,12 +84,29 @@ Outputs, next to the `.proto` (or in `--out-dir`):
 | `<proto>.bin` (actually `<proto>_mod.bin`) | The UDLM image |
 | `<proto>.pb.c` / `<proto>.pb.h` | nanopb-generated codec + struct definition (host includes the `.pb.h`) |
 | `<proto>_mod.c` | Generated `parse`/`write` wrapper (the module source) |
-| `<proto>_api.h` | Host-side prototypes for the module ABI |
+| `<proto>_api.h` | Host-side prototypes: one `parse`/`write` pair per selected message |
 
 `--struct` takes the nanopb C type name: `package` + `Message` joined with
 `_` (e.g. `acme_sensor_TempReading`). If the file has exactly one message,
 `--struct` is optional. A file with several messages without `--struct` is
-an error. Extra arguments after `--` are forwarded to `mkmodule`.
+an error. Extra arguments are forwarded to `mkmodule`; put them after `--`
+for unambiguous parsing:
+
+```bash
+python3 scripts/proto2module --struct SensorReading proto/sensor.proto -- -O s
+```
+
+A stray unknown flag placed *between* the options and the `.proto`
+(e.g. `--struct X -O s sensor.proto`) makes argparse misassign tokens; the
+pipeline detects this and exits with a hint pointing at the `--` form
+(flags placed after the `.proto` still forward fine, but `--` never
+ambiguates).
+
+The output directory doubles as the mkmodule workdir, so intermediate files
+(`*.o`, `*.elf`, `*_prologue.o`) are also written there (alongside the
+artifacts listed above). They are safe to delete; a firmware tree's
+`.gitignore` typically already covers `*.o`/`*.bin`/`*.elf`. Pass
+`-- --workdir <dir>` to move the intermediates (and the `.bin`) elsewhere.
 
 ## Host Integration
 
@@ -207,4 +237,9 @@ leaking into the symbol table on multi-file builds — is fixed in
   (`just test-f429-single test-protobuf-module`).
 - `tests/py/test_proto2module.py` — pipeline unit/integration tests
   (`just test-py-all`), including size-budget assertions that keep the
-  1-module-per-struct overhead from regressing.
+  1-module-per-struct overhead from regressing, multi-struct API-header
+  coverage (one `parse`/`write` pair per selected message), and the
+  argument-validation behavior.
+- CI (`.github/workflows/ci.yml`) runs the pytest suite with `protoc` and
+  `nanopb==0.4.9.1` installed, so the pipeline tests gate on every push; the
+  QEMU test builds from the committed generated files and needs no protoc.
