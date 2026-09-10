@@ -45,6 +45,8 @@ extern "C" {
 #endif
 
 /* Thunk sizes in bytes. */
+/* UDYNLINK_GATEWAY_SIZE stays word aligned as hygiene; the gateway template
+ * itself no longer depends on it (see udynlink_thunk.c). */
 #define UDYNLINK_GATEWAY_SIZE           18
 #define UDYNLINK_STUB_SIZE              10
 

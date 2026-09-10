@@ -79,10 +79,16 @@ uintptr_t udynlink_external_find_stub(const udynlink_thunk_pool_t *pool,
  *
  * Gateway (18 bytes, one per target module):
  *   push.w  {r9, lr}           ; save caller's r9 and return addr
- *   ldr.w   r9, [pc, #4]       ; load ram_base from literal
+ *   movw    r9, #ram_lo16      ; load ram_base, low half
+ *   movt    r9, #ram_hi16      ; load ram_base, high half
  *   blx     ip                  ; call function (address in ip from stub)
  *   pop.w   {r9, pc}            ; restore r9, return to caller
- *   .word   ram_base            ; callee module's ram_base
+ *
+ * The callee runs with r9 = its own ram_base (GOT base) and callers get theirs
+ * back on return.  The constant rides in the instruction stream rather than a
+ * PC-relative literal, which would need the gateway to be word aligned: LDR
+ * (literal) rounds PC down to a multiple of 4, so a caller that lands gateways
+ * on a 2-mod-4 grid (pb_codec does) silently reads garbage into r9.
  *
  * Stub (10 bytes, one per function reference):
  *   movw    ip, #func_lo16      ; load low 16 bits of func_addr
@@ -102,39 +108,58 @@ uintptr_t udynlink_external_find_stub(const udynlink_thunk_pool_t *pool,
  * Break-even at N=2:  38 vs 56 bytes.  For N=5:  68 vs 140 bytes.
  */
 
-/* Gateway template: push.w {r9,lr}; ldr.w r9,[pc,#4]; blx ip; pop.w {r9,pc}; .word ram_base */
+/* Gateway template: push.w {r9,lr}; movw r9,#lo; movt r9,#hi;
+ *                    blx ip; pop.w {r9,pc}.
+ *
+ * ram_base is loaded with an instruction pair, not a PC-relative literal: a
+ * literal load rounds PC down to a multiple of 4, so its address depends on the
+ * gateway's own alignment — which the pool's callers control (pb_codec carves
+ * its gateway region out of a byte array, landing on a 2-mod-4 grid).  Encoding
+ * the constant in the instruction stream works at any halfword-aligned address.
+ */
 static const uint8_t gateway_template[UDYNLINK_GATEWAY_SIZE] = {
     0x2D, 0xE9, 0x00, 0x42,       /* push.w  {r9, lr}          */
-    0xDF, 0xF8, 0x04, 0x90,       /* ldr.w   r9, [pc, #4]      */
-    0xE0, 0x47,                   /* blx     ip                 */
-    0xBD, 0xE8, 0x00, 0x82,       /* pop.w   {r9, pc}           */
-    0x00, 0x00, 0x00, 0x00,       /* .word   ram_base           */
+    0x40, 0xF2, 0x00, 0x09,       /* movw    r9, #ram_lo16     */
+    0xC0, 0xF2, 0x00, 0x09,       /* movt    r9, #ram_hi16     */
+    0xE0, 0x47,                   /* blx     ip                */
+    0xBD, 0xE8, 0x00, 0x82,       /* pop.w   {r9, pc}          */
 };
 
-#define GATEWAY_RAM_BASE_OFF  14
+/* Byte offsets of the movw/movt immediates inside the gateway (see above). */
+#define GATEWAY_MOVW_OFF      4
+#define GATEWAY_MOVT_OFF      8
 
 /* ─── movw / movt helpers ──────────────────────────────────────────── */
 
-static void encode_movw_ip(uint8_t *dst, uint16_t imm16) {
+// MOVW/MOVT (Thumb-2, immediate): `1111 0i10 0100 imm4 | 0 imm3 Rd imm8`.
+static void encode_mov_imm(uint8_t *dst, unsigned rd, uint16_t imm16, int top) {
     unsigned i    = (imm16 >> 11) & 1;
     unsigned imm4 = (imm16 >> 12) & 0xF;
     unsigned imm3 = (imm16 >>  8) & 0x7;
     unsigned imm8 =  imm16        & 0xFF;
-    uint16_t hw0  = 0xF240 | (i << 10) | imm4;
-    uint16_t hw1  = (imm3 << 12) | (0xC << 8) | imm8;
+    uint16_t hw0  = (top ? 0xF2C0 : 0xF240) | (i << 10) | imm4;
+    uint16_t hw1  = (imm3 << 12) | ((rd & 0xF) << 8) | imm8;
     dst[0] = hw0 & 0xFF; dst[1] = hw0 >> 8;
     dst[2] = hw1 & 0xFF; dst[3] = hw1 >> 8;
 }
 
+static void encode_movw_ip(uint8_t *dst, uint16_t imm16) {
+    encode_mov_imm(dst, 12, imm16, 0);
+}
+
 static void encode_movt_ip(uint8_t *dst, uint16_t imm16) {
-    unsigned i    = (imm16 >> 11) & 1;
-    unsigned imm4 = (imm16 >> 12) & 0xF;
-    unsigned imm3 = (imm16 >>  8) & 0x7;
-    unsigned imm8 =  imm16        & 0xFF;
-    uint16_t hw0  = 0xF2C0 | (i << 10) | imm4;
-    uint16_t hw1  = (imm3 << 12) | (0xC << 8) | imm8;
-    dst[0] = hw0 & 0xFF; dst[1] = hw0 >> 8;
-    dst[2] = hw1 & 0xFF; dst[3] = hw1 >> 8;
+    encode_mov_imm(dst, 12, imm16, 1);
+}
+
+// Read back a MOVW/MOVT immediate written by encode_mov_imm.
+static uint16_t decode_mov_imm(const uint8_t *src) {
+    uint16_t hw0 = (uint16_t)(src[0] | (src[1] << 8));
+    uint16_t hw1 = (uint16_t)(src[2] | (src[3] << 8));
+    unsigned i    = (hw0 >> 10) & 1;
+    unsigned imm4 = hw0 & 0xF;
+    unsigned imm3 = (hw1 >> 12) & 0x7;
+    unsigned imm8 = hw1 & 0xFF;
+    return (uint16_t)((i << 11) | (imm4 << 12) | (imm3 << 8) | imm8);
 }
 
 /*
@@ -153,8 +178,25 @@ void udynlink_thunk_pool_init(udynlink_thunk_pool_t *pool,
                               uint8_t *buf, size_t sz) {
     pool->base = buf;
     pool->size = sz;
+    /* Hand out word-aligned gateways: 32-bit Thumb instructions need only
+     * halfword alignment, but a word-aligned grid keeps every template offset
+     * valid whatever the templates grow into.  Align the base up and the top
+     * down; the few bytes lost are irrelevant next to the surprise of a
+     * 2-mod-4 gateway. */
+    size_t misalign = (size_t)((uintptr_t)pool->base & 3u);
+    if (misalign != 0) {
+        size_t skip = 4u - misalign;
+        if (skip >= pool->size) {
+            pool->base += pool->size;
+            pool->size = 0;
+        } else {
+            pool->base += skip;
+            pool->size -= skip;
+        }
+    }
+    pool->size &= ~(size_t)3u;
     pool->used = 0;
-    pool->gateway_top = sz;
+    pool->gateway_top = pool->size;
 }
 
 void *udynlink_thunk_alloc(udynlink_thunk_pool_t *pool, size_t n) {
@@ -170,7 +212,8 @@ void *udynlink_thunk_alloc(udynlink_thunk_pool_t *pool, size_t n) {
 
 void udynlink_thunk_write_gateway(uint8_t *dst, uint32_t ram_base) {
     memcpy(dst, gateway_template, UDYNLINK_GATEWAY_SIZE);
-    memcpy(dst + GATEWAY_RAM_BASE_OFF, &ram_base, sizeof(uint32_t));
+    encode_mov_imm(dst + GATEWAY_MOVW_OFF, 9, (uint16_t)(ram_base & 0xFFFF), 0);
+    encode_mov_imm(dst + GATEWAY_MOVT_OFF, 9, (uint16_t)(ram_base >> 16), 1);
 }
 
 uintptr_t udynlink_thunk_write_stub(uint8_t *dst, uint32_t func_addr,
@@ -201,7 +244,8 @@ uint8_t *udynlink_thunk_find_gateway(const udynlink_thunk_pool_t *pool,
          off += UDYNLINK_GATEWAY_SIZE) {
         const uint8_t *g = pool->base + off;
         uint32_t g_ram_base;
-        memcpy(&g_ram_base, g + GATEWAY_RAM_BASE_OFF, sizeof(uint32_t));
+        g_ram_base = (uint32_t)decode_mov_imm(g + GATEWAY_MOVW_OFF) |
+                     ((uint32_t)decode_mov_imm(g + GATEWAY_MOVT_OFF) << 16);
         if (g_ram_base == ram_base) {
             return (uint8_t *)g;
         }
