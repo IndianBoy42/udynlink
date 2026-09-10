@@ -6,9 +6,10 @@ test_data = {
     "required": [
         r"^thunked math_add\(1, 2\) = 3$",
         r"^thunked math_mul\(3, 4\) = 12$",
-        r"^pool used = 20 \(2 stubs, 1 gateway\)$",
+        r"^thunked math_bias\(\) = 41$",
+        r"^pool used = 30 \(3 stubs, 1 gateway\)$",
         r"^pool gateway_top = 494 \(1 gateway\)$",
-        r"^stub dedup: math_add thunk reused, pool used = 20$",
+        r"^stub dedup: math_add thunk reused, pool used = 30$",
         r"^call thunk: OK$",
     ]
 }

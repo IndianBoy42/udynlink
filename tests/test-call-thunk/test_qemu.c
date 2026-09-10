@@ -54,12 +54,29 @@ static int test_call_thunk_single(udynlink_load_mode_t mode) {
     }
 
     {
-        size_t expected_used = 2 * UDYNLINK_STUB_SIZE;
+        /* Callee reads a module-global through its GOT: this is the case that
+         * fails when the gateway loads a garbage ram_base into r9. */
+        uintptr_t thunk = udynlink_thunk_make_call(&g_thunk_pool, &mod_math, "math_bias");
+        if (thunk == 0) {
+            printf("thunk for math_bias failed\n");
+            goto cleanup;
+        }
+        int (*p_bias)(void) = (int (*)(void))thunk;
+        int r = p_bias();
+        if (r != 41) {
+            printf("thunked math_bias() = %d, expected 41\n", r);
+            goto cleanup;
+        }
+        printf("thunked math_bias() = %d\n", r);
+    }
+
+    {
+        size_t expected_used = 3 * UDYNLINK_STUB_SIZE;
         if (g_thunk_pool.used != expected_used) {
             printf("pool used = %u, expected %u\n", g_thunk_pool.used, expected_used);
             goto cleanup;
         }
-        printf("pool used = %u (2 stubs, 1 gateway)\n", g_thunk_pool.used);
+        printf("pool used = %u (3 stubs, 1 gateway)\n", g_thunk_pool.used);
     }
 
     {
@@ -83,7 +100,7 @@ static int test_call_thunk_single(udynlink_load_mode_t mode) {
             printf("thunked math_add(5,6) = %d, expected 11\n", r);
             goto cleanup;
         }
-        size_t expected_used = 2 * UDYNLINK_STUB_SIZE;
+        size_t expected_used = 3 * UDYNLINK_STUB_SIZE;
         if (g_thunk_pool.used != expected_used) {
             printf("stub dedup failed: pool used = %u, expected %u\n", g_thunk_pool.used, expected_used);
             goto cleanup;
