@@ -13,7 +13,11 @@
 > pytest script tests) and documented. Next: Phase 3 (instances, float/i64
 > coverage). Metering stays backlog per the threat model.
 
----
+## User Notes Section: TODO
+
+cross module imports and exports need the gateway thunk, should be preallocated?
+
+______________________________________________________________________
 
 ## 0. Prototype status snapshot (reviewed 2026-09-07)
 
@@ -26,7 +30,7 @@
 **Verified defects** (all reproduced or proven by TU-level compile experiments):
 
 | # | Defect | Where |
-|---|---|---|
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
 | D1 | `--static-memory` / auto-static / `--custom-page-size` are no-ops: defines land in shim TU only; runtime TU compiles dynamic-malloc path (proof: e2e module `bss=52` vs 65540 with define reaching runtime) | `scripts/mkwasm2c-module` `generate_shim` |
 | D2 | Modules with imports fail to build: shim calls `wasm2c_X_instantiate(inst)` but wasm2c emits `(inst, w2c_env*)` | shim generator |
 | D3 | `--trap-handler` dead: runtime calls weak `wasm_rt_trap_handler`; never reads `WASM_RT_TRAP_HANDLER` macro | `wasm-rt-udynlink.c:140` vs shim |
@@ -39,12 +43,12 @@
 | D10 | Test assets drift: `test-wasm2c-add` carries stale spike runtime; committed generated C; no `.wat` source; script path has zero CI coverage | `tests/test-wasm2c-*` |
 | D11 | Stack exhaustion = real MCU stack overflow (depth counting disabled), not a wasm trap | `wasm-rt.h:86` |
 
----
+______________________________________________________________________
 
 ## 1. Locked design decisions (2026-09-07)
 
 | # | Decision | Choice | Rationale |
-|---|---|---|---|
+| --- | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | K1 | First capability after stabilization | **Imports / host interop** | Prerequisite for nearly all real modules (anything touching a HAL/driver/SDK); gates OTA logic patches and scripting FFI |
 | K2 | Import binding | **Symbol contract** | Host exports wasm2c-named symbols; loader resolves at load; tool generates the exact host header. Zero overhead, zero glue, zero runtime RAM — matches "udynlink is just a linker" |
 | K3 | Instance model | **Singleton default, instances opt-in** | Keep today's DX (`add(1,2)` just works); `--instances` generates full create/destroy + instance-taking wrappers for per-connection/fleet state |
@@ -53,25 +57,25 @@
 
 Principle applied throughout: **host decides > build-time flag > never hardcode**. A feature is only baked into a module when the mechanism cannot live host-side. Every feature costs exactly zero when unused.
 
----
+______________________________________________________________________
 
 ## 2. Design principles & threat model
 
 ### Principles
 
 1. **Unopinionated, usage-agnostic** (repo charter): no imposed lifecycle, allocator, or trap policy. Defaults exist to make simple things simple; flags exist so users make the tradeoffs.
-2. **Fail loudly**: no silent guessing. Unsupported wasm features (sret/multi-value exports, memory64, multi-memory in static mode) produce a named error with a fix hint, never a silently degraded module.
-3. **Zero-cost when unused**: every optional feature compiles out completely when disabled.
-4. **One source of truth for the runtime**: `udynlink/wasm2c_runtime/`. Test dirs consume it; never vendored copies.
-5. **Every phase ships its test through the script**: a feature isn't done until a QEMU test builds *via `mkwasm2c-module`* and passes. (D1–D3 existed precisely because CI tested around the script.)
+1. **Fail loudly**: no silent guessing. Unsupported wasm features (sret/multi-value exports, memory64, multi-memory in static mode) produce a named error with a fix hint, never a silently degraded module.
+1. **Zero-cost when unused**: every optional feature compiles out completely when disabled.
+1. **One source of truth for the runtime**: `udynlink/wasm2c_runtime/`. Test dirs consume it; never vendored copies.
+1. **Every phase ships its test through the script**: a feature isn't done until a QEMU test builds _via `mkwasm2c-module`_ and passes. (D1–D3 existed precisely because CI tested around the script.)
 
 ### Threat model (explicit, per project owner)
 
 - **Primary concern: defective / misimplemented modules must not take down the whole system** — recoverable traps, stack-depth limits, and allocation-failure handling. **All containment is optional**, decided by the host (runtime hooks / registered recovery point) or at build time (flags), never imposed.
-- **Not a goal: defense against malicious code.** wasm2c/udynlink is a native-code plugin mechanism with wasm-derived memory safety *within linear memory accesses* (bounds checks are mandatory and always on). It is **not** an interpreter-grade sandbox: module code runs on the host C stack, calls host imports with full privilege, and any memory-safety bug in wasm2c-emitted code is native code. Hosts needing hostile-code isolation should use an interpreter runtime (WAMR/wasm3) instead; the docs will say this plainly.
+- **Not a goal: defense against malicious code.** wasm2c/udynlink is a native-code plugin mechanism with wasm-derived memory safety _within linear memory accesses_ (bounds checks are mandatory and always on). It is **not** an interpreter-grade sandbox: module code runs on the host C stack, calls host imports with full privilege, and any memory-safety bug in wasm2c-emitted code is native code. Hosts needing hostile-code isolation should use an interpreter runtime (WAMR/wasm3) instead; the docs will say this plainly.
 - Free partial isolation retained regardless of flags: wasm linear memory is bounds-checked (module cannot address outside its memory), and module code is PIC with r9-based data access.
 
----
+______________________________________________________________________
 
 ## 3. Architecture v2
 
@@ -112,7 +116,7 @@ Config header fixes D1/D3 at the root: `wasm-rt.h` picks it up via
   `struct w2c_env*` parameter, usually ignored).
 - Tool emits **`<mod>_imports.h`** from the `.wasm`: required symbol names + exact
   C prototypes + a comment block documenting the contract. (Synergy: `mkhostsyms`
-  builds the host's O(1) table; this header tells the host *what to put in it*.)
+  builds the host's O(1) table; this header tells the host _what to put in it_.)
 - No mangled glue, no indirection, no per-import RAM. Namespace coupling is
   wasm's own: distinct import module names (`env`, `wasi_*`, vendor names) give
   natural namespacing.
@@ -126,7 +130,7 @@ Three-tier, host decides at runtime wherever possible:
 1. **Fatal (default, zero-cost)**: `wasm_rt_trap` → optional weak
    `wasm_rt_trap_handler` hook (D3 fixed: wired via config macro override) →
    `bkpt` loop. For hosts that treat module faults as system faults.
-2. **Host-registered recovery (primary containment, opt-in)**:
+1. **Host-registered recovery (primary containment, opt-in)**:
    - Module built with `--recoverable-traps`: runtime references `longjmp`
      (resolved from host like any import; `<setjmp.h>` used header-only) —
      measured cost on Cortex-M4: **32 B text + 164 B bss per registered context**.
@@ -135,13 +139,14 @@ Three-tier, host decides at runtime wherever possible:
      recovery point registered → falls back to fatal tier.
    - Works with prebuilt modules; the decision is the host's, per call site, at
      runtime.
-3. **Baked wrapper recovery (opt-in `--wrappers-recover`)**: generated export
+1. **Baked wrapper recovery (opt-in `--wrappers-recover`)**: generated export
    wrappers `setjmp` internally and return an error sentinel on trap
    (0 / NULL / void-return). Documented ambiguity: sentinel values are
    indistinguishable from real results; hosts wanting clean error channels use
    tier 2. One shared `jmp_buf` in the shim.
 
 Related containment (all optional, build-time):
+
 - `--stack-depth-limit=N`: enables `WASM_RT_USE_STACK_DEPTH_COUNT` with max N →
   wasm recursion becomes `TRAP_EXHAUSTION` (recoverable) instead of a silent
   native stack overflow (D11). ~3 instructions per call when enabled.
@@ -156,7 +161,7 @@ with `memory.grow` always builds dynamic unless the user forces static (grow the
 fails at runtime, as today).
 
 | Mode | Mechanics | Host obligation | RAM story |
-|---|---|---|---|
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------- |
 | `static` (default) | Buffer in module `.bss` (`WASM_RT_INITIAL_PAGES` × `WASM_RT_PAGE_SIZE`) | none — no allocator needed | full initial size in module RAM footprint (host sizes from header); grow impossible |
 | `dynamic` | `wasm_rt_malloc/realloc/free` hooks (default → `udynlink_external_*`) | host allocator | small image; grow up to max_pages |
 | `external` | host passes buffer before first call: `mod_set_memory(void* buf, size_t bytes)`; `wasm_rt_allocate_memory` validates `bytes >= initial_pages × page_size` | carved arena, DMA-capable RAM, MPU region, shared pool | host controls placement; grow supported if host manages the buffer (re-set after grow) |
@@ -219,7 +224,7 @@ gate applies as for C modules.
 Build-time flags (baked per module; all default to zero-cost):
 
 | Flag | Default | Cost when off | Cost when on |
-|---|---|---|---|
+| --------------------------------------------------- | --------------------------------- | ------------- | ---------------------------------------------------------------------------------- |
 | `--memory=static\|dynamic\|external` | `static` (auto→`dynamic` if grow) | — | per mode (§3.4) |
 | `--custom-page-size=N` | 65536 | 0 | smaller linear memory |
 | `--recoverable-traps` | off | 0 | ~32 B text + `longjmp` import; 164 B bss per registered recovery point (host-side) |
@@ -235,7 +240,7 @@ Build-time flags (baked per module; all default to zero-cost):
 Runtime decisions (host-side, work with prebuilt modules):
 
 | Host API | Default | Effect |
-|---|---|---|
+| -------------------------------------------- | -------------------------- | --------------------------------------------------------------------------- |
 | `wasm_rt_set_recovery(jmp_buf*)` | none registered | trap → `longjmp` to caller + `wasm_rt_last_trap()`; without it → fatal tier |
 | `wasm_rt_trap_handler` (weak) | no-op | logging/policy hook on the fatal path |
 | `wasm_rt_malloc/mem_free/mem_realloc` (weak) | `udynlink_external_*` | allocator policy, static pools |
@@ -253,24 +258,24 @@ broken flags to ship green).
 > the script on MPS2-AN386 + STM32F429 (both opt levels); 22 script unit tests in
 > `tests/py/test_mkwasm2c_module.py`; `just setup-wabt` pins wabt 1.0.34; docs + AGENTS.md updated.
 > Remaining for follow-up: run full `just ci`, then start Phase 2.2 (imports).
-Fixes: D1 (config header, all TUs), D3 (wire trap handler via config), D4
-(realloc old-size: hook becomes `(ptr, old_size, new_size)`; fallback copies
-`old_size`), D5 (zero tables, NULL checks → `WASM_RT_TRAP_OOM`), D6 (pointer
-exports; loud errors for sret/multi-value), D7 (wasm2c-mandated flags), D8
-(header path resolved before chdir), D9 (default public symbols), D10 partial
-(runtime single-source: test dirs include canonical runtime via build flags, no
-copies), D11 (`--stack-depth-limit`), toolchain hygiene (§3.8), collision
-detection (§3.6).
+> Fixes: D1 (config header, all TUs), D3 (wire trap handler via config), D4
+> (realloc old-size: hook becomes `(ptr, old_size, new_size)`; fallback copies
+> `old_size`), D5 (zero tables, NULL checks → `WASM_RT_TRAP_OOM`), D6 (pointer
+> exports; loud errors for sret/multi-value), D7 (wasm2c-mandated flags), D8
+> (header path resolved before chdir), D9 (default public symbols), D10 partial
+> (runtime single-source: test dirs include canonical runtime via build flags, no
+> copies), D11 (`--stack-depth-limit`), toolchain hygiene (§3.8), collision
+> detection (§3.6).
 
 New tests (pytest, no QEMU needed): config-header generation per flag combination;
 export parsing incl. pointer returns; collision rejection; memory-mode selection
 (static/dynamic/external/grow-auto); header-path regression.
 
 **Acceptance:** all three existing wasm2c QEMU tests still green (unchanged
-`.wat` sources, now built *through the script* on CI); script unit tests green;
+`.wat` sources, now built _through the script_ on CI); script unit tests green;
 `just ci` unaffected for non-wasm tests.
 
-### Phase 2.2 — Imports via symbol contract (K2) — *first big capability*
+### Phase 2.2 — Imports via symbol contract (K2) — _first big capability_
 
 - `--gen-imports-header` (+ auto with `--gen-c-header`): required host symbols,
   exact prototypes, contract docs.
@@ -335,7 +340,7 @@ hard float targets.
 ### Phase 4 — Optional / deferred (explicitly not scheduled)
 
 | Item | Trigger | Note |
-|---|---|---|
+| -------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Metering / fuel | If untrusted-ish code ever matters | wasm→wasm gas-instrumentation pass (no upstream binaryen pass exists — checked v125); injected `gas` import rides the K2 contract. Backlog only. |
 | Multi-value / sret exports | Demand | Export parser + wrapper codegen for struct returns |
 | Tail-call | Demand | Must use wasm2c tailcallee machinery + verification; never relax sibling-call flag |
@@ -348,13 +353,13 @@ hard float targets.
 1. **Script unit tests (pytest)** — every codegen decision (config header,
    shim shape, import header, collision checks, mode selection). Fast; runs
    without ARM toolchain. Guards against D1-class regressions permanently.
-2. **QEMU integration** — `test_driver.py` learns wasm tests: `test_data.py`
+1. **QEMU integration** — `test_driver.py` learns wasm tests: `test_data.py`
    gains `"wasm": "foo.wat"`; driver invokes `mkwasm2c-module` (pinned wabt),
    then builds the host firmware against the generated `.bin`/header. All wasm
    tests therefore exercise the real script path on CI.
-3. **Platform gate** — every wasm test runs MPS2-AN386 (mainline M4) +
+1. **Platform gate** — every wasm test runs MPS2-AN386 (mainline M4) +
    STM32F429 (legacy M4); float tests add `olimex_stm32_h405`.
-4. **Parser fixtures** — wasm2c bins stay in the round-trip contract suite.
+1. **Parser fixtures** — wasm2c bins stay in the round-trip contract suite.
 
 ## 7. Cleanup (with Phase 2.1)
 
@@ -379,7 +384,7 @@ hard float targets.
 ## 9. Appendix — corrected wasm feature matrix (supersedes v1 §8)
 
 | # | Feature | Priority | v2 assessment |
-|---|---|---|---|
+| --- | ------------------------------------------ | ----------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | 1 | Core MVP | ✅ done (verify in 2.1) | integer-only proven; float coverage owed |
 | 2 | Bulk memory | HIGH | works via memfunc hooks; perf note: byte-loop fallbacks fine for small ops, word-wise copy worth it for large fills |
 | 3 | Sign-extension, non-trapping f2i | HIGH | plain C; only needs the mandated flags (D7) + tests |
