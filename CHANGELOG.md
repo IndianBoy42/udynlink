@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`udynlink_image_from_memory()` / `udynlink_image_from_module()`** — builders that populate an image descriptor from a contiguous UDLM buffer or from an already-loaded module handle.
 - **Low-level loading primitives** — `udynlink_validate_header()`, `udynlink_compute_ram_size()`, `udynlink_get_image_metadata_size()`, `udynlink_image_get_module_name()`, and `udynlink_load_apply_relocations()`. These let advanced users implement custom loading pipelines (e.g., read header from SD card, validate, allocate RAM, copy sections chunk by chunk, then apply relocations).
 - **`user_ctx` field on `udynlink_module_t`** — an opaque `void *` pointer that the loader never touches, provided for the host to associate arbitrary state (filesystem path, language runtime handle, reference counter, etc.) with a module handle.
+- **`proto2module --extra-source` / `--extra-public`** — compile an extra C source (e.g. an api-compat sha embed) into the generated module and keep chosen symbol names public past `--strip-non-public-syms`, so host-side gates that look symbols up by name keep working on generated pb modules. Both repeatable.
+- **mkmodule argument hardening** — unrecognized dash-prefixed arguments are rejected with an error naming them, instead of being handed to the compiler as input files (which surfaced as a confusing gcc "unrecognized command-line option" failure). One leading `--` separator is consumed; leading `-D` definitions keep working.
 
 ### Fixed
 

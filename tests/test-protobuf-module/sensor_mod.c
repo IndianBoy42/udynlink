@@ -2,7 +2,7 @@
 #include <pb_encode.h>
 #include <pb_decode.h>
 #include "sensor.pb.h"
-
+#include "udynlink_deps_api.h"
 /* Decode a protobuf buffer into a caller-provided SensorReading struct.
  * Returns 1 on success, 0 on failure. */
 int sensor_parse(const unsigned char *in, size_t in_len, void *msg)
@@ -20,3 +20,11 @@ int sensor_write(const void *msg, unsigned char *out, size_t *out_len)
     *out_len = (size_t)stream.bytes_written;
     return ok;
 }
+UDYNLINK_THUNK_EXPORT(sensor_parse);
+UDYNLINK_THUNK_EXPORT(sensor_write);
+/* Preallocated cross-module thunk exports (udynlink_deps): at load time
+ * udynlink_dep_generate_thunks() fills the gateway and one 10-byte stub per
+ * exported function above, so importing modules call them through the deps
+ * layer without dynamic-pool allocation. Plain calls (host, or
+ * udynlink_lookup_symbol + UDYNLINK_CALL) keep working unchanged. */
+UDYNLINK_THUNK_GATEWAY();

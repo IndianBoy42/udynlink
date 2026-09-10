@@ -826,6 +826,12 @@ args.dep_list = []
 
 if len(rest) == 0:
     error("Empty file/macro list")
+# A literal '--' separator shields the source list from the caller's parser
+# (argparse >= 3.13 leaves it in parse_known_args extras, so wrapper scripts
+# forwarding args after '--' deliver it verbatim). One leading '--' is
+# consumed; a lone '--' still trips the empty-list error below.
+if rest[0] == "--":
+    rest = rest[1:]
 # Look in "rest" for definitions (-Dmacro or -Dmacro=value)
 # The format is: first definitions, then list of files
 macros = []
@@ -834,6 +840,15 @@ while len(rest) > 0 and rest[0].startswith("-D"):
     rest = rest[1:]
 if len(rest) == 0:
     error("Empty file list")
+# Everything past the -D block is a module source. A leftover dash-prefixed
+# token is an unrecognized option — a typo, or a wrapper script leaking its
+# own flags. Feeding it to gcc as an input file fails with a confusing
+# "unrecognized command-line option", so name it here instead.
+leaked_opts = [a for a in rest if a.startswith("-")]
+if leaked_opts:
+    error("unrecognized option(s) %s — every non-option argument is compiled "
+          "as a module source; compiler flags belong in --build-flags"
+          % " ".join(leaked_opts))
 sources = rest
 if args.name is None:
     _, name, _ = split_fname(sources[0])

@@ -201,3 +201,39 @@ class TestProto2Module:
         res = subprocess.run(cmd, capture_output=True, text=True)
         assert res.returncode != 0
         assert "does not look like a .proto file" in res.stderr
+
+    def test_extra_source_embeds_and_extra_public_keeps_name(self, tmp_path):
+        """--extra-source compiles an additional TU into the image and
+        --extra-public keeps its symbol NAMED past the pipeline's
+        --strip-non-public-syms: the loader can only look symbols up by
+        name (e.g. an api-sha compat gate reads the string through the
+        symbol table)."""
+        embed = tmp_path / "api_compat.c"
+        # .text_nogc: mkmodule's ld script KEEP()s this section, so an
+        # unreferenced embed survives --gc-sections (same pattern as the
+        # api-sha compat embeds in downstream firmwares).
+        embed.write_text('__attribute__((used, section(".text_nogc")))\n'
+                         'const char test_api_sha[] = "0123456789abcdef";\n')
+        out = _run_pipeline(tmp_path, SIMPLE_PROTO,
+                            "--extra-source", str(embed),
+                            "--extra-public", "test_api_sha")
+        data = (out / "telemetry_mod.bin").read_bytes()
+        mod = parse_module(data)
+        named = {s.name for s in mod.symbols
+                 if s.type_name == "EXPORTED" and s.name}
+        assert "test_api_sha" in named
+        # The codec exports are unaffected.
+        assert {"telemetry_parse", "telemetry_write"} <= named
+        # The embedded string actually landed in the image.
+        assert b"0123456789abcdef" in data
+
+    def test_extra_source_missing_file_names_the_flag(self, tmp_path):
+        proto = tmp_path / "t.proto"
+        proto.write_text(SIMPLE_PROTO)
+        cmd = [sys.executable, _PROTO2MODULE, "--out-dir", str(tmp_path / "o"),
+               "--nanopb-dir", _NANOPB_DIR,
+               "--extra-source", str(tmp_path / "nope.c"), str(proto)]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        assert res.returncode != 0
+        assert "--extra-source" in res.stderr
+        assert "nope.c" in res.stderr

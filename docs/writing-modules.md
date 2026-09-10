@@ -608,6 +608,14 @@ One or more source files:
 - `.c` — compiled as C
 - `.cpp`, `.cxx` — compiled as C++ (automatic `-fno-exceptions -fno-rtti -fno-use-cxa-atexit`)
 
+Leading `-Dmacro[=value]` definitions precede the source list, and one
+leading `--` separator is accepted before it (wrapper scripts forward it
+when shielding their own flags from their parser). Any other dash-prefixed
+argument is rejected with an error naming it — unrecognized options used to
+be handed to the compiler as input files, which failed with a confusing
+"unrecognized command-line option". Compiler flags belong in
+`--build-flags`/`-I`; they are never positional.
+
 Source files are compiled with:
 - `-fPIE -msingle-pic-base -mno-pic-data-is-text-relative`
 - `-ffunction-sections -fdata-sections`

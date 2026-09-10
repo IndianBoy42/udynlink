@@ -185,6 +185,15 @@ def main():
     ap.add_argument("--gen-c-header", action="store_true",
                     help="also emit <module>_module_data.h for embedding")
     ap.add_argument("--verbose", action="store_true", help="print commands")
+    ap.add_argument("--extra-source", action="append", metavar="FILE",
+                    default=[],
+                    help="extra C source compiled into the module "
+                         "(repeatable), e.g. an api-sha embed")
+    ap.add_argument("--extra-public", action="append", metavar="NAME",
+                    default=[],
+                    help="extra symbol names kept public past "
+                         "--strip-non-public-syms (repeatable), e.g. "
+                         "fishi_api_sha; pairs with --extra-source")
     args, mkmodule_args = ap.parse_known_args()
 
     # A stray unknown flag before `--` (e.g. a bare `-O s`) makes argparse
@@ -197,6 +206,9 @@ def main():
     proto_path = os.path.abspath(args.proto)
     if not os.path.isfile(proto_path):
         sys.exit("error: no such file: %s" % args.proto)
+    for src in args.extra_source:
+        if not os.path.isfile(src):
+            sys.exit("error: --extra-source: no such file: %s" % src)
     proto_dir = os.path.dirname(proto_path)
     proto_base = os.path.splitext(os.path.basename(proto_path))[0]
     # Default export prefix: the .proto basename, sanitized to a C identifier
@@ -298,8 +310,12 @@ def main():
     build_flags = "-I%s -I%s" % (nanopb_dir, out_dir)
     if not args.plain_exports:
         build_flags += " -I%s" % os.path.join(cc.REPO_ROOT, "udynlink")
+    # An --extra-source embed (api_compat.c) must ALSO ride the public list:
+    # strip_non_public demotes every named export not listed, and the loader
+    # api-sha gate needs the symbol NAMED to find it.
+    exports.extend(args.extra_public)
     bin_path = cc.build_module(
-        [wrapper, pb_c],
+        [wrapper, pb_c] + args.extra_source,
         public_symbols=exports, strip_non_public=True,
         build_flags=build_flags,
         target=args.target, module_name=args.module_name,

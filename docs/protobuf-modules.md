@@ -114,6 +114,24 @@ pipeline detects this and exits with a hint pointing at the `--` form
 (flags placed after the `.proto` still forward fine, but `--` never
 ambiguates).
 
+### Embedding extra sources: `--extra-source` / `--extra-public`
+
+Host-side gates that look a module symbol up by name (an api-compat/sha
+gate, for example) need a small extra translation unit compiled INTO the
+module and its symbol kept named:
+
+```bash
+python3 scripts/proto2module --struct SensorReading proto/sensor.proto \
+    --extra-source build/generated/api_compat.c \
+    --extra-public fishi_api_sha
+```
+
+`--extra-source FILE` (repeatable) compiles an additional C source after the
+generated wrapper and codec. `--extra-public NAME` (repeatable) adds the
+symbol to the module's public list so it survives the
+`--strip-non-public-syms` demotion the pipeline applies — demoted symbols
+lose their names and can no longer be resolved by the host.
+
 The output directory doubles as the mkmodule workdir, so intermediate files
 (`*.o`, `*.elf`, `*_prologue.o`) are also written there (alongside the
 artifacts listed above). They are safe to delete; a firmware tree's
