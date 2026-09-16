@@ -9,12 +9,12 @@
 5. [Module Binary Format](#module-binary-format)
 6. [Relocation Processing](#relocation-processing)
 7. [Three Load Modes](#three-load-modes)
-8. [Symbol Resolution at Load Time](#symbol-resolution-at-load-time)
-9. [ABI Versioning and Architecture Tags](#abi-versioning-and-architecture-tags)
-10. [Cross-Module Calls via Runtime Thunks](#cross-module-calls-via-runtime-thunks)
-11. [Standalone Call Thunks (`udynlink_thunk`)](#standalone-call-thunks-udynlink_thunk)
-12. [Non-Contiguous Image Loading](#non-contiguous-image-loading)
-
+8. [Multi-Region Memory Placement](#multi-region-memory-placement)
+9. [Symbol Resolution at Load Time](#symbol-resolution-at-load-time)
+10. [ABI Versioning and Architecture Tags](#abi-versioning-and-architecture-tags)
+11. [Cross-Module Calls via Runtime Thunks](#cross-module-calls-via-runtime-thunks)
+12. [Standalone Call Thunks (`udynlink_thunk`)](#standalone-call-thunks-udynlink_thunk)
+13. [Non-Contiguous Image Loading](#non-contiguous-image-loading)
 ---
 
 ## Overview: Position-Independent Code and Data
@@ -300,12 +300,12 @@ SECTIONS {
 
 The final binary image is assembled as a byte array:
 
-1. Write the 36-byte header (see [Module Binary Format](#module-binary-format)).
+1. Write the 32-byte header (see [Module Binary Format](#module-binary-format)).
 2. Write relocation table entries.
-3. Write the symbol table.
-4. Write the dependency string table (if any).
+3. Write the symbol table. Symbol names and — for sectioned images — section names all live in the same string pool.
+4. Write the section table (sectioned images only).
 5. Pad to 4-byte alignment.
-6. Append `.text` and `.data` sections.
+6. Append the section payloads in ascending VA order, skipping BSS sections (which have no payload). For an untagged module this is exactly `.text` then `.data`.
 
 The result is a `.bin` file that can be embedded in host firmware as a byte array, stored in flash, or loaded from external storage.
 
@@ -313,7 +313,9 @@ The result is a `.bin` file that can be embedded in host firmware as a byte arra
 
 ## Module Binary Format
 
-The module binary is a contiguous blob of bytes with the following layout:
+The module binary is a contiguous blob of bytes with the following layout. The
+section table is present only when the header's `UDYNLINK_HDR_FLAG_SECTIONS`
+bit is set (see [Multi-Region Memory Placement](#multi-region-memory-placement)):
 
 ```
 +---------------------------------------------------+
@@ -323,13 +325,17 @@ The module binary is a contiguous blob of bytes with the following layout:
 +---------------------------------------------------+
 | Symbol Table              | symt_size bytes       |
 +---------------------------------------------------+
+| Section Table (optional)  | n_sections * 24        |
++---------------------------------------------------+
 | Padding to 4-byte align   | 0-3 bytes             |
 +---------------------------------------------------+
-| Code (.text)              | code_size bytes       |
-+---------------------------------------------------+
-| Data (.data)              | data_size bytes       |
+| Section payloads          | ascending VA order,   |
+|                           | BSS skipped           |
 +---------------------------------------------------+
 ```
+
+For an untagged module (no flag) the payload region is exactly `.text`
+(`code_size` bytes) followed by `.data` (`data_size` bytes), as always.
 
 ### Header Fields (`udynlink_module_header_t`)
 
@@ -341,13 +347,53 @@ The module binary is a contiguous blob of bytes with the following layout:
 | 0x08 | `arch_tag` | 2 | Target architecture + float ABI tag (see [ABI Versioning](#abi-versioning-and-architecture-tags)). |
 | 0x0A | `num_lot` | 2 | Number of LOT entries (each is one 32-bit word). |
 | 0x0C | `num_rels` | 2 | Total number of relocation entries in the relocation table. |
-| 0x0E | `reserved` | 2 | Reserved (must be 0). |
+| 0x0E | `flags` | 2 | Flag bits. Bit 0 = `UDYNLINK_HDR_FLAG_SECTIONS` (the image carries a section table); bits 7:1 = the section count (1..63, meaningful only when bit 0 is set); bits 15:8 reserved, must be 0. The count lives in the header so image-size computations never depend on reading the table body. Old images (v1.0–v3.0) always wrote 0 here, which the loader accepts. |
 | 0x10 | `symt_size` | 4 | Size of the symbol table in bytes. |
 | 0x14 | `code_size` | 4 | Size of `.text` section in bytes. |
 | 0x18 | `data_size` | 4 | Size of `.data` section in bytes. |
 | 0x1C | `bss_size` | 4 | Size of `.bss` section in bytes. |
 
-**ABI v1.0 backward compatibility**: For modules compiled with `--udynlink-version 1.0`, the header is also 32 bytes (same layout, with `reserved` at 0x0E). The loader accepts v1.0 modules as long as `udynlink_version <= UDYNLINK_LOADER_ABI_VERSION`.
+**ABI v1.0 backward compatibility**: For modules compiled with `--udynlink-version 1.0`, the header is also 32 bytes (same layout, with `flags` at 0x0E). The loader accepts v1.0 modules as long as `udynlink_version <= UDYNLINK_LOADER_ABI_VERSION`.
+
+### Section Table (sectioned images)
+
+Present only when `UDYNLINK_HDR_FLAG_SECTIONS` is set. It is located at
+`sectab_offset = align4(symtab_offset + symt_size)` — contiguous with the
+header's metadata block — and the section payloads start at
+`code_offset = align4(sectab_offset + sectab_size)`. (Untagged images keep
+`code_offset = align4(symtab_offset + symt_size)`.)
+
+The table is exactly `num_sections` 24-byte entries — no leading count word;
+the count comes from header `flags` bits 7:1, so image size is computable
+from the header alone. `sectab_size = num_sections * 24`:
+
+```c
+uint32_t name_off;   /* byte offset of the NUL-terminated section name in the
+                        symbol-table string pool; 0 = unnamed */
+uint32_t va;         /* link-time VA of the section start */
+uint32_t size;       /* bytes, multiple of 4 */
+uint32_t align;      /* bytes, power of two, >= 4 */
+uint32_t class;      /* 0 = CODE, 1 = DATA, 2 = BSS */
+uint32_t flags;      /* hint bits, see "Hint flags" below; bit 31 = MAIN */
+```
+
+Properties the loader relies on:
+
+- Entries are **sorted by `va` ascending**.
+- The three main sections (`.text`, `.data`, `.bss`) carry the three lowest
+  VAs, so they are indices 0/1/2 in both tagged and untagged modules.
+- Payloads are concatenated in ascending VA order, skipping BSS (BSS has no
+  payload in the image). For the default sections this keeps the historical
+  `[text][data]` layout and keeps `data_offset == code_offset + code_size`.
+- The count is 1..63, taken from header `flags` bits 7:1. An invalid
+  combination — bit 0 clear with a nonzero count, or a count above 63 —
+  is rejected with `UDYNLINK_ERR_LOAD_BAD_SECTION_TABLE`.
+- The loader validates the table: entries sorted by `va`, non-overlapping
+  VA ranges, `size` a multiple of 4, `align` a power of two ≥ 4, a valid
+  class, and `name_off` inside the string pool. Violations fail the load
+  with `UDYNLINK_ERR_LOAD_BAD_SECTION_TABLE`.
+- Section names are interned in the symbol-table string pool (no second
+  string table); `symt_size` covers them.
 
 ### Symbol Table Encoding
 
@@ -358,7 +404,7 @@ The symbol table begins with a 4-byte word containing the number of symbol entri
   - Bit `30` — `1` if the symbol is in the code section, `0` if in data.
   - Bits `[29:28]` — visibility: `0` local, `1` exported, `2` external, `3` module name.
   - Internal symbols have `name_offset = 0` and no name string in the table.
-- **Word 1**: `value` — the symbol's address (relative to its section base for local/exported symbols; undefined for external symbols).
+- **Word 1**: `value` — the symbol's address (relative to its section base for local/exported symbols; undefined for external symbols). For sectioned images the value is the symbol's flat ELF link VA (same address space as the section table's `va` fields); untagged modules keep the historical convention (`val` relative to the code base, or arena-relative for data/bss).
 
 The first entry (index 0) is always the **module name entry** (`type_data = 3`).
 
@@ -375,7 +421,7 @@ uint32_t symt_offset;  // symbol table index, or special flag bits
 - If `symt_offset` has **bit 30** set (`0x40000000`): this is a `.text` base relocation. The lower 30 bits contain the original addend.
 - Otherwise: `symt_offset` is an index into the symbol table, and `lot_offset` tells the loader which LOT slot (or data word) to patch.
 
-If `lot_offset < num_lot`, the relocation targets a LOT entry. If `lot_offset >= num_lot`, the relocation targets a word in `.data` at word offset `(lot_offset - num_lot)`.
+If `lot_offset < num_lot`, the relocation targets a LOT entry. If `lot_offset >= num_lot`, the relocation targets a word in `.data` at word offset `(lot_offset - num_lot)` — equivalently, the word whose link-time VA is `code_size + 4 * (lot_offset - num_lot)`.
 
 ---
 
@@ -412,6 +458,13 @@ When the module contains absolute pointers to its own code (e.g., a jump table),
 p_data[lot_offset - num_lot] = (uint32_t)get_text_pointer(p_mod) + *p_data_word;
 ```
 
+Sectioned images resolve the same relocation through the VA map instead: the
+patched word holds a link-time VA, and the loader writes
+`runtime(va) = base[idx(va)] + (va - sec[idx].va)` for the section containing
+it (see [Multi-Region Memory Placement](#multi-region-memory-placement)). Both
+base-additive forms (bit 31 and bit 30) collapse into that one operation;
+untagged modules keep the two-form path above unchanged.
+
 ### Deduplication
 
 If a module references the same symbol multiple times (for example, an array where every element points to the same function), `mkmodule` ensures only the **first** relocation to that symbol consumes a LOT slot. Subsequent relocations reuse the same `lot_offset`. This keeps the LOT small.
@@ -433,6 +486,19 @@ Slots that are **not** rebased: EXTERN slots (host-absolute addresses) and weak 
 
 Each delta applies exactly once per call, so successive relocates compose (each call shifts by its own delta). The invalidation contract is documented in the [API reference](api-reference.md#udynlink_relocate_module): cached symbol addresses and cross-module thunks/deps gateways embed the old `ram_base` and must be rebuilt after a relocate.
 
+`udynlink_relocate_module()` moves only the module's **main block**. Tagged
+(non-main) sections are absolute — the host placed them and the loader only
+records their bases — so a plain block move stays valid for sectioned modules
+too. To also move tagged sections, use `udynlink_relocate_module_sections()`:
+the host first copies each section's payload to its new base (the loader does
+not `memcpy` host-owned blocks) and passes a list of `{index, new_base}`
+moves; the loader then re-applies, re-derived from the image's relocation
+table, every module-internal relocation whose target or source lies in a
+moved section, using per-section deltas (`0` for sections that did not
+move). A moved section's contents must be byte-identical to its pre-move
+contents — the relocations are re-derived from the image, not read back from
+the moved data.
+
 ---
 
 ## Three Load Modes
@@ -448,6 +514,10 @@ The entire module image (header, relocation table, symbol table, `.text`, and `.
 ```
 +---------------------------------------------------+
 | LOT entries               | num_lot * 4 bytes       |
++---------------------------------------------------+
+| Non-main section bases   | sectioned images only;  |
++---------------------------------------------------+
+|                          | 0 bytes when untagged   |
 +---------------------------------------------------+
 | Header + Relocs + Symtab + padding                  |
 | (copied verbatim from image)                        |
@@ -472,6 +542,10 @@ Only `.text` and `.data` are copied into RAM. The header, relocation table, and 
 +---------------------------------------------------+
 | LOT entries               | num_lot * 4 bytes       |
 +---------------------------------------------------+
+| Non-main section bases   | sectioned images only;  |
++---------------------------------------------------+
+|                          | 0 bytes when untagged   |
++---------------------------------------------------+
 | Code (.text)              | code_size bytes       |
 +---------------------------------------------------+
 | Data (.data)              | data_size bytes       |
@@ -492,6 +566,10 @@ Only `.data` is copied into RAM. `.text` remains in the original image (typicall
 +---------------------------------------------------+
 | LOT entries               | num_lot * 4 bytes       |
 +---------------------------------------------------+
+| Non-main section bases   | sectioned images only;  |
++---------------------------------------------------+
+|                          | 0 bytes when untagged   |
++---------------------------------------------------+
 | Data (.data)              | data_size bytes       |
 +---------------------------------------------------+
 | BSS (.bss)                | bss_size bytes (zeroed)|
@@ -505,12 +583,124 @@ Only `.data` is copied into RAM. `.text` remains in the original image (typicall
 The loader computes required RAM as:
 
 ```c
-uint32_t ram = num_lot * sizeof(uint32_t) + data_size + bss_size;
+uint32_t ram = num_lot * sizeof(uint32_t)   /* LOT */
+             + nonmain_bases_size           /* 0 bytes for untagged modules */
+             + data_size + bss_size;
 if (mode == COPY_TEXT_DATA)   ram += code_size;
 if (mode == COPY_ALL)    ram += header_offset + code_size;
+/* Sectioned modules: + per-section alignment padding inside the block.
+   ram_size covers only the MAIN sections; tagged sections are allocated
+   separately through udynlink_external_malloc. */
 ```
 
-Where `header_offset = sizeof(header) + num_rels*8 + symt_size + padding`.
+Where `header_offset = sizeof(header) + num_rels*8 + symt_size + section-table (if present) + padding`.
+
+For **untagged** modules `nonmain_bases_size` is 0 and there is no alignment
+work: every layout, size and offset above is bit-identical to the historical
+loader. For **sectioned** modules, the base of each MAIN section inside the
+block is aligned up to its declared `align` (the padding is included in
+`ram_size`), and the main block's alignment requirement `main_align` — the
+maximum `align` over MAIN sections, 4 for untagged modules — is passed to
+`udynlink_external_malloc`. See
+[Multi-Region Memory Placement](#multi-region-memory-placement).
+
+---
+
+## Multi-Region Memory Placement
+
+By default a module is one contiguous RAM block: the LOT, the default
+`.text`/`.data`/`.bss`, and (in `COPY_ALL`) the image metadata all live in a
+single allocation. A sectioned image (`UDYNLINK_HDR_FLAG_SECTIONS`) may
+additionally tag **named sections** that the host places in dedicated memory
+regions — DTCM for latency-critical data, non-cacheable SRAM for DMA
+buffers, CCM RAM, a second code bank, and so on. The feature is additive: a
+module built without `--section` produces a byte-identical image and takes
+the exact loader path described above.
+
+### The VA Map
+
+Symbols and relocations still encode link-time values. What changes for
+sectioned images is how a link-time VA maps to a runtime address:
+
+```
+runtime(va) = sec_base[idx(va)] + (va - sec[idx].va)
+```
+
+where `idx(va)` is the section whose VA range `[va_start, va_start + size)`
+contains `va` (the table is sorted by `va`, so the lookup is a small linear
+or binary search). A sectioned image uses the flat ELF link-address space
+throughout: symbol values and section-table `va` fields live in the same
+space, with `.text` at 0, `.data` at `code_size`, `.bss` at
+`code_size + data_size`, and each tagged region `k` linked at
+`0x02000000 * (k + 1)` — the wide spacing turns an accidental cross-region
+direct `bl` into a loud link-time error.
+
+Untagged modules do **not** use this map. Their data/bss symbol values are
+arena-relative (so their VA ranges overlap), and the loader keeps the
+historical code-base / data-base resolution code verbatim. The three-entry
+section view reported for untagged modules (below) is a reporting view only,
+not a resolution mechanism. Extern and weak symbol handling is unchanged for
+both kinds of module.
+
+### Main Block vs Tagged Sections
+
+MAIN-flagged sections (always the default `.text`/`.data`/`.bss`) live in
+the module's main RAM block, with the LOT at offset 0 (`r9 = p_ram`) and the
+non-main section base array immediately after it (see the load-mode layouts
+above). Tagged sections are allocated one call each through the extended
+allocator callbacks — `udynlink_external_malloc(size, name, align, flags)` —
+documented in the [host guide](integrating-as-host.md#implementing-the-external-callbacks).
+The host owns placement policy: which pool answers the call, whether to
+refuse a placement, how `free` routes back to the right pool. The loader
+never falls back on its own, which keeps `udynlink_compute_ram_size()` a
+valid pre-load contract for the main block.
+
+Tagged CODE sections are always copied to their resolved address, in every
+load mode including XIP (the host asked for that memory explicitly); the
+default `.text` still executes in place under XIP. Tagged DATA/BSS payloads
+are copied/zeroed at their resolved bases.
+
+### Alignment
+
+The main block's alignment requirement is `main_align` — the maximum `align`
+over MAIN sections — and it is passed to `udynlink_external_malloc`
+(untagged modules: 4, exactly as before). Inside the block, each MAIN
+section base is aligned up to its declared `align` (padding included in
+`ram_size`), so a sectioned module gets honored `aligned(N)` semantics for
+its default data too. Untagged modules keep today's 4-byte-only guarantee:
+`aligned(N)` data in the default `.data`/`.bss` is **not** N-aligned at
+runtime, and `mkmodule` warns at build time when packed data requires more.
+
+Tagged sections are aligned by the host (it owns the pool) and validated by
+the loader: a base that does not meet the declared `align` fails the load
+with `UDYNLINK_ERR_LOAD_SECTION_UNALIGNED`; a failed placement (`NULL` from
+the allocator) fails with `UDYNLINK_ERR_LOAD_SECTION_UNRESOLVED`, after
+freeing everything already allocated.
+
+### Hint Flags
+
+Each section-table entry carries a 32-bit hint word:
+
+| Bits | Owner | Meaning |
+|---|---|---|
+| 7:0 | udynlink (v1 vocabulary) | `0x01` NOCACHE (host should map non-cacheable — DMA coherency), `0x02` DMA (must be reachable by the DMA controller), `0x04` SHARED (may be shared with other modules/host code); 5 bits free |
+| 15:8 | host | opaque pass-through, never interpreted by the loader |
+| 23:16 | udynlink, reserved | must be 0 in v1 |
+| 31:24 | udynlink, internal | bit 31 `MAIN` (section lives in the module's main RAM block); never passed to the host |
+
+Hints are the host's to interpret or ignore — the loader validates nothing
+about them. Class (CODE/DATA/BSS) is a separate field, not a flag bit.
+
+### Introspection and Movement
+
+`udynlink_get_section_count()`, `udynlink_get_section_info()` and
+`udynlink_get_section_base()` expose the section table and the resolved
+runtime bases. For an untagged module they report the three implicit main
+sections with today's exact bases. `udynlink_relocate_module()` keeps moving
+only the main block — tagged sections are absolute and unaffected — and
+`udynlink_relocate_module_sections()` additionally moves host-copied tagged
+sections (see
+[In-Place Relocation](#in-place-relocation-rebasing-a-loaded-module)).
 
 ---
 
@@ -561,7 +751,7 @@ The module header contains two version fields and an architecture tag:
 The loader's ABI version is fixed at compile time:
 
 ```c
-#define UDYNLINK_LOADER_ABI_VERSION   UDYNLINK_MAKE_VERSION(3, 0)
+#define UDYNLINK_LOADER_ABI_VERSION   UDYNLINK_MAKE_VERSION(3, 1)
 ```
 
 At load time, the loader checks:
@@ -571,7 +761,7 @@ if (p_header->udynlink_version > UDYNLINK_LOADER_ABI_VERSION)
     return UDYNLINK_ERR_LOAD_VERSION_MISMATCH;
 ```
 
-A module requiring loader 3.1 cannot be loaded by a 3.0 loader. A module requiring 1.0 or 2.0 can be loaded by a 3.0 loader.
+A module requiring loader 3.2 cannot be loaded by a 3.1 loader. A module requiring 1.0 or 2.0 can be loaded by a 3.1 loader. The 3.0 → 3.1 bump exists for the multi-region section table: a **sectioned** image (`UDYNLINK_HDR_FLAG_SECTIONS`) must declare `udynlink_version >= 3.1` (mkmodule enforces this), so an old 3.0 loader rejects it with `UDYNLINK_ERR_LOAD_VERSION_MISMATCH` instead of misreading the image. Untagged images keep `udynlink_version 3.0` and stay loadable by 3.0 loaders.
 
 ### Architecture Tag Layout
 
@@ -615,7 +805,7 @@ This prevents loading a hard-float VFP module on a soft-float Cortex-M3 host, wh
 
 ### v1.0 / v2.0 Backward Compatibility
 
-Modules compiled with `--udynlink-version 1.0` or `2.0` use the same 32-byte header layout as v3.0 (with `reserved` at offset 0x0E). The loader detects older versions by checking `udynlink_version <= UDYNLINK_LOADER_ABI_VERSION` and accepts them as long as they do not require a newer loader. The `reserved` field must be 0 in all valid images.
+Modules compiled with `--udynlink-version 1.0` or `2.0` use the same 32-byte header layout as v3.x (with the `flags` field at offset 0x0E). The loader detects older versions by checking `udynlink_version <= UDYNLINK_LOADER_ABI_VERSION` and accepts them as long as they do not require a newer loader. The `flags` field must be 0 in all pre-3.1 images.
 
 ---
 
@@ -877,7 +1067,6 @@ const char *name = udynlink_image_get_module_name(image.p_symtab);
 ```
 
 ---
-
 
 ## Cross-Reference
 

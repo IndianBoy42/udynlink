@@ -11,7 +11,7 @@
 | **Simplicity** | Minimal API surface: load, call, unload. The core runtime is ~800 lines of C. No DSLs, no code generation, no macro magic beyond what the hardware requires. |
 | **Unopinionated** | No imposed module lifecycle, event loop, threading model, or memory strategy. The host decides when and how to load, call, and unload modules. |
 | **Usage-agnostic** | RAM bootloaders, flash-resident plugins, OTA patching, scripting language FFI, LGPL compliance — all equally first-class. No use case is privileged. |
-| **Flexible** | Three load modes (copy-all, copy-text-data, XIP). Non-contiguous image loading for SD card/SPI flash. Low-level relocation primitives for custom pipelines. Deferred symbols, incremental linking, and direct symbol patching. |
+| **Flexible** | Three load modes (copy-all, copy-text-data, XIP). Multi-region placement: modules can tag named code/data sections (`--section`) that the host places in dedicated RAM regions (DTCM, DMA-capable SRAM, CCM, ...). Non-contiguous image loading for SD card/SPI flash. Low-level relocation primitives for custom pipelines. Deferred symbols, incremental linking, and direct symbol patching. |
 | **Minimal overhead** | No heap allocation inside the loader when the host provides a buffer. No internal locking. No hidden state. The `udynlink_module_t` struct is 24 bytes. |
 | **Zero-cost optional features** | The dependency system (`udynlink_deps`), hash-based symbol resolution (`udynlink_hash`), call ergonomics (`udynlink_call`), and host symbol cache (`udynlink_host_utils`) are separate headers linked only if used. Hosts that don't use them pay zero code and zero RAM cost. |
 | **Library, not framework** | You call udynlink; udynlink never calls you back except through the five explicit callbacks you implement. No main loop, no registration, no hidden threads. Add it to your build and call the functions you need. |
@@ -59,8 +59,16 @@ target_compile_definitions(your_firmware PRIVATE
 ```c
 #include "udynlink.h"
 
-void *udynlink_external_malloc(size_t size) { return malloc(size); }
-void udynlink_external_free(void *p) { free(p); }
+void *udynlink_external_malloc(size_t size, const char *section,
+                               size_t align, uint32_t flags) {
+    (void)section; (void)align; (void)flags;   /* section-aware since ABI 3.1 */
+    return malloc(size);
+}
+void udynlink_external_free(void *p, const char *section,
+                            size_t align, uint32_t flags) {
+    (void)section; (void)align; (void)flags;
+    free(p);
+}
 void udynlink_external_vprintf(const char *s, va_list va) { vprintf(s, va); }
 
 uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const char *name) {
@@ -132,23 +140,13 @@ Modules are compiled with `-fPIE -msingle-pic-base -mno-pic-data-is-text-relativ
 
 The host must use `UDYNLINK_PREPARE_CALL(p_mod)` before calling any module function (or use `UDYNLINK_CALL` which handles this automatically). The `--no-prologue` flag omits the assembly wrapper; the host must set `r9` directly for such modules.
 
-### Three Load Modes
-
-| Mode | RAM usage | Use case |
-|------|-----------|----------|
-| `COPY_ALL` | Header + code + data + BSS | Maximum flexibility; module can be unloaded from flash |
-| `COPY_TEXT_DATA` | Code + data + BSS | Header stays at `base_addr` (e.g., memory-mapped flash) |
-| `XIP` | Data + BSS only | Execute code in place from flash; minimal RAM |
-
-All three modes are validated by every test, at both `-O0` and `-Os`.
-
 ### Module Binary Format
 
 ```
-[Header 32B] [Relocations] [Symbol Table] [Code] [Data]
+[Header 32B] [Relocations] [Symbol Table] [Section Table (optional)] [Code] [Data]
 ```
 
-The header contains `mod_version`, `udynlink_version`, and `arch_tag` fields for runtime compatibility checking. Relocation types: `R_ARM_GOT_BREL` (LOT), `R_ARM_ABS32`/`R_ARM_TARGET1` (data), `R_ARM_THM_CALL`/`R_ARM_THM_JUMP24` (PC-relative, ignored).
+The header contains `mod_version`, `udynlink_version`, `arch_tag`, and `flags` fields for runtime compatibility checking. A `UDYNLINK_HDR_FLAG_SECTIONS` image carries a section table describing tagged code/data sections the host places in dedicated memory regions (see [How It Works](docs/how-it-works.md#multi-region-memory-placement)). Relocation types: `R_ARM_GOT_BREL` (LOT), `R_ARM_ABS32`/`R_ARM_TARGET1` (data), `R_ARM_THM_CALL`/`R_ARM_THM_JUMP24` (PC-relative, ignored).
 
 ### Optional Layers
 
@@ -175,6 +173,7 @@ All optional features are separate headers that compile and link only if include
 - Hash-based O(1) symbol resolution
 - WASM2C runtime support
 - Protobuf modules: `.proto` → parse/write UDLM modules via `scripts/proto2module` (see `docs/protobuf-modules.md`)
+- Multi-region memory placement: modules tag named sections (`mkmodule --section`); the host places them in dedicated RAM regions (DTCM, DMA-capable SRAM, CCM, ...) via the section-aware allocator callbacks
 - Requires [GCC ARM Embedded](https://developer.arm.com/tools-and-software/open-source-software/developer-tools/gnu-toolchain) (`arm-none-eabi-gcc`)
 
 ## Building
@@ -194,6 +193,8 @@ Produces `build/libudynlink.a`. Downstream projects can use `add_subdirectory()`
 cd scripts
 python3 mkmodule --target cortex-m4 source.c
 python3 mkmodule --target cortex-m33 --public-symbols init,start,stop source.c
+python3 mkmodule --target cortex-m4 \
+    --section dma:align=32:flags=DMA,NOCACHE source.c   # tagged sections
 ```
 
 Supported targets: `cortex-m0`, `cortex-m0plus`, `cortex-m3`, `cortex-m4`, `cortex-m4f`, `cortex-m7`, `cortex-m33`, `cortex-m55`, `cortex-m85`.

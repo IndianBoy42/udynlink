@@ -132,9 +132,20 @@ def test_one(full_path, opt):
     if os.path.isfile(os.path.join(full_path, "test_data.py")):
         from test_data import test_data
     else:
+        # No descriptor: the convention is a directory whose .cpp entry point is
+        # built with default arguments. A directory with neither a descriptor nor
+        # any source is leftover output from a test that no longer exists (its
+        # sources deleted, its gitignored *.txt outputs kept); passing that empty
+        # module list to mkmodule aborts the whole run with "Empty file/macro
+        # list", which says nothing about the real cause.
+        sources = [a for a in sorted(os.listdir(full_path)) if a.endswith((".c", ".cpp", ".cxx"))]
+        if not sources:
+            safe_print("--- Skipping '%s' (no test_data.py and no sources: stale output directory) ---"
+                       % os.path.basename(full_path))
+            return True, "Skipped (stale output directory)"
         test_data = {
             "desc": "",
-            "modules": [[a for a in os.listdir(full_path) if a.endswith(".cpp")]],
+            "modules": [[a for a in sources if a.endswith((".cpp", ".cxx"))]],
             "required": []
         }
 

@@ -605,7 +605,7 @@ fuzz-seeds:
             -I{{repo_root}}/udynlink \
             --workdir {{repo_root}}/tests/fuzz/_workdir \
             --bin-name {{repo_root}}/tests/fuzz/corpus/"$name".bin \
-            "$src"
+            "$@" "$src"
     }
     gen hello      {{repo_root}}/tests/test-helloworld/mod_hello.c
     gen globals1   {{repo_root}}/tests/test-globals1/mod_globals1.c
@@ -615,6 +615,19 @@ fuzz-seeds:
     gen cross_math {{repo_root}}/tests/test-cross-module/mod_math.c
     gen cross_app  {{repo_root}}/tests/test-cross-module/mod_app.c
     gen cpp_init   {{repo_root}}/tests/test-cpp-symbol-filter-init-fini/mod_init_fini.cpp
+    # Sectioned image: the only seed that sets the header's section flag, so the
+    # section-table parse, the per-section placement path and the allocator
+    # callbacks' section/align arguments get fuzzed and sanitized coverage.
+    gen sections   {{repo_root}}/tests/test-sections/mod_sections.c \
+        --section alt:align=32 --section altcode
+    # Truncated counterpart of the sectioned seed: the metadata and both main
+    # payloads stay intact (they end at the section table's code_offset + code
+    # + data = 364 bytes) but the two tagged payloads (64 + 80 bytes) are cut
+    # off, so the declared image extent exceeds the buffer. Sanitizer runs
+    # apply no mutation, so the "declared payload longer than the buffer" case
+    # only gets covered if it is seeded explicitly.
+    head -c 450 {{repo_root}}/tests/fuzz/corpus/sections.bin > \
+        {{repo_root}}/tests/fuzz/corpus/sections_truncated.bin
     rm -rf {{repo_root}}/tests/fuzz/_workdir
     # Minimality seeds: a single byte and the bare UDLM signature (sub-header
     # inputs that the harness's size guard short-circuits).

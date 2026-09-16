@@ -67,7 +67,7 @@ debugging.
 | `--custom-page-size` | 65536 | Shrink the wasm page size (memory must be present; ignored for memory64) |
 | `--trap-handler=NAME` | off | Call host-provided `void NAME(wasm_rt_trap_t)` before the fatal halt; the symbol is undefined in the module and resolved at load time |
 | `--stack-depth-limit=N` | off | Count wasm call depth and trap `WASM_RT_TRAP_EXHAUSTION` beyond N nested calls instead of overflowing the native stack |
-| `--malloc=NAME` / `--free=NAME` | udynlink externals | Redirect the runtime's allocation hooks |
+| `--malloc=NAME` / `--free=NAME` | udynlink externals | Redirect the runtime's allocation hooks. Custom hooks keep their plain signatures (`void *NAME(size_t)` / `void NAME(void *)`); the generated wrapper forwards to the udynlink externals with the section-aware ABI-3.1 arguments filled in (`NULL` main block) |
 | `--public-symbols` / `--export-all` | wrappers only | Symbol-table contents |
 | `--wrapper-prefix=PFX` | none | Prefix generated wrapper names (collision escape hatch) |
 | `--no-prologue` | off | Skip prologue wrappers (host must manage r9 itself) |
@@ -84,7 +84,7 @@ wasm2c conformance flags (`-fno-optimize-sibling-calls -frounding-math
 | `--memory=` | Mechanics | Host obligation | Notes |
 |---|---|---|---|
 | `static` *(default for non-growing modules)* | Buffer baked into module `.bss` (`WASM_RT_INITIAL_PAGES` × page size) | none — no allocator involved | `memory.grow` fails at runtime; RAM cost is visible in the module header (`bss_size`) |
-| `dynamic` *(default when the module grows)* | Runtime allocates via `wasm_rt_malloc` hooks (default: `udynlink_external_malloc/free`) | host allocator | grow up to max_pages; realloc hook receives the old size |
+| `dynamic` *(default when the module grows)* | Runtime allocates via `wasm_rt_malloc` hooks (weak defaults delegate to `udynlink_external_malloc(size, NULL, _Alignof(max_align_t), 0)` / the matching `free` — the module's main block, ABI-3.1 section-aware signature) | host allocator | grow up to max_pages; realloc hook receives the old size |
 | `external` | Host registers a buffer before the first call | call `mod_set_memory(void* buf, size_t capacity_bytes)` | capacity must cover initial pages; growth within the registered capacity needs no reallocation; `WASM_RT_TRAP_OOM` if unset or too small |
 
 `auto` picks `static` unless the module contains `memory.grow`, in which case it

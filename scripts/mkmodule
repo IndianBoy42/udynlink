@@ -18,6 +18,88 @@ sectname_data = '.data'
 sectname_bss = '.bss'
 linker_script = os.path.join(os.path.dirname(__file__), "code_before_data.ld")
 
+# ─── Multi-region placement (--section) ──────────────────────────────────────
+# Mirrors of the image-format constants (udynlink.h / the frozen contract),
+# kept local so the toolchain never imports the loader's headers.
+hdr_flag_sections = 0x0001  # UDYNLINK_HDR_FLAG_SECTIONS: image carries a section table
+sec_class_code, sec_class_data, sec_class_bss = 0, 1, 2
+sec_flag_nocache, sec_flag_dma, sec_flag_shared = 0x01, 0x02, 0x04
+sec_flag_main = 1 << 31     # section lives in the module's main RAM block
+sec_main_origin = 0x02000000    # main region [0, 32 MiB); tag k starts at sec_main_origin*(k+1)
+sec_prefix = ".udynlink.sec."
+
+
+def parse_section_spec(spec):
+    """Parse NAME[:align=N][:flags=F1,F2,...] into a placement directive.
+
+    align (default 4, power of two) is the alignment the host must honor
+    when placing the section. flags carry placement hints: the loader-defined
+    NOCACHE/DMA/SHARED plus host<N> (N in 0..7) mapping to the host-reserved
+    bits 15:8 of the section-table flags word.
+    """
+    parts = spec.split(":")
+    name = parts[0]
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        error("--section: invalid name '%s' in '%s' (use [A-Za-z_][A-Za-z0-9_]*: it names a linker memory region)" % (name, spec))
+    if name == "main":
+        error("--section: name 'main' is reserved for the module's main region")
+    out = {"name": name, "align": 4, "flags": 0}
+    seen = set()
+    for kv in parts[1:]:
+        if "=" not in kv:
+            error("--section: malformed option '%s' in '%s' (expected align=N or flags=F1,F2)" % (kv, spec))
+        k, v = kv.split("=", 1)
+        if k in seen:
+            error("--section: duplicate option '%s' in '%s'" % (k, spec))
+        seen.add(k)
+        if k == "align":
+            try:
+                align = int(v, 0)
+            except ValueError:
+                align = None
+            if align is None or align < 4 or (align & (align - 1)) != 0:
+                error("--section: align must be a power of two >= 4, got '%s' in '%s'" % (v, spec))
+            out["align"] = align
+        elif k == "flags":
+            for f in v.split(","):
+                f = f.strip()
+                if f.upper() == "NOCACHE":
+                    out["flags"] |= sec_flag_nocache
+                elif f.upper() == "DMA":
+                    out["flags"] |= sec_flag_dma
+                elif f.upper() == "SHARED":
+                    out["flags"] |= sec_flag_shared
+                else:
+                    m = re.fullmatch(r"host([0-9]+)", f, re.IGNORECASE)
+                    if m:
+                        bit = int(m.group(1))
+                        if bit > 7:
+                            error("--section: host bit index %d out of range in '%s' (host<N> with N in 0..7 maps to the host flag bits 15:8)" % (bit, spec))
+                        out["flags"] |= 1 << (8 + bit)
+                    else:
+                        error("--section: unknown flag '%s' in '%s' (valid flags: NOCACHE, DMA, SHARED, host<N> with N in 0..7)" % (f, spec))
+        else:
+            error("--section: unknown option '%s' in '%s' (valid options: align=N, flags=F1,F2)" % (k, spec))
+    return out
+
+
+def generate_sectioned_linker_script(path, args):
+    """Render the multi-region linker script for a --section build.
+
+    Replaces the fixed code_before_data.ld: one MEMORY region per declared
+    tag, spaced through the flat link address space so a direct cross-region
+    bl cannot be encoded (the relocation scan backs this up at link time).
+    """
+    env = Environment(loader=FileSystemLoader(os.path.dirname(os.path.abspath(__file__))))
+    tmpl = env.get_template("linker_sections.ld.j2")
+    data = tmpl.render({"sections": [
+        {"name": s["name"], "origin": "0x%08X" % (sec_main_origin * (k + 1))}
+        for k, s in enumerate(args.sections)]})
+    with open(path, "wt") as f:
+        f.write(str(data))
+    debug("Generated linker script '%s'" % path, args)
+
+
 ################################################################################
 # Compilation
 ################################################################################
@@ -76,7 +158,10 @@ def check_lto_object_usable(objname, args):
                 has_lto_ir = True
                 if n.startswith(".gnu.lto_.symtab"):
                     lto_symtab_bytes = max(lto_symtab_bytes, section["sh_size"])
-            elif section['sh_size'] and n.startswith((".text", ".data", ".rodata", ".bss")):
+            elif section['sh_size'] and n.startswith((".text", ".data", ".rodata", ".bss", sec_prefix)):
+                # Placement (--section) sections carry real content too: a
+                # TU whose every function is placed would otherwise look
+                # slim and trip the fat-LTO gate above.
                 has_real_code = True
     # A genuinely slim object carries a non-empty LTO symtab (the symbol list
     # lives in the IR); an empty TU's symtab section is zero-size.
@@ -87,10 +172,46 @@ def check_lto_object_usable(objname, args):
         error("Object '%s' contains LTO bytecode but --lto is not enabled; "
               "pass --lto instead of -flto in --build-flags" % objname)
 
+def assign_object_paths(sources, args):
+    """Give every source a unique object path under --workdir.
+
+    Without --workdir an object lands next to its source, where the path is
+    unique by construction. A flat --workdir is not: the object is named after
+    the source BASENAME only, so a module whose sources share a basename (the
+    zenoh module has three serial.c, three encoding.c and three liveliness.c,
+    plus two string.c and two core.c) compiles them all to
+    <workdir>/serial.o — each compile clobbers the previous one and the linker
+    then sees a single object listed twice ("multiple definition of X ...
+    first defined here" naming the same path), plus a follow-on section-type
+    conflict between the clobbered objects' .text_nogc sections.
+
+    Sources with a unique basename keep the plain <basename>.o name, so the
+    common case stays readable; colliding basenames get their source directory
+    appended, then a string suffix if even that is ambiguous.
+    """
+    args.obj_paths = {}
+    if not args.workdir:
+        return
+    groups = {}
+    for s in sources:
+        groups.setdefault(split_fname(s)[1], []).append(s)
+    for stem, group in groups.items():
+        if len(group) == 1:
+            args.obj_paths[group[0]] = os.path.join(args.workdir, stem + ".o")
+            continue
+        used = set()
+        for i, s in enumerate(sorted(group)):
+            parent = os.path.basename(os.path.dirname(os.path.abspath(s)))
+            name = "%s__%s" % (stem, parent) if parent else "%s__%d" % (stem, i)
+            while name in used:
+                name += "_"
+            used.add(name)
+            args.obj_paths[s] = os.path.join(args.workdir, name + ".o")
+
 def compile(src_name, args, public_symbols, macros=[]):
     out_dir = args.workdir if args.workdir else os.path.dirname(src_name)
     _, fname, _ = split_fname(src_name)
-    main_obj = os.path.join(out_dir, fname + ".o")
+    main_obj = args.obj_paths.get(src_name) or os.path.join(out_dir, fname + ".o")
     object_files = []
     # Prepare compilation
     extra = "" if args.pc_rel else "-mno-pic-data-is-text-relative"
@@ -178,6 +299,18 @@ def compile(src_name, args, public_symbols, macros=[]):
                 if not hasattr(args, 'dep_syms'):
                     args.dep_syms = set()
                 args.dep_syms.update(dep_syms)
+            # Wrapper co-location: each wrapper ends up bl-ing its body, and
+            # a direct bl can never cross sections (tagged sections resolve
+            # to unrelated addresses at load time), so a wrapper must be
+            # emitted into the same section as its body. Read the body's ELF
+            # section before any rename hides it; untagged bodies keep the
+            # gc-protected .text_nogc.
+            body_sections = {}
+            if args.sections:
+                obj_sects = get_sections_in_elf(objname)
+                for s in get_symbols_in_elf(objname):
+                    if s["name"] in global_funcs and isinstance(s["section"], int):
+                        body_sections[s["name"]] = obj_sects.get(s["section"], {}).get("name", "")
             debug("Generating temporary object files with wrapped symbols '%s'" % ", ".join(global_funcs), args)
             if args.lto:
                 # binutils refuses --redefine-sym on LTO IR objects, so the
@@ -209,7 +342,17 @@ def compile(src_name, args, public_symbols, macros=[]):
             loader = FileSystemLoader(os.path.dirname(os.path.abspath(__file__)))
             env = Environment(loader = loader)
             tmpl = env.get_template(args.template)
-            data = tmpl.render({"sym_names": prologue_names, "weak_names": prologue_weak})
+            sym_sections = {}
+            for n in global_funcs:
+                wrapper = ("__wrap_" + n) if args.lto else n
+                sn = body_sections.get(n, "")
+                # The directive operand is preformatted so every template
+                # variant stays a one-line change: alloc+exec for a tagged
+                # wrapper (a section unknown to GAS gets no default flags),
+                # today's .text_nogc flags otherwise.
+                sym_sections[wrapper] = ('%s, "ax", %%progbits' % sn) \
+                    if (args.sections and sn.startswith(sec_prefix)) else '.text_nogc, "x"'
+            data = tmpl.render({"sym_names": prologue_names, "weak_names": prologue_weak, "sym_sections": sym_sections})
             p_fname = os.path.join(objname + "_prologue.s")
             with open(p_fname, "wt") as f:
                 f.write(str(data))
@@ -233,6 +376,20 @@ def compile(src_name, args, public_symbols, macros=[]):
     if len(public_symbols) != 0:
         public_symbols.add("__init_array")
 
+    if args.sections:
+        # Placement sections must be declared: an undeclared .udynlink.sec.*
+        # input section is collected by no output-section pattern and
+        # --gc-sections drops it (or it lands as an orphan), so the content
+        # would silently vanish from the image. Fail before the link.
+        for objname in object_files:
+            for meta in get_sections_in_elf(objname).values():
+                nm = meta["name"]
+                if nm.startswith(sec_prefix) and nm[len(sec_prefix):].split(".", 1)[0] \
+                        not in [s["name"] for s in args.sections]:
+                    error("--section: object '%s' places content in section '%s' but no "
+                          "matching --section was declared; declare it or drop the "
+                          "UDYNLINK_SECTION attribute (undeclared sections are dropped)"
+                          % (objname, nm))
     return object_files
 
 def link(objects, output, args):
@@ -256,7 +413,7 @@ def link(objects, output, args):
         extra_link_flags += " -Wl,--export-dynamic"
         for sym in sorted(set(lto_wrap_syms)):
             extra_link_flags += " -Wl,--wrap=%s" % sym
-    link_data = {"input": " ".join(objects), "output": output, "ld": linker_script, "mcpu": args.mcpu, "fpu": args.fpu_flag, "float_abi": args.float_abi_flag, "extra_link_flags": extra_link_flags}
+    link_data = {"input": " ".join(objects), "output": output, "ld": getattr(args, 'linker_script', None) or linker_script, "mcpu": args.mcpu, "fpu": args.fpu_flag, "float_abi": args.float_abi_flag, "extra_link_flags": extra_link_flags}
     debug("Linking (%s -> %s)" % (" + ".join(objects), output), args)
     execute(get_tool("gcc") + " " + link_cmd.format(**link_data), args)
     if args.lto and lto_wrap_syms:
@@ -296,6 +453,24 @@ def link(objects, output, args):
         debug("Changing visiblity of wrapped symbols to 'local' in %s" % output, args)
         make_symbols_local(output, all_sym_renames, args)
 
+def get_sections_in_elf(obj):
+    """Index -> {'name', 'addralign'} for every section in the ELF.
+
+    Diagnostics need the reverse of get_section_in_elf: symbols reference
+    sections by st_shndx index, so the unknown-section error has to name a
+    section by index and the alignment warning reads sh_addralign, neither of
+    which that helper carries.
+    """
+    sects = {}
+    with open(obj, "rb") as f:
+        elf = ELFFile(f)
+        for i, section in enumerate(elf.iter_sections()):
+            # sh_addralign 0 means "no alignment", same as 1; normalize so the
+            # 4-byte-guarantee comparison in process() needs no special case.
+            sects[i] = {"name": section.name, "addralign": max(int(section["sh_addralign"]), 1),
+                        "sh_type": section["sh_type"], "sh_flags": int(section["sh_flags"])}
+    return sects
+
 def process(output, args):
     # Read actual data and verify proper section placement
     set_debug_col()
@@ -303,6 +478,7 @@ def process(output, args):
     # Code section
     crt_off = 0
     sect_idx_mapping = {}
+    secinfo = get_sections_in_elf(output)
     cs = get_section_in_elf(output, sectname_code)
     debug("Read section '%s' of size %d" % (sectname_code, cs["size"]), args)
     check(cs["size"] % 4 == 0, "Length of section '%s' is not a multiple of 4" % sectname_code)
@@ -314,9 +490,22 @@ def process(output, args):
     ds = get_section_in_elf(output, sectname_data)
     debug("Read section '%s' of size %d" % (sectname_data, ds["size"]), args)
     check(ds["size"] % 4 == 0, "Length of section '%s' is not a multiple of 4" % sectname_data)
-    check(ds["addr"] == crt_off, "Section '%s' doesn't begin after section '%s'" % (sectname_data, sectname_code))
+    check(ds["addr"] >= crt_off, "Section '%s' doesn't begin after section '%s'" % (sectname_data, sectname_code))
     data_sect = ds["data"]
-    crt_off += ds["size"]
+    # Mirror the .data->.bss gap padding below: a member with a strict
+    # alignment raises the packed .data's sh_addralign, so the linker starts
+    # the section after a gap. Data symbol values and ABS32 relocation
+    # offsets are linker addresses that span the gap (st_value minus
+    # len(code_sect)), so the gap must be padded into the packed .data for
+    # every such address to land inside the arena. The loader still places
+    # the blob at a merely 4-byte-aligned address — see the alignment warning
+    # below.
+    data_gap = ds["addr"] - crt_off
+    check(data_gap % 4 == 0, ".data alignment gap '%d' is not a multiple of 4" % data_gap)
+    if data_gap > 0:
+        debug("Padding %d bytes of .text->.data alignment gap into the RAM arena" % data_gap, args)
+        data_sect = bytes(data_gap) + data_sect
+    crt_off += len(data_sect)
     sect_idx_mapping[ds["index"]] = sectname_data
     # BSS section
     bs = get_section_in_elf(output, sectname_bss)
@@ -338,6 +527,88 @@ def process(output, args):
     sect_idx_mapping[bs["index"]] = sectname_bss
     # Add a special key for undefined symbols
     sect_idx_mapping["SHN_UNDEF"] = None
+    # ── Tagged (--section) placement sections ────────────────────────────
+    # Tagged sections keep their ELF link VAs: the main sections link at
+    # 0/… and tag k at 0x02000000*(k+1), so the flat VA map stays
+    # unambiguous and the loader resolves runtime(va) per section entry.
+    sectioned = bool(args.sections)
+    section_entries = []
+    code_section_names = {sectname_code}
+    # Per-section packed payload buffers with their VA spans: relocation
+    # sites (literal pools) live inside the payload of the section they
+    # belong to — tagged code sections carry their own pools — so site
+    # patching must never assume the main .text/.data pair. The main .data
+    # span starts at VA code_size because its packed blob carries the
+    # leading alignment gap; .bss has no payload to patch.
+    payload_bufs = [
+        (cs["addr"], cs["addr"] + len(code_sect), sectname_code, code_sect),
+        (ds["addr"] - data_gap, ds["addr"] - data_gap + len(data_sect), sectname_data, bytearray(data_sect)),
+        (bs["addr"], bs["addr"] + len(bss_sect), sectname_bss, None),
+    ]
+    if sectioned:
+        def _sec_class(sh_type, sh_flags):
+            # Class is derived from what the section contains: zero-init
+            # only -> BSS, executable -> CODE, otherwise DATA.
+            if sh_type == "SHT_NOBITS":
+                return sec_class_bss
+            return sec_class_code if (sh_flags & 0x4) else sec_class_data  # SHF_EXECINSTR
+        # The main sections always own the three lowest VAs (main region
+        # [0, 32 MiB) vs tags at 0x02000000*(k+1)), so they keep indices
+        # 0/1/2 in the VA-sorted table. Entries carry the packed blob sizes
+        # (alignment gaps included) and the section's ELF link VA; the
+        # loader aligns each base inside the RAM block, which is what makes
+        # member alignment real for the main sections of tagged modules.
+        section_entries.append({"name": None, "va": cs["addr"], "size": len(code_sect),
+                                "align": max(4, secinfo[cs["index"]]["addralign"]),
+                                "class": sec_class_code, "flags": sec_flag_main, "payload": code_sect})
+        section_entries.append({"name": None, "va": ds["addr"], "size": len(data_sect),
+                                "align": max(4, secinfo[ds["index"]]["addralign"]),
+                                "class": sec_class_data, "flags": sec_flag_main, "payload": data_sect})
+        section_entries.append({"name": None, "va": bs["addr"], "size": len(bss_sect),
+                                "align": max(4, secinfo[bs["index"]]["addralign"]),
+                                "class": sec_class_bss, "flags": sec_flag_main, "payload": None})
+        for spec in args.sections:
+            snm = sec_prefix + spec["name"]
+            if snm not in [m["name"] for m in secinfo.values()]:
+                warn("--section '%s' declared but nothing was placed in '%s'; the section "
+                     "is omitted from the image" % (spec["name"], snm))
+                continue
+            tsec = get_section_in_elf(output, snm)
+            check(tsec["size"] % 4 == 0, "Length of section '%s' is not a multiple of 4" % snm)
+            meta = secinfo[tsec["index"]]
+            elf_align = max(4, meta["addralign"])
+            if elf_align > spec["align"]:
+                warn("--section '%s': section content requires %d-byte alignment (e.g. "
+                     "UDYNLINK_SECTION_ALIGNED), raising the declared align=%d to %d"
+                     % (spec["name"], elf_align, spec["align"], elf_align))
+            cls = _sec_class(meta["sh_type"], meta["sh_flags"])
+            section_entries.append({"name": spec["name"], "va": tsec["addr"], "size": tsec["size"],
+                                    "align": max(spec["align"], elf_align), "class": cls,
+                                    "flags": spec["flags"], "payload": tsec["data"]})
+            sect_idx_mapping[tsec["index"]] = snm
+            payload_bufs.append((tsec["addr"], tsec["addr"] + tsec["size"], snm,
+                                 None if cls == sec_class_bss else bytearray(tsec["data"])))
+            if cls == sec_class_code:
+                code_section_names.add(snm)
+
+    def _site_section(addr):
+        # Output section containing a relocation site, or None when the
+        # site lives outside the packed sections (never a call site).
+        for lo, hi, nm, _buf in payload_bufs:
+            if lo <= addr < hi:
+                return nm
+        return None
+
+    def _payload_at(addr):
+        # (writable payload buffer, byte index) holding the word at the ELF
+        # VA, or (None, 0) when the site is not shipped in any payload
+        # (e.g. .got: GOT sites are read from the ELF but never patched).
+        # Untagged builds have a single code payload whose VAs equal byte
+        # offsets, so this reduces to today's direct code_sect indexing.
+        for lo, hi, _nm, buf in payload_bufs:
+            if buf is not None and lo <= addr < hi:
+                return buf, addr - lo
+        return None, 0
 
     # Build the list of exported and unknown symbols
     set_debug_col('cyan')
@@ -345,6 +616,32 @@ def process(output, args):
     syms = get_symbols_in_elf(output)
     rels = get_relocations_in_elf(output)
     print_list(syms,"syms   :", args)
+    # The loader guarantees only 4-byte alignment for module data (the RAM
+    # arena base is 4-byte aligned and .data/.bss follow it unaligned), so a
+    # member that raised the packed .data/.bss sh_addralign above 4 will not
+    # get that alignment at runtime. Warn once so aligned(N>4) is a visible
+    # no-op instead of a silent misalignment.
+    over = []
+    for sect in (ds, bs):
+        align = secinfo[sect["index"]]["addralign"]
+        if align <= 4:
+            continue
+        hits = [sd for sd in syms if sd["section"] == sect["index"] and sd["name"]
+                and (sd["value"] - sect["addr"]) % align == 0]
+        names = ([sd["name"] for sd in hits if sd["type"] == "STT_OBJECT"]
+                 or [sd["name"] for sd in hits])[:2]
+        over.append("%s requires %d-byte alignment%s" % (
+            sect["name"], align,
+            (" (symbol%s %s)" % ("s" if len(names) > 1 else "",
+             ", ".join("'%s'" % n for n in names))) if names else ""))
+    if over:
+        warn("%s, but the udynlink loader guarantees only 4-byte alignment for module "
+             "data: __attribute__((aligned(N))) with N > 4 on module data is not honored "
+             "at runtime, the data is placed at a 4-byte-aligned arena offset and code "
+             "relying on the stricter alignment will misbehave. Put the data in a declared "
+             "placement section instead: --section <name> plus UDYNLINK_SECTION_ALIGNED("
+             "\"<name>\", N) from udynlink/udynlink_section.h gets the alignment honored "
+             "(the host places the section at a suitably aligned address)." % " and ".join(over))
     # Symbols are identified by (symtab section index, symbol index) — NOT by
     # name.  GCC's local constant-pool labels (.LC0, .LC1, ...) are reused in
     # every translation unit of a multi-TU module: they share a name but have
@@ -410,7 +707,6 @@ def process(output, args):
         if name.startswith(".udynlink.mod.requires.") and sym_map[key] == "exported":
             debug("Reclassified dependency symbol '%s' from exported to external" % name, args)
             sym_map[key] = "external"
-
     # Detect and omit empty init-array sentinel symbols from the symbol table.
     # These four symbols are emitted by the linker script even for C modules
     # with no constructors.  When they all have size 0 and identical addresses
@@ -496,6 +792,19 @@ def process(output, args):
         key = _reloc_key(r)
         offset, value = r["offset"], sd["value"]
         if t == "R_ARM_THM_CALL" or t == "R_ARM_THM_JUMP24":  # PC-relative, safe to ignore
+            if sectioned:
+                # A direct branch bakes in a PC-relative offset, but tagged
+                # sections resolve to unrelated addresses at load time (the
+                # link-space spacing only makes the accidental case a link
+                # error for in-range encodings). Long calls (the default)
+                # route through the LOT and are placement-agnostic.
+                src = _site_section(offset)
+                tgt = sect_idx_mapping.get(sd["section"])
+                if src is not None and tgt != src:
+                    error("--section: direct %s in section '%s' targets '%s' (symbol '%s'); "
+                          "a direct call cannot cross placement sections. Keep the callee in "
+                          "the same --section or drop the placement attribute."
+                          % (t, src, tgt or "<unplaced section>", name))
             debug("Ignoring relocation R_ARM_THM_CALL for symbol '%s' of type '%s'" % (name, sd["type"]), args)
             continue
         elif t == "R_ARM_GOT_BREL":
@@ -557,13 +866,15 @@ def process(output, args):
     # offset in the LOT
     for r in local_relocs + foreign_relocs:
         key, name, offset, value = r
-        old = struct.unpack_from("<I", code_sect, offset)[0]
+        # A tagged code section carries its own literal pools, so the site
+        # can live in any shipped payload — resolve it through the per-
+        # section buffers instead of assuming the packed main .text.
+        buf, buf_off = _payload_at(offset)
+        check(buf is not None, "Relocation site 0x%08X for symbol '%s' is not inside any packed section payload" % (offset, name))
+        old = struct.unpack_from("<I", buf, buf_off)[0]
         new = reloc_key_to_lot[key] * 4
-        struct.pack_into("<I", code_sect, offset, new)
+        struct.pack_into("<I", buf, buf_off, new)
         debug("Patched location %08X (old = %08X, new = %08X) for symbol '%s'" % (offset, old, new, name), args)
-
-    # Prepare image
-    # The image starts with a header that looks like this:
     # +--------------+--------------+---------------------------------------+
     # | Field name   | Field size   | Meaning                               |
     # +--------------+--------------+---------------------------------------+
@@ -603,6 +914,36 @@ def process(output, args):
     local = [k for k in slist_all if sym_map[k] == "local"]
     slist = [args.name] + named + local
     symt_mapping = {k: i for i, k in enumerate(slist)}
+    # The image can only carry .text/.data/.bss, so a symbol in any other
+    # section has no slot to land in. Fail with the offending section and
+    # symbol names instead of the bare KeyError the packed-section lookup
+    # below would raise.
+    unplaced = {}
+    for s in slist[1:]:
+        sd = sym_data[s]
+        sect = sd["section"]
+        if sect in sect_idx_mapping:
+            continue
+        if isinstance(sect, int):
+            label = "section '%s'" % (secinfo.get(sect, {}).get("name") or ("index %d" % sect))
+        elif sect == "SHN_ABS":
+            label = "absolute address (SHN_ABS)"
+        elif sect == "SHN_COMMON":
+            label = "common block (SHN_COMMON)"
+        else:
+            label = "special section value '%s'" % sect
+        unplaced.setdefault(label, []).append(sd["name"])
+    if unplaced:
+        error("The module image packs only the '.text', '.data' and '.bss' sections "
+              "(the linker script folds their input variants into them: .text*, "
+              ".rodata*, .text_nogc, .data*, .sdata, .bss*, .sbss, COMMON, "
+              ".bss.udynlink_thunk_pool), but these symbols cannot be placed into it: "
+              "%s. Objects or functions tagged into other sections "
+              "(__attribute__((section(\"...\"))) with a custom section name) are not "
+              "supported; place them in one of the packed sections instead."
+              % "; ".join("%s: symbol%s %s" % (label, "s" if len(ns) > 1 else "",
+                          ", ".join("'%s'" % n for n in ns))
+                          for label, ns in unplaced.items()))
 
     relocated = {}
     realocs, total_relocs = bytearray(), 0
@@ -638,7 +979,15 @@ def process(output, args):
         total_relocs += 1
     debug("== RelocationTable, entries: %d" % total_relocs, args)
     img += struct.pack("<H", total_relocs)  # Total number of relocations (2b)
-    img += struct.pack("<H", 0)              # Reserved (2b, was num_deps)
+    if sectioned:
+        # Flags word (was reserved): bit 0 = section table present, bits
+        # 7:1 = section count. The count lives in the header so pre-load
+        # size accounting stays deref-free; 6 bits cap it at 63 entries.
+        check(len(section_entries) <= 63,
+              "too many placement sections (%d): the header carries at most 63" % len(section_entries))
+        img += struct.pack("<H", hdr_flag_sections | (len(section_entries) << 1))
+    else:
+        img += struct.pack("<H", 0)  # Reserved (2b, was num_deps)
 
     def _sym_name(s):
         return args.name if s == args.name else sym_data[s]["name"]
@@ -648,7 +997,29 @@ def process(output, args):
         if i == 0 or sym_map[s] != "local":
             symt_len += len(_sym_name(s)) + 1
 
-    symt_len = round_to(symt_len, 4)
+    # Section names are interned into the same string pool (no second pool):
+    # the walk above placed every named symbol at a known offset; tagged
+    # names continue that walk, deduplicating against identical symbol
+    # names, so symt_size covers them and the loader finds each name at its
+    # offset in the section table.
+    sec_name_pool = {}
+    sec_names_appended = []
+    if sectioned:
+        off = len(slist) * 8 + 4
+        for i, s in enumerate(slist):
+            if i == 0 or sym_map[s] != "local":
+                nm = args.name if i == 0 else sym_data[s]["name"]
+                if nm not in sec_name_pool:
+                    sec_name_pool[nm] = off
+                    off += len(nm) + 1
+        for e in section_entries:
+            if e["name"] is not None and e["name"] not in sec_name_pool:
+                sec_name_pool[e["name"]] = off
+                sec_names_appended.append(e["name"])
+                off += len(e["name"]) + 1
+        symt_len = round_to(off, 4)
+    else:
+        symt_len = round_to(symt_len, 4)
     img += struct.pack("<I", symt_len)  # Size of symbol table in bytes (4b)
     img += struct.pack("<I", len(code_sect))  # Size of code section (4b)
     img += struct.pack("<I", len(data_sect))  # Size of data section (4b)
@@ -671,7 +1042,7 @@ def process(output, args):
             #     29-27: type (0 = local, 1 = exported, 2 = external, 3 = module name, 4 = weak). Local symbols do NOT have a name (offset is 0).
             sd = sym_data[s]
             name = sd["name"]
-            defined_in_code = sect_idx_mapping[sd["section"]] == sectname_code
+            defined_in_code = sect_idx_mapping[sd["section"]] in code_section_names
             if sym_map[s] == "local":
                 type_data = SYM_TYPE_INTERNAL
             elif sym_map[s] == "exported":
@@ -682,9 +1053,12 @@ def process(output, args):
                 type_data = SYM_TYPE_EXTERN
             type_data |= SYM_INFO_CODE_MASK if defined_in_code else 0
             val = sd["value"]
+            # Sectioned images keep the raw ELF link VA (resolution goes
+            # through the section table's flat VA map); untagged images
+            # offset data values into the packed arena exactly as before.
+            val_offset = 0 if (sectioned or sym_map[s] == "external" or defined_in_code) else len(code_sect)
             # Symbols that are not in the code section (and are defined in the module) will have their value offseted with the
             # start of the .data section in the image
-            val_offset = 0 if (sym_map[s] == "external" or defined_in_code) else len(code_sect)
             debug_hint = "type: %s, " % sym_map[s]
             if val_offset:
                 debug_hint += "Offset by -0x%08X bytes from value 0x%08X" % (val_offset, val)
@@ -702,11 +1076,34 @@ def process(output, args):
     for i, s in enumerate(slist):
         if i == 0 or sym_map[s] != "local":
             img += (_sym_name(s) + '\0').encode('utf-8')
+    if sectioned:
+        # The interned section names are part of the pool: append them here
+        # (walk order == assigned offsets) so the pool bytes match symt_size
+        # and the loader reads each name at its table offset.
+        for nm in sec_names_appended:
+            img += (nm + '\0').encode('utf-8')
     # Round to a multiple of 4
     if len(img) % 4 > 0:
         img += ('\0' * (4 - len(img) % 4)).encode('utf-8')
-    # And finally append the code
-    img = img + code_sect + data_sect
+    if sectioned:
+        # Section table, entries only (the count rides in the header flags
+        # word), sorted by VA — the main sections keep indices 0/1/2 —
+        # then payloads in the same VA order, skipping BSS: nothing to load
+        # for a zero-init section. This keeps [text][data] at the head of
+        # the payload area, so data_offset == code_offset + code_size holds.
+        section_entries.sort(key=lambda e: e["va"])
+        for e in section_entries:
+            name_off = 0 if e["name"] is None else sec_name_pool[e["name"]]
+            img += struct.pack("<IIIIII", name_off, e["va"], e["size"], e["align"],
+                               e["class"], e["flags"])
+            debug("Section '%s': { name_off 0x%X, va 0x%08X, size %d, align %d, class %d, flags 0x%08X }" %
+                  (e["name"] or "<main>", name_off, e["va"], e["size"], e["align"], e["class"], e["flags"]), args)
+        for e in section_entries:
+            if e["class"] != sec_class_bss:
+                img += e["payload"]
+    else:
+        # And finally append the code
+        img = img + code_sect + data_sect
     bin_name = args.bin_name
     with open(bin_name, "wb") as f:
         f.write(img)
@@ -763,6 +1160,17 @@ parser.add_argument("--mcpu", dest="mcpu", default="cortex-m4", help="Target CPU
 parser.add_argument("--target", dest="target", default=targets.DEFAULT_TARGET, help="Target name (default: %s)" % targets.DEFAULT_TARGET)
 parser.add_argument("--mod-version", dest="mod_version", default="1.0", help="Module ABI version (default: 1.0)")
 parser.add_argument("--udynlink-version", dest="udynlink_version", default="3.0", help="Loader ABI version (default: 3.0)")
+parser.add_argument("--section", dest="section", action="append", default=[],
+    metavar="NAME[:align=N][:flags=F1,F2]",
+    help="Place tagged content into a dedicated memory region (repeatable). "
+         "Module code/data tagged with UDYNLINK_SECTION(\"NAME\") or "
+         "UDYNLINK_SECTION_ALIGNED(\"NAME\", N) (udynlink/udynlink_section.h) "
+         "lands in section NAME, which the host resolves and allocates "
+         "separately at load time. align (default 4, power of two) is the "
+         "alignment the host must honor; flags is a comma list of NOCACHE, "
+         "DMA, SHARED and host<N> (N in 0..7, host-private bit). Requires "
+         "--udynlink-version >= 3.1 (the default becomes 3.1 when omitted); "
+         "incompatible with --pc-rel and --no-long-calls.")
 parser.add_argument("--no-prologue", dest="no_prologue", action="store_true", help="Skip assembly prologue generation for exported functions (default: false)")
 parser.add_argument("--lto", dest="lto", action="store_true",
     help="Enable link-time optimization (GCC -flto). Compiles to fat LTO "
@@ -802,6 +1210,30 @@ except ValueError as e:
 if not any(a.startswith("--mcpu") for a in sys.argv[1:]):
     args.mcpu = target_meta["mcpu"]
 
+# Parse --section specs up front so malformed tags fail before any compilation
+args.sections = [parse_section_spec(s) for s in args.section]
+args.linker_script = None
+if args.sections:
+    if args.pc_rel:
+        error("--pc-rel is incompatible with --section: PC-relative data addressing "
+              "bakes in the link-time placement, so a tagged section could not be "
+              "resolved to a different address at load time.")
+    if args.no_long_calls:
+        error("--no-long-calls is incompatible with --section: direct bl branches "
+              "cannot cross placement sections (tagged sections resolve to unrelated "
+              "addresses at load time); long calls through the LOT are placement-agnostic.")
+    # The section table needs the 3.1 loader ABI; an older loader rejects the
+    # image by version fence. An explicit lower version is a mistake, not a
+    # downgrade — refuse it instead of silently raising.
+    explicit_uv = any(a == "--udynlink-version" or a.startswith("--udynlink-version=")
+                      for a in sys.argv[1:])
+    if explicit_uv:
+        uv_g = args.udynlink_version.split(".")
+        uv_g_val = pack_version(int(uv_g[0]), int(uv_g[1] if len(uv_g) > 1 else "0"))
+        if uv_g_val < pack_version(3, 1):
+            error("--section requires --udynlink-version >= 3.1 (got %s): the image "
+                  "carries a section table that pre-3.1 loaders cannot parse" % args.udynlink_version)
+
 # Parse version strings (major.minor) into uint16_t (pack_version)
 mv_parts = args.mod_version.split(".")
 args.mod_version_val = pack_version(int(mv_parts[0]), int(mv_parts[1] if len(mv_parts) > 1 else "0"))
@@ -813,6 +1245,10 @@ if args.no_prologue:
 args.template = target_meta["template"]
 args.fpu_flag = " -mfpu=" + target_meta["fpu"] if target_meta.get("fpu") else ""
 args.float_abi_flag = " -mfloat-abi=" + target_meta["float_abi"] if target_meta.get("float_abi") else ""
+if args.sections and not any(a == "--udynlink-version" or a.startswith("--udynlink-version=")
+                             for a in sys.argv[1:]):
+    args.udynlink_version = "3.1"
+    args.udynlink_version_val = pack_version(3, 1)
 
 
 # Intermediate files (objects, prologues, ELF) land in --workdir when set so the
@@ -861,10 +1297,19 @@ if args.bin_name is None:
         path, _ = os.path.splitext(sources[0])
         args.bin_name = path + ".bin"
 
+# The sectioned build links against a generated multi-region script instead
+# of the fixed code_before_data.ld; untagged builds keep the original file,
+# which is what keeps their images byte-identical.
+if args.sections:
+    ld_dir = args.workdir if args.workdir else os.path.dirname(os.path.abspath(sources[0]))
+    args.linker_script = os.path.join(ld_dir, args.name + ".sections.ld")
+    generate_sectioned_linker_script(args.linker_script, args)
+
 
 public_symbols = {}
 if args.public_symbols is not None:
     public_symbols = set(args.public_symbols.split(","))
+assign_object_paths(sources, args)
 output = os.path.join(args.workdir, (args.name if args.name else split_fname(sources[0])[1]) + ".elf") if args.workdir else change_ext(sources[0], '.elf')
 objects = []
 for s in sources:

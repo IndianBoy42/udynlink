@@ -43,11 +43,17 @@
  *
  *   - new / new[]    forward to `udynlink_external_malloc` (so module heap
  *                    lifetime is observable by the host and consistent with
- *                    the loader's own allocations).
- *   - delete / del[] forward to `udynlink_external_free`. The size and
- *                    align_val arguments are ignored — `udynlink_external_free`
- *                    does not take them. A host that wants sized/aligned free
- *                    can override the relevant symbol with a strong definition.
+ *                    the loader's own allocations). Section is NULL (module
+ *                    heap objects live wherever the host's default pool
+ *                    puts them) and the alignment is what the corresponding
+ *                    operator new form guarantees.
+ *   - delete / del[] forward to `udynlink_external_free` with the same
+ *                    (section, align) the allocation used. The size argument
+ *                    is still dropped — sized free is not part of the
+ *                    callback contract — but hosts that route blocks by
+ *                    alignment class now see the true alignment instead of
+ *                    a discarded 0. A host that wants sized free can
+ *                    override the relevant symbol with a strong definition.
  *   - __cxa_pure_virtual  loops forever. Calling a pure virtual during
  *                    construction or destruction is undefined behavior; a
  *                    hang is preferable to silent corruption and lets a
@@ -118,14 +124,24 @@ extern "C" {
  * value.
  * ----------------------------------------------------------------------- */
 
-/* operator delete(void*, unsigned int) — the sized form GCC emits when
- * -fsized-deallocation is in effect. Reachable only if the module actually
- * executes `delete` through a virtual destructor. Size is dropped because
- * udynlink_external_free takes only the pointer. */
+/* Alignment the plain operator new forms guarantee (Itanium ABI /
+ * [expr.new]). The aligned forms forward their align_val_t argument
+ * verbatim, so this constant only ever backs the unaligned entry points. */
+#ifndef UDYNLINK_CPP_NEW_ALIGN
+#if defined(__STDCPP_DEFAULT_NEW_ALIGNMENT__)
+#define UDYNLINK_CPP_NEW_ALIGN __STDCPP_DEFAULT_NEW_ALIGNMENT__
+#else
+/* C hosts and pre-C++17 builds: the contract this stub must honor is the
+ * alignment the platform's own allocator guarantees, which is exactly what
+ * max_align_t captures. */
+#define UDYNLINK_CPP_NEW_ALIGN __alignof__(max_align_t)
+#endif
+#endif
+
 __attribute__((weak))
 void udynlink_cpp_delete(void *p, unsigned int sz) {
     (void)sz;
-    udynlink_external_free(p);
+    udynlink_external_free(p, NULL, UDYNLINK_CPP_NEW_ALIGN, 0);
 }
 
 /* operator delete(void*) — the unsized form, emitted when
@@ -133,7 +149,7 @@ void udynlink_cpp_delete(void *p, unsigned int sz) {
  * statically known. */
 __attribute__((weak))
 void udynlink_cpp_delete_unsized(void *p) {
-    udynlink_external_free(p);
+    udynlink_external_free(p, NULL, UDYNLINK_CPP_NEW_ALIGN, 0);
 }
 
 /* operator delete[](void*, unsigned int) and the unsized form — array
@@ -141,28 +157,29 @@ void udynlink_cpp_delete_unsized(void *p) {
 __attribute__((weak))
 void udynlink_cpp_delete_array(void *p, unsigned int sz) {
     (void)sz;
-    udynlink_external_free(p);
+    udynlink_external_free(p, NULL, UDYNLINK_CPP_NEW_ALIGN, 0);
 }
 
 __attribute__((weak))
 void udynlink_cpp_delete_array_unsized(void *p) {
-    udynlink_external_free(p);
+    udynlink_external_free(p, NULL, UDYNLINK_CPP_NEW_ALIGN, 0);
 }
 
 /* Aligned forms (operator delete(void*, unsigned int, std::align_val_t)).
- * Emitted for types with alignas > __STDCPP_DEFAULT_NEW_ALIGNMENT__ (16).
- * The align_val_t argument is an enum that GCC passes as a plain integer in
- * the third slot; we ignore it and forward to the host free. */
+ * Emitted for types with alignas > the default new alignment. The
+ * align_val_t argument is an enum that GCC passes as a plain integer in
+ * the third slot; it is forwarded as the callback's align argument so the
+ * host's free sees the same alignment class the allocation used. */
 __attribute__((weak))
 void udynlink_cpp_delete_aligned(void *p, unsigned int sz, unsigned int al) {
-    (void)sz; (void)al;
-    udynlink_external_free(p);
+    (void)sz;
+    udynlink_external_free(p, NULL, al, 0);
 }
 
 __attribute__((weak))
 void udynlink_cpp_delete_array_aligned(void *p, unsigned int sz, unsigned int al) {
-    (void)sz; (void)al;
-    udynlink_external_free(p);
+    (void)sz;
+    udynlink_external_free(p, NULL, al, 0);
 }
 
 /* --------------------------------------------------------------------------
@@ -172,27 +189,29 @@ void udynlink_cpp_delete_array_aligned(void *p, unsigned int sz, unsigned int al
  * allocation fail the way it would on the host (caller is expected to throw
  * or handle the NULL; with -fno-exceptions the compiler turns `new` into a
  * NULL check + call to a nothrow handler, which we also stub below).
+ *
+ * Alignment: the plain forms promise __STDCPP_DEFAULT_NEW_ALIGNMENT__; the
+ * aligned forms promise the align_val_t value. Both are handed to the host
+ * callback so pools can be routed by alignment class, not guessed at.
  * ----------------------------------------------------------------------- */
 __attribute__((weak))
 void *udynlink_cpp_new(unsigned int sz) {
-    return udynlink_external_malloc(sz);
+    return udynlink_external_malloc(sz, NULL, UDYNLINK_CPP_NEW_ALIGN, 0);
 }
 
 __attribute__((weak))
 void *udynlink_cpp_new_array(unsigned int sz) {
-    return udynlink_external_malloc(sz);
+    return udynlink_external_malloc(sz, NULL, UDYNLINK_CPP_NEW_ALIGN, 0);
 }
 
 __attribute__((weak))
 void *udynlink_cpp_new_aligned(unsigned int sz, unsigned int al) {
-    (void)al;
-    return udynlink_external_malloc(sz);
+    return udynlink_external_malloc(sz, NULL, al, 0);
 }
 
 __attribute__((weak))
 void *udynlink_cpp_new_array_aligned(unsigned int sz, unsigned int al) {
-    (void)al;
-    return udynlink_external_malloc(sz);
+    return udynlink_external_malloc(sz, NULL, al, 0);
 }
 
 /* nothrow variants (operator new(size_t, std::nothrow_t)). GCC emits these
@@ -203,13 +222,13 @@ void *udynlink_cpp_new_array_aligned(unsigned int sz, unsigned int al) {
 __attribute__((weak))
 void *udynlink_cpp_new_nothrow(unsigned int sz, void *nt) {
     (void)nt;
-    return udynlink_external_malloc(sz);
+    return udynlink_external_malloc(sz, NULL, UDYNLINK_CPP_NEW_ALIGN, 0);
 }
 
 __attribute__((weak))
 void *udynlink_cpp_new_array_nothrow(unsigned int sz, void *nt) {
     (void)nt;
-    return udynlink_external_malloc(sz);
+    return udynlink_external_malloc(sz, NULL, UDYNLINK_CPP_NEW_ALIGN, 0);
 }
 
 /* --------------------------------------------------------------------------

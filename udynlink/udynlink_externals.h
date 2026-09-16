@@ -42,11 +42,9 @@ typedef struct _udynlink_module_t udynlink_module_t;
  */
 
 /**
- * @brief Determine whether a pointer references RAM.
- *
- * Called during udynlink_load_module() to decide whether a given
- * address is writable.  This is critical for XIP mode: the loader must
- * know if it can safely apply data relocations in place.
+ * Intended contract (not yet wired up): decide whether a given address
+ * is writable, which an XIP-mode loader would need before applying
+ * data relocations in place.
  *
  * @param p Pointer to inspect.
  *
@@ -56,40 +54,67 @@ typedef struct _udynlink_module_t udynlink_module_t;
  * @note A typical implementation compares the address against the
  *       MCU's SRAM region(s).
  *
- * @note A weak default returning 0 (not RAM) is provided.  Hosts that
- *       use XIP mode must override it with a real implementation.
+ * @note A weak default returning 0 (not RAM) is provided.
+ *
+ * @warning The current loader never calls this hook, and
+ *          ::UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED is never returned.
+ *          Implementing it today has no effect on load behavior; do
+ *          not rely on it for XIP validation.
  */
 int udynlink_external_is_pointer_in_ram(const void *p);
 
 /**
- * @brief Allocate memory for a module's RAM region.
+ * @brief Allocate memory for a module.
  *
- * Called during udynlink_load_module() to obtain the backing memory
- * for the module's LOT, .data, .bss, and optionally .text (depending
- * on the load mode).  The returned buffer must be at least @p size
- * bytes.
+ * Called during udynlink_load_module() once for the module's main RAM
+ * block (@p section == NULL) and once per tagged section of a sectioned
+ * image (@p section != NULL).  The returned buffer must be at least
+ * @p size bytes and aligned to @p align; the loader validates both and
+ * fails the load otherwise — ::UDYNLINK_ERR_LOAD_OUT_OF_MEMORY on NULL,
+ * ::UDYNLINK_ERR_LOAD_RAM_UNALIGNED for a misaligned main block,
+ * ::UDYNLINK_ERR_LOAD_SECTION_UNALIGNED for a misaligned tagged section.
  *
- * @param size Number of bytes to allocate.
+ * @param size    Number of bytes to allocate.
+ * @param section Name of the tagged section to place, or NULL for the
+ *                module's main RAM block.  The name points into the module
+ *                image's symbol string pool and is valid for the duration
+ *                of this call only; copy it if the host stores it.
+ * @param align   Required alignment in bytes (power of two, >= 4; the
+ *                main block uses the maximum alignment over its sections,
+ *                which is 4 for modules built without section placement).
+ * @param flags   Hint flags from the section table
+ *                (::UDYNLINK_SEC_FLAG_NOCACHE et al, plus host-defined
+ *                bits 15:8).  0 for the main block; ::UDYNLINK_SEC_FLAG_MAIN
+ *                and the reserved bits 23:16 never reach the host.
  *
- * @return Pointer to the allocated memory on success, or NULL on
- *         failure.
+ * @return Pointer to the allocated memory on success, or NULL on failure
+ *         (a NULL for a tagged section fails the load with
+ *         ::UDYNLINK_ERR_LOAD_SECTION_UNRESOLVED after everything already
+ *         allocated has been freed).
  *
  * @note The memory does not need to be zero-initialized; the loader
- *       zeroes BSS separately.
+ *       zeroes BSS sections itself.
  */
-void *udynlink_external_malloc(size_t size);
+void *udynlink_external_malloc(size_t size, const char *section, size_t align, uint32_t flags);
 
 /**
  * @brief Free memory previously allocated for a module.
  *
- * Called during udynlink_unload_module() to release memory that was
- * obtained from udynlink_external_malloc().  If @p p is NULL the call
- * must be a no-op, matching the semantics of the standard free()
- * function.
+ * Called during udynlink_unload_module() and on load error paths for every
+ * block obtained from udynlink_external_malloc().  @p section, @p align and
+ * @p flags carry exactly the values the allocation was called with, so
+ * hosts that route by name, alignment class or flags can demultiplex.
+ * If @p p is NULL the call must be a no-op, matching the semantics of the
+ * standard free() function.
  *
- * @param p Pointer to the memory region to free, or NULL.
+ * @param p       Pointer to the memory region to free, or NULL.
+ * @param section Section name the allocation was made for (see
+ *                udynlink_external_malloc()); NULL for a main block.  Only
+ *                valid for the duration of the call.
+ * @param align   Alignment argument of the matching allocation.
+ * @param flags   Flags argument of the matching allocation.
  */
-void udynlink_external_free(void *p);
+void udynlink_external_free(void *p, const char *section, size_t align, uint32_t flags);
 
 /**
  * @brief Output a debug message from the loader.

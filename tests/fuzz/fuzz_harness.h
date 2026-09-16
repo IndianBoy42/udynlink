@@ -21,8 +21,14 @@
 
 #include "udynlink.h"
 
+/* Rewinds the tagged-section arena in the host externals (fuzz_host_externals.c)
+ * so one input's sectioned allocations can't starve the next input. */
+void udynlink_test_reset_section_heap(void);
+
 /* Run the full load/lookup/relocate/unload sequence on a module image.
- * Returns 0; never asserts. Any crash is a real loader bug. */
+ * Returns 0. The only deliberate failure is the deterministic
+ * alignment-contract oracle (see fuzz_harness.c), which aborts; any other
+ * crash is a real loader bug. */
 int udynlink_fuzz_exercise(const uint8_t *buf, size_t size);
 
 #endif /* UDYNLINK_FUZZ_HARNESS_H */

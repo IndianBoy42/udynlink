@@ -316,6 +316,23 @@ SECTIONS
     {
         *(.noinit.CCMRAM .noinit.CCMRAM.*)         
     } > CCMRAM
+    /* Secondary placement pool for sectioned modules. Empty (and dropped)
+     * unless a test defines a .altpool input section.
+     *
+     * Placed in RAM, not CCMRAM: the legacy xPack QEMU 2.8.0 model behind
+     * this platform does not provide usable memory at the STM32F4 CCM RAM
+     * address 0x10000000 — a tagged section placed there never round-trips
+     * and QEMU logs "Bad ram pointer", while the identical test with the
+     * pool in RAM passes. The sectioned load path is still exercised here;
+     * the "distinct physical region" assertion is made on mps2_an386, whose
+     * second region (BRAM @ 0x20000000) the mainline model does back. */
+    .altpool (NOLOAD) : ALIGN(32)
+    {
+        __altpool_start__ = .;
+        *(.altpool .altpool.*)
+        __altpool_end__ = .;
+    } > RAM
+
     
     .noinit (NOLOAD) : ALIGN(4)
     {

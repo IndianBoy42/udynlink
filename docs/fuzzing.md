@@ -26,6 +26,24 @@ The loader's public entry points, across all three load modes:
 - `udynlink_relocate_module` (exercises `rebase_module_pointers`)
 - `udynlink_unload_module`
 
+The harness's allocator stub implements the loader ABI 3.1 callback signature
+(`udynlink_external_malloc(size, section, align, flags)` / the matching `free`)
+routed to the same backing `malloc`, so both the untagged main-block calls and
+any sectioned-module allocation requests exercise the stub. Mutated inputs can
+set the header's section-table flag, so the pre-load gate uses
+**`udynlink_get_image_size_bounded(buf, size)`**, not the plain
+`udynlink_get_image_size()`: the latter dereferences only the header and cannot
+see tagged-section payloads, so a sectioned image could declare a 256 KiB
+tagged payload in a 508-byte buffer and pass a gate built on it — the loader
+would then `memcpy` those 256 KiB out of the input buffer (`udynlink.c`, the
+per-tagged-section copy). The bounded variant returns the true total or `0`
+when it cannot be established within the buffer; the harness rejects both `0`
+and any result larger than the buffer. `just fuzz-seeds` therefore plants a
+**truncated** sectioned seed (`sections_truncated.bin`) alongside the valid one,
+because the sanitizer corpus is not mutated and the "declared payload longer
+than the buffer" case would otherwise go uncovered. Section-table fields join
+the header-derived values the loader must bound-check.
+
 After a successful load, the harness also calls `udynlink_relocate_module(&mod,
 NULL, 0)` to exercise the rebase path with a NULL destination (the loader then
 asks our `malloc` stub for the move target). The harness treats **any**
@@ -191,9 +209,12 @@ kept under `tests/fuzz/findings/documented/` for regression reference.
    buffer actually holds (the COPY_ALL `memcpy(p_temp8 + code_offset,
    image->p_code, p_header->code_size)` reads as many bytes as the header
    claims, not as many as the caller actually supplied). The harness now
-   enforces the loader's documented contract `size >=
-   udynlink_get_image_size(buf)` at the caller boundary before invoking any
-   load entry point. This is the boundary check the harness was always meant
+   enforces the loader's documented contract at the caller boundary before
+   invoking any load entry point — originally `size >=
+   udynlink_get_image_size(buf)`, and since sectioned images gained their own
+   payloads, `size >= udynlink_get_image_size_bounded(buf, size)` so that
+   tagged-section payloads (which the header-only variant cannot see) are
+   bounded too. This is the boundary check the harness was always meant
    to make; it is not a loader fix. A future ABI extension that gives the
    loader the source size would let the loader self-defend (planned follow-up
    for a hard-fault-only hardening target).

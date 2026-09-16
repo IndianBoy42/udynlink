@@ -55,7 +55,7 @@ static int test_mode(udynlink_load_mode_t mode) {
 
     /* Relocate to a foreign (host-allocated) buffer. */
     size_t ram = udynlink_get_ram_size(&mod);
-    void *buf = udynlink_external_malloc(ram);
+    void *buf = udynlink_external_malloc(ram, NULL, 4, 0);
     if (buf == NULL) { printf("malloc foreign failed\n"); goto exit; }
     if (udynlink_relocate_module(&mod, buf, ram) != UDYNLINK_OK) {
         printf("relocate foreign failed\n"); goto exit;
@@ -101,7 +101,7 @@ static int test_mode(udynlink_load_mode_t mode) {
     if (call_int_func(&mod, "get_counter") != 6) { printf("counter!=6 post-malloc\n"); goto exit; }
 
     /* Free the foreign buffer from the first relocate (now detached from mod). */
-    udynlink_external_free(buf);
+    udynlink_external_free(buf, NULL, 4, 0);
 
     res = 1;
 exit:

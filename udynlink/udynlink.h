@@ -35,8 +35,10 @@ extern "C" {
  * layout that follows the header is:
  *   - Relocation table (@c num_rels * 8 bytes)
  *   - Symbol table (@c symt_size bytes, rounded up to 4)
- *   - Code section (rounded up to a multiple of 4 bytes)
- *   - Data section
+ *   - Section table (only when ::UDYNLINK_HDR_FLAG_SECTIONS is set;
+ *     num_sections * 24 bytes of entries, rounded up to 4)
+ *   - Section payloads, concatenated in ascending VA order (BSS has no
+ *     payload): code, data, then tagged sections
  */
 typedef struct {
     /** Module signature ('UDLM' in little-endian). */
@@ -51,8 +53,15 @@ typedef struct {
     uint16_t num_lot;
     /** Number of relocation entries. */
     uint16_t num_rels;
-    /** Reserved field (must be 0). */
-    uint16_t reserved;
+    /**
+     * Header flags.  Bit 0 (::UDYNLINK_HDR_FLAG_SECTIONS) marks an image
+     * that carries a section table, in which case bits 7:1 hold the
+     * section count (1..63).  Bits 15:8 and — for images without the
+     * flag — bits 7:1 are reserved and must be 0.  Modules built without
+     * section placement keep this field 0 (it was a reserved field before
+     * loader ABI 3.1).
+     */
+    uint16_t flags;
     /** Size of the symbol table in bytes. */
     uint32_t symt_size;
     /** Size of the code (.text) section in bytes. */
@@ -63,9 +72,44 @@ typedef struct {
     uint32_t bss_size;
     /* Then relocations (num_rels * 8 bytes) */
     /* Then the symbol table (symt_size bytes, rounded up to 4) */
-    /* Then the code (rounded up to a multiple of 4 bytes) */
-    /* Then data */
+    /* Then the section table entries, when UDYNLINK_HDR_FLAG_SECTIONS is set */
+    /* Then the section payloads (ascending VA order, BSS absent) */
 } udynlink_module_header_t;
+
+/** Header @c flags bit 0: the image carries a section table (loader ABI 3.1+). */
+#define UDYNLINK_HDR_FLAG_SECTIONS              0x0001
+/** Mask of the section-count field in @c flags bits 7:1 (valid only when
+ *  ::UDYNLINK_HDR_FLAG_SECTIONS is set; the count itself is 1..63). */
+#define UDYNLINK_HDR_SECTIONS_MASK              0x00FE
+/** Number of sections declared by a sectioned image header. */
+#define UDYNLINK_HDR_NUM_SECTIONS(flags)        (((flags) & UDYNLINK_HDR_SECTIONS_MASK) >> 1)
+/* Header flags bits 15:8 are reserved and must be 0 (as are bits 7:1 when
+ * the section-table flag is clear). */
+
+/** Section class: executable code (copied to its resolved address in every load mode). */
+#define UDYNLINK_SEC_CLASS_CODE                 0
+/** Section class: initialized data. */
+#define UDYNLINK_SEC_CLASS_DATA                 1
+/** Section class: zero-initialized data (no image payload). */
+#define UDYNLINK_SEC_CLASS_BSS                  2
+
+/**
+ * Section hint flags, bits 7:0 — the loader-defined vocabulary (v1).  Bits
+ * 15:8 are host-defined pass-through bits the loader never interprets, bits
+ * 23:16 are reserved (must be 0), and bit 31 (::UDYNLINK_SEC_FLAG_MAIN) is
+ * loader-internal.  Hints are inputs to host placement policy; the loader
+ * never acts on them beyond passing them to the allocator callbacks.
+ */
+#define UDYNLINK_SEC_FLAG_NOCACHE               0x01
+/** Section must be reachable by the DMA controller (e.g. not DTCM/ITCM). */
+#define UDYNLINK_SEC_FLAG_DMA                   0x02
+/** Section may share memory with other modules or host code. */
+#define UDYNLINK_SEC_FLAG_SHARED                0x04
+/* Bits 7:3 are free for future loader vocabulary. */
+/** Section lives in the module's main RAM block (loader-internal; masked
+ *  out before the flags reach the host allocator). */
+#define UDYNLINK_SEC_FLAG_MAIN                  0x80000000u
+
 
 /**
  * @brief Load mode for udynlink_load_module().
@@ -213,6 +257,8 @@ typedef struct {
  * The list is expanded by the preprocessor to produce both an enum
  * and the corresponding string table.
  */
+/* Append-only: the values are public ABI and documented by index in
+ * docs/api-reference.md. Never insert in the middle or reorder. */
 #define UDYNLINK_ERROR_CODES \
 _UDYNLINK_EXPAND(UDYNLINK_OK),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_INVALID_SIGN),\
@@ -227,7 +273,11 @@ _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_VERSION_MISMATCH),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_ARCH_MISMATCH),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_IO_ERROR),\
 _UDYNLINK_EXPAND(UDYNLINK_ERR_INVALID_MODULE),\
-_UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_HOOK_ABORTED)
+_UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_HOOK_ABORTED),\
+_UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_RAM_UNALIGNED),\
+_UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_SECTION_UNRESOLVED),\
+_UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_SECTION_UNALIGNED),\
+_UDYNLINK_EXPAND(UDYNLINK_ERR_LOAD_BAD_SECTION_TABLE)
 
 #define _UDYNLINK_EXPAND(x)                   x
 /**
@@ -275,8 +325,8 @@ typedef enum {
 #define UDYNLINK_HOST_ARCH_TAG UDYNLINK_ARCH_TAG_CORTEX_M4
 #endif
 
-/** ABI version of this loader (3.0). */
-#define UDYNLINK_LOADER_ABI_VERSION           UDYNLINK_MAKE_VERSION(3, 0)
+/** ABI version of this loader (3.1 — adds section placement; 3.0 images load unchanged). */
+#define UDYNLINK_LOADER_ABI_VERSION           UDYNLINK_MAKE_VERSION(3, 1)
 
 /**
  * @brief Architecture tag constants.
@@ -427,6 +477,15 @@ udynlink_error_t udynlink_validate_header(const udynlink_module_header_t *header
 /**
  * @brief Compute the RAM size required to load a module.
  *
+ * Returns the size of the module's **main RAM block** only: LOT, section
+ * base array (sectioned images), metadata (COPY_ALL), and the main
+ * .text/.data/.bss sections including their alignment padding.  Tagged
+ * sections are allocated separately by the loader; size their pools from
+ * udynlink_get_section_count()/udynlink_get_section_info().
+ *
+ * For a module built without section placement this is today's exact
+ * layout: no padding, no base array.
+ *
  * @param[in] header Pointer to the module header.
  * @param[in] mode   Intended load mode.
  *
@@ -438,12 +497,12 @@ size_t udynlink_compute_ram_size(const udynlink_module_header_t *header, udynlin
  * @brief Return the size of module metadata (everything before the code section).
  *
  * This is the byte offset from the start of the module image to the
- * beginning of the code section.  For non-contiguous images, this is the
+ * beginning of the code section.  For sectioned images the section table is
+ * part of the metadata.  For non-contiguous images, this is the
  * total size of the metadata buffers that must be provided.
  *
- * @param[in] header Pointer to the module header.
- *
- * @return Metadata size in bytes.
+ * @note Header-only: no byte beyond the 32-byte header is dereferenced, so
+ *       the function is safe on truncated buffers.
  */
 size_t udynlink_get_image_metadata_size(const udynlink_module_header_t *header);
 
@@ -519,19 +578,36 @@ const udynlink_sym_t *udynlink_image_get_symbol(const udynlink_module_image_t *i
  *                       the error-path cleanup may attempt to free garbage
  *                       pointers.
  * @param[in]  base_addr  Address of the module image in memory (e.g., flash).
- * @param[in]  load_addr  RAM address for the module, or NULL to auto-allocate.
+ *                       Must contain the complete image: for sectioned
+ *                       images the section table and tagged payloads extend
+ *                       past what the header sizes alone describe.
+ * @param[in]  load_addr  RAM address for the module's main block, or NULL
+ *                        to auto-allocate. Must be aligned to the module's
+ *                        main-block alignment (word-aligned for modules
+ *                        built without section placement); a misaligned
+ *                        address fails the load with
+ *                        ::UDYNLINK_ERR_LOAD_RAM_UNALIGNED.
  * @param[in]  load_size  Size of the region at @p load_addr (ignored if NULL).
  * @param[in]  load_mode  Copy mode (COPY_ALL, COPY_TEXT_DATA, or XIP).
  *
  * @return ::UDYNLINK_OK on success, or an error code on failure.
  *
  * @note When @p load_addr is NULL, the loader calls
- *       udynlink_external_malloc() to obtain RAM.
+ *       udynlink_external_malloc() for the main block and once per tagged
+ *       section (sectioned images require loader ABI 3.1; see
+ *       udynlink/udynlink_externals.h).
  * @note Before calling any function from the loaded module, the host
  *       must set r9 to @c p_mod->ram_base via UDYNLINK_PREPARE_CALL().
  * @note Not thread-safe. The loader uses no locks or atomics. Concurrent
  *       calls from multiple interrupt levels will corrupt internal state.
  *       The host must provide synchronization around load/unload.
+ * @note Alignment: modules built without section placement get only word
+ *       (4-byte) alignment — the data area starts at p_ram + num_lot * 4,
+ *       so __attribute__((aligned(N))) for N > 4 is not honored at runtime.
+ *       A sectioned image declares per-section alignments; the loader
+ *       aligns each main section inside the block and validates each
+ *       tagged section base returned by the allocator
+ *       (::UDYNLINK_ERR_LOAD_SECTION_UNALIGNED).
  */
 udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base_addr, void *load_addr, size_t load_size, udynlink_load_mode_t load_mode);
 
@@ -541,22 +617,43 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
  * Validates the header, allocates RAM, copies sections according to
  * @p load_mode, and applies relocations.
  *
- * For COPY_ALL mode, this function copies each section from the image
- * descriptor into a single contiguous RAM buffer.  For COPY_TEXT_DATA
- * and XIP modes, the metadata (header, relocations, symbol table) is
- * **not** copied; it must remain accessible via @c image->p_header for
- * post-load symbol lookups.  If your source metadata is not contiguous
- * with the header, use COPY_ALL.
+ * For COPY_ALL mode, this function copies the metadata (header, relocations,
+ * symbol table, and — for sectioned images — the section table) plus each
+ * section payload from the image descriptor into a single contiguous RAM
+ * buffer.  For COPY_TEXT_DATA and XIP modes, the metadata (header,
+ * relocations, symbol table, section table) is **not** copied; it must
+ * remain accessible via @c image->p_header for post-load symbol lookups.
+ * If your source metadata is not contiguous with the header, use COPY_ALL.
+ *
+ * For a sectioned image, the section payloads must be laid out contiguously
+ * after @c image->p_code in ascending VA order (code, data, then tagged
+ * sections; BSS has no payload) — exactly the layout
+ * udynlink_image_from_memory() produces.  Tagged sections are always
+ * allocated through udynlink_external_malloc() and copied/zeroed
+ * individually, in every load mode.
  *
  * @param[out] p_mod      Module handle to populate on success. Must be
  *                       zero-initialized by the caller before the first call.
  * @param[in]  image      Module image descriptor with all section pointers
  *                       valid for the duration of the load.
- * @param[in]  load_addr  RAM address for the module, or NULL to auto-allocate.
+ * @param[in]  load_addr  RAM address for the module's main block, or NULL to
+ *                        auto-allocate. Must be aligned to the module's
+ *                        main-block alignment (word-aligned for modules
+ *                        built without section placement); a misaligned
+ *                        address fails the load with
+ *                        ::UDYNLINK_ERR_LOAD_RAM_UNALIGNED.
  * @param[in]  load_size  Size of the region at @p load_addr (ignored if NULL).
  * @param[in]  load_mode  Copy mode (COPY_ALL, COPY_TEXT_DATA, or XIP).
  *
  * @return ::UDYNLINK_OK on success, or an error code on failure.
+ *
+ * @note Alignment: modules built without section placement get only word
+ *       (4-byte) alignment — the data area starts at p_ram + num_lot * 4,
+ *       so __attribute__((aligned(N))) for N > 4 is not honored at runtime.
+ *       A sectioned image declares per-section alignments; the loader
+ *       aligns each main section inside the block and validates each
+ *       tagged section base returned by the allocator
+ *       (::UDYNLINK_ERR_LOAD_SECTION_UNALIGNED).
  */
 udynlink_error_t udynlink_load_module_image(udynlink_module_t *p_mod,
     const udynlink_module_image_t *image,
@@ -585,11 +682,158 @@ udynlink_error_t udynlink_load_apply_relocations(udynlink_module_t *p_mod,
     const uint32_t *p_relocations,
     const uint32_t *p_symtab);
 
+////////////////////////////////////////////////////////////////////////////////
+// Public interface - section placement
+
+/**
+ * @brief Descriptor for one section of a module image.
+ *
+ * Filled by udynlink_get_section_info().  @c name points into the module
+ * image's symbol string pool and is valid as long as the image (or, for
+ * COPY_ALL loads, the loader's RAM copy of its metadata) is alive.
+ */
+typedef struct {
+    /** Section name, or NULL for unnamed sections and for the three
+     *  implicit main sections of a module built without section placement. */
+    const char *name;
+    /** Section size in bytes (multiple of 4). */
+    size_t      size;
+    /** Section alignment in bytes (power of two, >= 4). */
+    size_t      align;
+    /** Hint flags (::UDYNLINK_SEC_FLAG_NOCACHE et al); ::UDYNLINK_SEC_FLAG_MAIN
+     *  is masked out.  Bits 15:8 are host-defined pass-through. */
+    uint32_t    flags;
+    /** One of ::UDYNLINK_SEC_CLASS_CODE / _DATA / _BSS. Named @c sec_class
+     *  because @c class is a keyword in C++. */
+    uint8_t     sec_class;
+    /** Reserved; zeroed. */
+    uint8_t     reserved[3];
+} udynlink_section_info_t;
+
+/**
+ * @brief Number of sections declared by a module image.
+ *
+ * Modules built without section placement have three implicit sections
+ * (.text, .data, .bss) with the indices 0/1/2; a sectioned image reports the
+ * number of entries in its section table (the three main sections keep
+ * indices 0/1/2, tagged sections follow in ascending VA order).
+ *
+ * @param[in] p_header Pointer to the module image header.
+ *
+ * @return Section count, or 0 if @p p_header is NULL or its section table
+ *         is malformed.
+ */
+size_t udynlink_get_section_count(const udynlink_module_header_t *p_header);
+
+/**
+ * @brief Describe one section of a module image.
+ *
+ * Works both before a load (on an image header) and after one (on the
+ * loaded module's header).  For untagged modules the three implicit main
+ * sections are reported with @c name == NULL, @c align == 4 and empty flags.
+ *
+ * @param[in]  p_header Pointer to the module image header.
+ * @param[in]  idx      Section index in [0, udynlink_get_section_count()-1].
+ * @param[out] out      Descriptor to fill.
+ *
+ * @return ::UDYNLINK_OK on success, ::UDYNLINK_ERR_INVALID_MODULE for NULL
+ *         arguments or an out-of-range @p idx, or
+ *         ::UDYNLINK_ERR_LOAD_BAD_SECTION_TABLE if the section table is
+ *         malformed.
+ */
+udynlink_error_t udynlink_get_section_info(const udynlink_module_header_t *p_header, size_t idx,
+                                           udynlink_section_info_t *out);
+
+/**
+ * @brief Runtime base address of a loaded module's section.
+ *
+ * The DMA use case: the host asks for the address of the section holding a
+ * tagged buffer.  Indexing matches udynlink_get_section_info() (0/1/2 are
+ * the main .text/.data/.bss sections; in XIP mode the main .text base points
+ * into the source image).
+ *
+ * @param[in] p_mod Pointer to the loaded module handle.
+ * @param[in] idx   Section index.
+ *
+ * @return Section base address, or NULL if @p p_mod is not loaded or
+ *         @p idx is out of range.
+ */
+void *udynlink_get_section_base(const udynlink_module_t *p_mod, size_t idx);
+
+/**
+ * @brief One tagged-section move for udynlink_relocate_module_sections().
+ */
+typedef struct {
+    /** Section index (>= 3; main sections move only with the main block). */
+    size_t idx;
+    /** New base address for the section (already populated by the host). */
+    void *new_base;
+} udynlink_section_move_t;
+
+/**
+ * @brief Relocate a loaded module's main RAM block and listed tagged sections.
+ *
+ * Behaves like udynlink_relocate_module() for the main block (LOT, in-RAM
+ * code, main .data/.bss, and — for COPY_ALL — the in-RAM metadata are copied
+ * to @p new_ram and rebased), and additionally re-binds the tagged sections
+ * listed in @p moves:
+ *
+ * - The host must have **already copied each moved section's payload** to
+ *   @c new_base before calling; the loader never copies host-owned blocks.
+ *   The copied contents must be byte-identical to the pre-move contents:
+ *   the loader re-applies relocations from the image's relocation table and
+ *   reads/patches relocation slots in the moved data at their new addresses.
+ * - Relocations whose target or referenced value lies in a moved section are
+ *   re-applied using that section's move delta (new_base - old base); all
+ *   other sections contribute a delta of 0, so sections that did not move
+ *   keep their contents untouched unless they point into a moved section.
+ * - The loader does not free the old storage of a moved section: both the
+ *   old and the new block belong to the host, which moved it.
+ *
+ * EXTERN slots and host-overridden weak slots keep their host-absolute
+ * values.  As with udynlink_relocate_module(), every symbol address the host
+ * previously obtained (including udynlink_get_section_base() results) is
+ * stale after a successful call.
+ *
+ * @param[in,out] p_mod     Loaded module handle.
+ * @param[in]     new_ram   Destination for the main block, or NULL to
+ *                          auto-allocate through udynlink_external_malloc()
+ *                          with the module's main-block alignment.
+ * @param[in]     new_size  Size of @p new_ram (ignored when NULL); must be
+ *                          >= udynlink_get_ram_size(p_mod).
+ * @param[in]     moves     Array of section moves (may be NULL if
+ *                          @p num_moves is 0).
+ * @param[in]     num_moves Number of entries in @p moves.
+ *
+ * @return ::UDYNLINK_OK on success, or
+ *         ::UDYNLINK_ERR_INVALID_MODULE (bad handle, a move targeting a main
+ *         section, a duplicate section index, or moves requested on a module
+ *         built without section placement),
+ *         ::UDYNLINK_ERR_LOAD_RAM_LEN_LOW (caller buffer too small),
+ *         ::UDYNLINK_ERR_LOAD_OUT_OF_MEMORY (auto-alloc returned NULL),
+ *         ::UDYNLINK_ERR_LOAD_RAM_UNALIGNED (caller buffer violates the
+ *         main-block alignment),
+ *         ::UDYNLINK_ERR_LOAD_SECTION_UNRESOLVED (a move's @c new_base is
+ *         NULL),
+ *         ::UDYNLINK_ERR_LOAD_SECTION_UNALIGNED (a move's @c new_base
+ *         violates the section's declared alignment).
+ *
+ * @note Not thread-safe; the host must serialize with load/unload and must
+ *       not move a section while module code is executing.
+ */
+udynlink_error_t udynlink_relocate_module_sections(udynlink_module_t *p_mod,
+                                                   void *new_ram, size_t new_size,
+                                                   const udynlink_section_move_t *moves,
+                                                   size_t num_moves);
+
+
 /**
  * @brief Unload a previously loaded module.
  *
- * Releases the module's RAM (unless it was caller-supplied) and clears
- * the module handle.
+ * Releases the module's RAM — the main block (unless it was
+ * caller-supplied) and every tagged section the loader allocated — and
+ * clears the module handle.  Free callbacks receive the same (section,
+ * align, flags) arguments the allocation used.
  *
  * @param[in] p_mod Pointer to the loaded module handle.
  *
@@ -613,16 +857,16 @@ udynlink_error_t udynlink_unload_module(udynlink_module_t *p_mod);
  * The load mode is unchanged. For XIP the code stays in flash (code-delta 0);
  * only the LOT/data/bss RAM block moves.
  *
+ * Tagged sections of a sectioned module are absolute and unaffected — they
+ * stay where they are, so moving just the main block remains valid (use
+ * udynlink_relocate_module_sections() to move tagged sections as well).
+ *
  * @param[out] p_mod      Loaded module handle (must already be loaded).
  * @param[in]  new_ram    Destination RAM buffer, or NULL to auto-allocate via
- *                        udynlink_external_malloc(udynlink_get_ram_size(p_mod)).
+ *                        udynlink_external_malloc() with the module's
+ *                        main-block alignment.
  * @param[in]  new_size   Size of the buffer at @p new_ram (ignored when NULL);
  *                        must be >= udynlink_get_ram_size(p_mod).
- *
- * @return ::UDYNLINK_OK on success, or
- *         ::UDYNLINK_ERR_INVALID_MODULE (p_mod NULL/not loaded),
- *         ::UDYNLINK_ERR_LOAD_RAM_LEN_LOW (caller buffer too small),
- *         ::UDYNLINK_ERR_LOAD_OUT_OF_MEMORY (auto-alloc returned NULL).
  *
  * @note A module's RAM size is fixed per mode; @p new_size may be larger
  *       than needed (extra space unused) but never smaller than required.
@@ -662,8 +906,11 @@ const char *udynlink_error_msg(udynlink_error_t* err);
 /**
  * @brief Compute the RAM size required by a loaded module.
  *
- * The returned size includes the LOT, .data, .bss, and optionally the
- * code section depending on the load mode.
+ * The returned size is the module's main RAM block: LOT, section base array
+ * (sectioned images), metadata (COPY_ALL), and the main .text/.data/.bss
+ * sections with their alignment padding.  Tagged sections live outside this
+ * block; enumerate them with udynlink_get_section_count() /
+ * udynlink_get_section_base().
  *
  * @param[in] p_mod Pointer to the loaded module handle.
  *
@@ -769,26 +1016,68 @@ void udynlink_set_debug_level(udynlink_debug_level_t level);
 /**
  * @brief Compute the total on-disk size of a module image.
  *
- * @param[in] base_addr Address of the module image.
+ * For a module built without section placement this is the exact image
+ * size (header + relocation table + symbol table + code + data).
  *
- * @return Total size in bytes (header + code + data), or 0 if the
- *         signature is invalid.
+ * For a sectioned image this covers everything except the **tagged section
+ * payloads**: the header tables (including the section table, whose extent
+ * the header's section count fully determines) plus the main code/data
+ * payloads.  Tagged payloads are described only by the section table —
+ * size buffers holding sectioned images from the source (file size, array
+ * length) rather than from this function.
+ *
+ * Only the 32-byte header is dereferenced; @p base_addr must point at
+ * least at a complete header.
+ *
+ * @return Total size in bytes, or 0 if the signature is invalid.
  */
 size_t udynlink_get_image_size(const void *base_addr);
 
 /**
- * @brief Get the pointer to the code (.text) memory.
+ * @brief Compute the total image size without reading past @p avail bytes.
+ *
+ * Where ::udynlink_get_image_size() cannot see tagged-section payloads (it
+ * dereferences only the header), this returns the true total — the header
+ * tables, the main payloads, and the tagged CODE/DATA payloads whose sizes
+ * the section table declares.
+ *
+ * It is safe on untrusted input: every read is bounded by @p avail.  The
+ * table itself is only read once the lower bound from
+ * ::udynlink_get_image_size() has been shown to lie inside @p avail, which
+ * places the whole metadata block — section table included — inside the
+ * caller's buffer.
+ *
+ * @param[in] base_addr Module image start.
+ * @param[in] avail     Bytes the caller guarantees at @p base_addr.
+ *
+ * @return Total image size in bytes; 0 when it cannot be established within
+ *         @p avail (truncated buffer, malformed header, or an inconsistent
+ *         section table), in which case the image must not be loaded.
+ */
+size_t udynlink_get_image_size_bounded(const void *base_addr, size_t avail);
+
+/**
+ * @brief Get the pointer to the main .text memory.
+ *
+ * For sectioned images this is the main (.text) code section; tagged code
+ * sections live outside the main block and are reachable via
+ * udynlink_get_section_base().
  *
  * @param[in] p_mod Pointer to the loaded module handle.
  *
- * @return Pointer to the module's code section.
+ * @return Pointer to the module's main code section.
  */
 uint8_t *udynlink_get_text_pointer(const udynlink_module_t *p_mod);
 
 /**
  * @brief Return the RAM required to load a module from memory.
  *
- * @param[in] base_addr Address of the module image.
+ * Main RAM block only — see udynlink_compute_ram_size().  Tagged sections
+ * of a sectioned image are allocated separately; size their pools from
+ * udynlink_get_section_count()/udynlink_get_section_info().
+ *
+ * @param[in] base_addr Address of the module image (must be a complete
+ *                      image when the section-table flag is set).
  * @param[in] mode      Intended load mode.
  *
  * @return Required RAM size in bytes.

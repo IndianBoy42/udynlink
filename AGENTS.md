@@ -30,7 +30,7 @@ All user-facing documentation lives under `docs/` and is summarized in `docs/REA
 
 | Guide | Description |
 |-------|-------------|
-| `docs/how-it-works.md` | Technical deep-dive: PIC model, LOT/r9 mechanism, relocations, binary format, ABI versioning |
+| `docs/how-it-works.md` | Technical deep-dive: PIC model, LOT/r9 mechanism, relocations, binary format, multi-region memory placement, ABI versioning |
 | `docs/integrating-as-host.md` | Adding udynlink to your firmware, implementing callbacks, symbol tables, lifecycle, thread safety |
 |`docs/writing-modules.md`|Creating loadable C/C++ modules, consuming symbols, mkmodule reference|
 |`docs/protobuf-modules.md`|Compiling `.proto` definitions into parse/write UDLM modules (`scripts/proto2module`), 1-module-per-struct overhead analysis|
@@ -95,7 +95,8 @@ Additional flags:
 - `--mcpu <cpu>` — target CPU (default: `cortex-m4`)
 - `--target <name>` — target from the target database (default: `cortex-m4`). Supported: `cortex-m0`, `cortex-m0plus`, `cortex-m3`, `cortex-m4`, `cortex-m4f`, `cortex-m7`, `cortex-m33`, `cortex-m55`, `cortex-m85`
 - `--mod-version <ver>` — module ABI version (default: `1.0`)
-- `--udynlink-version <ver>` — loader ABI version (default: `3.0`)
+- `--udynlink-version <ver>` — loader ABI version (default: `3.0`; forced to ≥ `3.1` with `--section`)
+- `--section NAME[:align=N][:flags=NOCACHE,DMA,SHARED,host0..host7]` — repeatable; tag a named section for multi-region placement (generates the linker script, emits the image section table; host places it via the section-aware allocator callbacks). Mutually exclusive with `--pc-rel` and `--no-long-calls`. See `docs/writing-modules.md`
 - `--no-prologue` — omit assembly prologue wrappers; sets `UDYNLINK_ARCH_FLAG_NO_PROLOGUE` in the module header
 - `--lto` — link-time optimization (GCC `-flto`, fat objects, `--wrap`-based prologues; see `docs/writing-modules.md` → LTO Mode)
 - `--workdir <dir>` — directory for intermediate files (`*.o`, `*.elf`, `*.s`) and the default `.bin` output, keeping the source tree clean (default: next to source; also via `UDYNLINK_WORKDIR` env var)
@@ -155,8 +156,9 @@ just help                      # Show detailed help with examples
 
 # Build
 just build-lib                 # Build core library
-just build-tests               # Build tests (default: stm32f429_discovery)
-just build-tests mps2_an386    # Build for MPS2-AN386 platform
+just build-tests               # Configure+build the test host (needs a staged test
+                              # source dir — see "Build the test host firmware" below)
+just build-tests mps2_an386    # Same, for the MPS2-AN386 platform
 
 # Module compilation
 just module source.c            # Compile module for default target
@@ -191,11 +193,24 @@ cmake -B build -S . -DUDYNLINK_BUILD_TESTS=ON
 cmake --build build --target test1.elf
 ```
 
-**Standalone** (from `tests/qemu_host/`, builds the core library automatically):
+**Standalone** (builds the core library automatically) — **currently fails at CMake configure unless a test source dir is staged**:
 ```bash
-cmake -B tests/build -S tests/qemu_host -DUDYNLINK_BUILD_TESTS=ON
+# FAILS out of the box: "Cannot find source file ... test_qemu.c".
+# tests/qemu_host/src/ has no test_qemu.c — the test driver stages it into a
+# per-test source dir and passes it via -DUDYNLINK_TEST_SRC_DIR (that is what
+# `just test-<platform>` / `just test-f429-single <name>` do).
+just build-tests
+
+# Equivalent standalone configure that works once you point it at a staged
+# source dir (any dir containing a test's test_qemu.c, e.g. tests/test-globals1/):
+cmake -B tests/build -S tests/qemu_host -DUDYNLINK_BUILD_TESTS=ON \
+    -DUDYNLINK_TEST_SRC_DIR=$PWD/tests/test-globals1
 cmake --build tests/build
 ```
+
+Real per-test builds always go through the driver (`just test-mps2`,
+`just test-f429-single <name>`, ...); `just build-tests` alone is only useful
+after staging a test source dir as above.
 
 The platform is selected via `-DUDYNLINK_PLATFORM=<name>` (default: `stm32f429_discovery`), which loads the corresponding file from `tests/platforms/<name>/`.
 
@@ -204,8 +219,9 @@ The platform is selected via `-DUDYNLINK_PLATFORM=<name>` (default: `stm32f429_d
 | Header | Layer | Provides | When to use |
 |--------|-------|----------|-------------|
 | `udynlink.h` | Core (required) | Load, unload, symbol lookup, validation, linking primitives | Always |
-| `udynlink_externals.h` | Core (required) | `udynlink_external_malloc`, `udynlink_external_free`, `udynlink_external_vprintf`, `udynlink_external_resolve_symbol`, `udynlink_external_is_pointer_in_ram` | Always (host must implement) |
+| `udynlink_externals.h` | Core (required) | `udynlink_external_malloc(size, section, align, flags)`, `udynlink_external_free(p, section, align, flags)` (section-aware since loader ABI 3.1; `section == NULL` = the module's main block), `udynlink_external_vprintf`, `udynlink_external_resolve_symbol`, `udynlink_external_is_pointer_in_ram` | Always (host must implement) |
 | `udynlink_call.h` | Optional (inline) | `udynlink_func_t`, `udynlink_resolve_func()`, `UDYNLINK_CALL`, `UDYNLINK_CALL_MODULE_FUNC` | Convenient r9 save/restore around module calls |
+| `udynlink_section.h` | Module-facing (inline, via `mkmodule -I`) | `UDYNLINK_SECTION(name)`, `UDYNLINK_SECTION_ALIGNED(name, al)` — tag objects into named, host-placed sections (`.udynlink.sec.<name>`) | Module sources using multi-region placement (`mkmodule --section`) |
 |`udynlink_deps.h`|Optional (separate .c)|Cross-module thunks, dependency tracking, circular detection, `UDYNLINK_REQUIRES`, `UDYNLINK_THUNK_EXPORT`|Modules that call other modules|
 |`udynlink_deps_api.h`|Optional (inline, module-facing)|`UDYNLINK_REQUIRES`, `UDYNLINK_THUNK_GATEWAY`, `UDYNLINK_THUNK_EXPORT` — self-contained, no host API|Module sources declaring deps / preallocated thunk exports (reached via `mkmodule -I`)|
 |`udynlink_thunk.h`|Optional (separate .c)|Thunk pool, gateway/stub allocation, `udynlink_thunk_make_call()`, `udynlink_external_find_stub()`|Creating callable function pointers for module symbols without r9 management|
@@ -227,8 +243,7 @@ The platform is selected via `-DUDYNLINK_PLATFORM=<name>` (default: `stm32f429_d
 - The `--no-prologue` flag skips the assembly wrapper and sets `UDYNLINK_ARCH_FLAG_NO_PROLOGUE` in the module header. The host must use `UDYNLINK_PREPARE_CALL()` to set `r9` directly for such modules.
 
 ### Host Firmware Integration
-The host MCU firmware must implement the functions in `udynlink/udynlink_externals.h`:
-- `udynlink_external_malloc` / `udynlink_external_free`
+- `udynlink_external_malloc` / `udynlink_external_free` (section-aware since ABI 3.1: `(size|ptr, section, align, flags)`; `section == NULL` is the module's main RAM block, non-NULL names a tagged section the host must place — see `docs/integrating-as-host.md` → Multi-Region Memory Placement)
 - `udynlink_external_vprintf` (debug logging)
 - `udynlink_external_resolve_symbol` (bind foreign symbols at load time)
 - `udynlink_external_is_pointer_in_ram`
@@ -251,13 +266,13 @@ Undefined weak symbols (`STB_WEAK` + `SHN_UNDEF`) are treated as `external` and 
 - Heavily templated C++ modules can ship symbol tables larger than their code+data. `mkmodule` offers four opt-in bloat-reduction flags (`--strip-hidden-syms`, `--strip-non-public-syms`, `--strip-mangled-syms`, `--strip-weak-sym-names`) that demote defined symbols to nameless internal entries without changing loader or binary format. See `docs/writing-modules.md` → "Controlling C++ Symbol-Table Size".
 
 ### Module Image Format
-Binary modules start with the signature `UDLM`, followed by a 32-byte header, relocation table, symbol table, `.text`, and `.data`. The loader (`udynlink_load_module`) validates the signature, checks ABI version, applies relocations, and resolves extern symbols.
+Binary modules start with the signature `UDLM`, followed by a 32-byte header, relocation table, symbol table, optional section table (multi-region placement: header `flags` bit 0 `UDYNLINK_HDR_FLAG_SECTIONS`, bits 7:1 the section count 1..63; the table is count-less 24-byte entries; sectioned images require `udynlink_version >= 3.1`; untagged images stay byte-identical to the 3.0 format), `.text`, and `.data`. The loader (`udynlink_load_module`) validates the signature, checks ABI version, applies relocations, and resolves extern symbols.
 
-Binary layout: [Header 32B] [Relocs] [Symtab] [Code] [Data]
+Binary layout: [Header 32B] [Relocs] [Symtab] [Section table (optional, `UDYNLINK_HDR_FLAG_SECTIONS`)] [Code] [Data] — payloads in ascending VA order, BSS skipped.
 
 Relocation types handled: `R_ARM_GOT_BREL` (LOT), `R_ARM_ABS32` and `R_ARM_TARGET1` (data), `R_ARM_THM_CALL`/`R_ARM_THM_JUMP24` (ignored, PC-relative).
 
-The header contains `mod_version`, `udynlink_version`, and `arch_tag` fields for runtime compatibility checking. `arch_tag` encodes the core family, FPU presence, and float ABI.
+The header contains `mod_version`, `udynlink_version`, `arch_tag`, and `flags` fields for runtime compatibility checking. `arch_tag` encodes the core family, FPU presence, and float ABI.
 
 ### Three Load Modes
 All tests validate all three modes by default:

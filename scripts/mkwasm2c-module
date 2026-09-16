@@ -410,13 +410,42 @@ def generate_shim(shim_path, module_name, h_name, mem_info, exports, imports, ar
         lines.append("")
 
     # Custom malloc / free hooks
+    #
+    # Hook signatures are the plain (size)/(p) pair — the module never knows
+    # about sections. The one exception: if the host names the udynlink
+    # callbacks themselves as hooks (the historical default before the weak
+    # runtime hooks existed), the calls gain the extended allocator
+    # arguments: no section, alignment 8 (the widest thing linear memory or
+    # a funcref table stores through these buffers).
+    def malloc_call(hook: str) -> str:
+        if hook == "udynlink_external_malloc":
+            return "%s(size, NULL, 8, 0)" % hook
+        return "%s(size)" % hook
+
+    def free_call(hook: str) -> str:
+        if hook == "udynlink_external_free":
+            return "%s(p, NULL, 8, 0)" % hook
+        return "%s(p)" % hook
+
     if args.malloc:
-        lines.append("void* %s(size_t);" % args.malloc)
-        lines.append("void* wasm_rt_malloc(size_t size) { return %s(size); }" % args.malloc)
+        if args.malloc == "udynlink_external_malloc":
+            lines.append("#include <stddef.h>")
+            lines.append("#include <stdint.h>")
+            lines.append("void* %s(size_t size, const char *section, size_t align, uint32_t flags);"
+                         % args.malloc)
+        else:
+            lines.append("void* %s(size_t);" % args.malloc)
+        lines.append("void* wasm_rt_malloc(size_t size) { return %s; }" % malloc_call(args.malloc))
         lines.append("")
     if args.free:
-        lines.append("void %s(void*);" % args.free)
-        lines.append("void wasm_rt_mem_free(void* p) { %s(p); }" % args.free)
+        if args.free == "udynlink_external_free":
+            lines.append("#include <stddef.h>")
+            lines.append("#include <stdint.h>")
+            lines.append("void %s(void *p, const char *section, size_t align, uint32_t flags);"
+                         % args.free)
+        else:
+            lines.append("void %s(void*);" % args.free)
+        lines.append("void wasm_rt_mem_free(void* p) { %s; }" % free_call(args.free))
         lines.append("")
 
     # External memory: the buffer setter is part of the module's public API

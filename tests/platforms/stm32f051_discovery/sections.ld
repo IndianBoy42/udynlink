@@ -118,6 +118,17 @@ SECTIONS
         __bss_end__ = .;
         _ebss = . ;
     } >RAM
+    /* Secondary placement pool for sectioned modules (see tests/qemu_host/src/main.c).
+     * NOLOAD: no initialized data, so it adds no zero-filled image to flash, and
+     * it must live in RAM. Declared here so orphan placement cannot put it in
+     * the load image or in an unintended region. */
+    .altpool (NOLOAD) : ALIGN(32)
+    {
+        __altpool_start__ = .;
+        *(.altpool .altpool.*)
+        __altpool_end__ = .;
+    } >RAM
+
 
     .noinit (NOLOAD) : ALIGN(4)
     {

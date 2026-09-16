@@ -7,7 +7,7 @@
 {% for s, actname in sym_names.items() %}
     .thumb_func
     .align 1
-    .section .text_nogc, "x"
+    .section {{sym_sections[s]}}
     {# Weak function prologues must be emitted as .weak so the final ELF
        preserves STB_WEAK binding.  Non-weak exports use .globl. #}
     {% if s in weak_names %}

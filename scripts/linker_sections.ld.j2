@@ -1,0 +1,83 @@
+ENTRY(main)
+
+{# Multi-region linker script rendered by mkmodule --section.
+
+   One MEMORY region per declared placement section plus the main region.
+   Regions are spaced through the flat link address space (main at 0, tag k
+   at 0x02000000*(k+1), 16 MiB each) so a direct cross-region call cannot be
+   encoded: the PC-relative branch range is exceeded and the link fails
+   loudly instead of misplacing the call at runtime.  Tagged sections are
+   KEEP()ed because explicit placement must survive --gc-sections even when
+   nothing inside the module references the placed content. #}
+
+/* Specify the memory areas */
+MEMORY
+{
+  main (RWX) : ORIGIN = 0x00000000, LENGTH = 0x02000000
+{% for s in sections %}
+  {{s.name}} (RWX) : ORIGIN = {{s.origin}}, LENGTH = 0x01000000
+{% endfor %}
+}
+
+/* Define output sections */
+SECTIONS
+{
+  /* The startup code goes first into internal flash */
+  .text :
+  {
+    . = ALIGN(4);
+    KEEP(*(.text_nogc))
+    *(.text)                 /* .text sections (code) */
+    *(.text*)                /* .text* sections (code) */
+    *(.rodata)               /* .rodata sections (constants, strings, etc.) */
+    *(.rodata*)              /* .rodata* sections (constants, strings, etc.) */
+    . = ALIGN(4);
+  } > main
+
+  .data :
+  {
+    . = ALIGN(4);
+    *(.data)                 /* .data sections */
+    *(.data*)                /* .data* sections */
+    *(.sdata)                /* small-data section (ARM EABI small data area) */
+    *(.sdata*)
+. = ALIGN(4);
+		KEEP(*(.init))
+		__preinit_array_start = .;
+		KEEP (*(.preinit_array))
+		__preinit_array_end = .;
+		__init_array_start = .;
+		KEEP (*(.init_array))
+		__init_array_end = .;
+		. = ALIGN(4);
+  } > main
+
+  .bss :
+  {
+    . = ALIGN(4);
+    *(.bss)
+    *(.bss*)
+    *(.sbss)                 /* small-bss section (ARM EABI small data area) */
+    *(.sbss*)
+    *(COMMON)
+    /* Thunk-export stub/gateway slots (UDYNLINK_THUNK_EXPORT).
+     * Unreferenced, so KEEP is required to survive --gc-sections. */
+    KEEP(*(.bss.udynlink_thunk_pool))
+    . = ALIGN(4);
+  } > main
+
+{% for s in sections %}
+  .udynlink.sec.{{s.name}} :
+  {
+    . = ALIGN(4);
+    KEEP(*(.udynlink.sec.{{s.name}}))
+    KEEP(*(.udynlink.sec.{{s.name}}.*))
+    . = ALIGN(4);
+  } > {{s.name}}
+
+{% endfor %}
+  .got :
+  {
+    *(.got*)
+  } > main
+}

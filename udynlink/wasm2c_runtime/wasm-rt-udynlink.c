@@ -73,12 +73,19 @@ int memcmp(const void* s1, const void* s2, size_t n) {
 /*  Host integration hooks (weak → udynlink_external_*)                      */
 /* -------------------------------------------------------------------------- */
 
+/* The runtime owns no tagged sections: its allocations (linear memory,
+ * funcref/externref tables) all live in the host's default pool, hence
+ * section = NULL. Alignment 8 covers the widest thing stored through these
+ * buffers (f64/i64 in linear memory, pointers in tables) on every target
+ * this runtime builds for; the wasm linear memory is page-granular anyway. */
+#define WASM_RT_HOOK_ALIGN 8u
+
 __attribute__((weak)) void* wasm_rt_malloc(size_t size) {
-    return udynlink_external_malloc(size);
+    return udynlink_external_malloc(size, NULL, WASM_RT_HOOK_ALIGN, 0);
 }
 
 __attribute__((weak)) void wasm_rt_mem_free(void* p) {
-    udynlink_external_free(p);
+    udynlink_external_free(p, NULL, WASM_RT_HOOK_ALIGN, 0);
 }
 
 __attribute__((weak)) void* wasm_rt_mem_realloc(void* p, size_t old_size, size_t new_size) {

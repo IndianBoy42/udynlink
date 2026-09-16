@@ -11,6 +11,7 @@ This guide is for module authors who want to write C or C++ code that can be loa
 - [Cross-Module Calls](#cross-module-function-calls)
 - [C++ Modules](#c-modules)
 - [Data and Variables in Modules](#data-and-variables-in-modules)
+- [Memory Regions and Section Placement](#memory-regions-and-section-placement)
 - [Target Selection and Cross-Compilation](#target-selection-and-cross-compilation)
 - [The mkmodule Command Reference](#the-mkmodule-command-reference)
 - [Building and Distributing Modules](#building-and-distributing-modules)
@@ -549,6 +550,145 @@ void start_timer(void) {
 }
 ```
 
+### Section Placement
+
+Without `--section`, the module image packs a single `.text`, a single
+`.data` and a single `.bss` blob; the linker script folds the common
+input-section variants into them (`.text*`/`.rodata*`/`.text_nogc` into
+`.text`, `.data*`/`.sdata` into `.data`, `.bss*`/`.sbss`/`COMMON`/
+`.bss.udynlink_thunk_pool` into `.bss`). A custom placement such as
+
+```c
+__attribute__((section(".fastdata"))) int x = 1;
+```
+
+fails the build with an error that names the offending section (`.fastdata`)
+and the symbols stranded in it, because the packed image format has nowhere
+to carry them. Place such objects in `.data`/`.bss` (or `.text` for code) —
+or, when they genuinely belong in different memory, declare a placement
+section as described in [Memory Regions and Section Placement](#memory-regions-and-section-placement).
+
+### Data Alignment
+
+Without `--section`, the loader guarantees only **4-byte alignment** for
+module data: the RAM arena that holds `.data` and `.bss` starts at a
+4-byte-aligned address and the sections are laid out in 4-byte steps.
+`__attribute__((aligned(N)))` with `N > 4` on module variables is therefore
+not honored at runtime — `mkmodule` prints a warning naming the required
+alignment when it detects this, and the variable ends up at a merely
+4-byte-aligned address. Code that dereferences such a variable with
+alignment-sensitive instructions (`ldrd`/`strd`, floating-point loads, DMA
+descriptors) can fault or corrupt data. The fix is a placement section:
+`--section <name>` plus `UDYNLINK_SECTION_ALIGNED("<name>", N)` makes the
+alignment real — the host places the whole section at a suitably aligned
+address (see [Memory Regions and Section Placement](#memory-regions-and-section-placement)).
+
+## Memory Regions and Section Placement
+
+Microcontrollers do not have one uniform RAM: there is tightly coupled
+memory for time-critical code and data, DMA-capable SRAM, non-cacheable
+regions for coherency, memory shared with other cores. A plain module gets
+one host-provided RAM block for everything; **placement sections** let a
+module state, per object or function, which kind of memory it needs. The
+host stays in control: it resolves every section to a real address at load
+time through its allocator callbacks (see [Integrating as a Host](integrating-as-host.md)).
+
+Modules built **without** `--section` are unaffected: the image is
+byte-identical to the plain format and takes the plain load path.
+
+### Tagging Code and Data
+
+Include `udynlink/udynlink_section.h` (self-contained; add the udynlink
+include directory to mkmodule via `-I`) and tag objects or functions:
+
+```c
+#include "udynlink_section.h"
+
+UDYNLINK_SECTION("dtcm") volatile int dtcm_counter = 7;            /* data  */
+UDYNLINK_SECTION_ALIGNED("dma", 32) volatile unsigned char
+    dma_buf[64];                                                    /* 32-byte-aligned DMA buffer */
+UDYNLINK_SECTION("fastcode") int fast_scale(int v) { return v * 2; } /* code */
+```
+
+- `UDYNLINK_SECTION(name)` places the object/function into placement
+  section `name`; `UDYNLINK_SECTION_ALIGNED(name, al)` additionally raises
+  the alignment requirement to `al` bytes (power of two).
+- Both work on objects **and** functions. Whether a section counts as code
+  or data is derived from what it contains, not from the attribute.
+- Zero-initialized objects (`.bss`-like) are carried as class `BSS`: the
+  loader zeroes them, and the image carries no payload for them.
+- Every tag used in the sources **must** be declared to mkmodule with
+  `--section <name>`; an undeclared tag is a hard build error (an
+  undeclared placement section would be silently dropped by
+  `--gc-sections`).
+
+### Declaring Sections on the Command Line
+
+```bash
+python3 mkmodule --section dtcm \
+                 --section dma:align=32:flags=DMA,NOCACHE \
+                 --section fastcode -I /path/to/udynlink hello.c
+```
+
+```
+--section NAME[:align=N][:flags=F1,F2,...]     (repeatable)
+```
+
+| Part | Meaning |
+|------|---------|
+| `NAME` | `[A-Za-z_][A-Za-z0-9_]*` (it names a linker memory region; `main` is reserved). The tag used in `UDYNLINK_SECTION("NAME")`. |
+| `align=N` | Alignment the host must honor when placing the section. Power of two, `>= 4`, default `4`. Content needing more (e.g. `UDYNLINK_SECTION_ALIGNED`) raises it — mkmodule warns when that happens. |
+| `flags=...` | Comma-separated hint flags, below. Unknown names are rejected with the valid set. |
+
+Hint flags (bit values as carried in the image; the loader never interprets
+them — they are inputs to the host's placement policy):
+
+| Flag | Bit | Meaning |
+|------|-----|---------|
+| `NOCACHE` | `0x01` | Host should map the memory non-cacheable (e.g. DMA coherency). |
+| `DMA` | `0x02` | Must be reachable by the DMA controller (e.g. not DTCM/ITCM). |
+| `SHARED` | `0x04` | May be shared with other modules or host code. |
+| `host<N>` | `1 << (8+N)`, `N` in `0..7` | Host-private hint; passed through untouched. |
+
+### Version Requirement
+
+Sectioned images declare loader ABI **3.1**. Without an explicit
+`--udynlink-version`, `--section` builds default to `3.1`; an explicitly
+passed lower version is rejected (an old 3.0 loader would reject the image
+anyway, by version fence). Untagged builds keep the `3.0` default.
+
+### Guards
+
+Some code models cannot survive placement, so `mkmodule` rejects them up
+front or at link time:
+
+- `--pc-rel` combined with `--section`: PC-relative data addressing bakes
+  in the link-time placement, so the section could not be resolved to a
+  different address at load time.
+- `--no-long-calls` combined with `--section`: direct `bl` branches cannot
+  cross placement sections. (The default `-mlong-calls` routes every call
+  through the LOT, which is placement-agnostic.)
+- Any direct branch (`R_ARM_THM_CALL`/`R_ARM_THM_JUMP24`) whose target
+  lands in a different section than the call site is a hard error naming
+  both sections and the symbol — a direct branch cannot be relocated to
+  unrelated runtime addresses. Exported functions are safe automatically:
+  their prologue wrappers are emitted into the same placement section as
+  the function body.
+
+### What the Host Does
+
+At load time the loader asks the host to place each tagged section — one
+`udynlink_external_malloc` call per section, named by section and carrying
+the declared alignment and hint flags — then copies or zeroes the section
+content at the returned address and validates the alignment. A host
+returning `NULL` (or an under-aligned pointer) fails the load with a
+section-specific error after freeing everything already allocated. The
+main RAM block keeps today's single-allocation behavior (the callback
+distinguishes it by a `NULL` section name). See
+[Integrating as a Host](integrating-as-host.md) for the callback signature
+and a pool example, and [API Reference](api-reference.md) for
+`udynlink_get_section_info`/`udynlink_get_section_base`.
+
 ## Target Selection and Cross-Compilation
 
 ### Choosing the Right Target
@@ -634,13 +774,14 @@ Source files are compiled with:
 | `--gen-c-header` | Generate a C header file containing the binary as a `static const unsigned char` array. |
 | `--header-path <dir>` | Directory where the generated C header is written. Default: current directory. |
 | `--mod-version <ver>` | Module ABI version in `major.minor` format. Default: `1.0`. |
-| `--udynlink-version <ver>` | Minimum loader ABI version required. Default: `3.0`. |
+| `--udynlink-version <ver>` | Minimum loader ABI version required. Default: `3.0` (`3.1` for `--section` builds without an explicit version; a lower explicit version together with `--section` is rejected). |
 | `--build-flags <flags>` | Extra compiler flags prepended to the compile command. |
-| `-I <dir>`, `--include-dir <dir>` | Add a directory to the module compile include path (repeatable). Module sources can then `#include` udynlink headers — e.g. `udynlink_deps_api.h` for `UDYNLINK_REQUIRES` / `UDYNLINK_THUNK_*` — instead of pasting macros inline. Passed after `--build-flags` (so a conflicting `-I` there wins); applies to module sources only. |
+| `-I <dir>`, `--include-dir <dir>` | Add a directory to the module compile include path (repeatable). Module sources can then `#include` udynlink headers — e.g. `udynlink_deps_api.h` for `UDYNLINK_REQUIRES` / `UDYNLINK_THUNK_*`, `udynlink_section.h` for `UDYNLINK_SECTION*` — instead of pasting macros inline. Passed after `--build-flags` (so a conflicting `-I` there wins); applies to module sources only. |
 | `--module-name <name>` | Explicit module name. Default is derived from the first source file name. |
 | `--disasm` | Show disassembly of `.text` after linking. |
-| `--pc-rel` | Allow pc-relative addressing. |
-| `--no-long-calls` | Do not use `-mlong-calls`. |
+| `--section NAME[:align=N][:flags=F1,F2]` | Place tagged code/data into a dedicated host-placed memory region (repeatable). See [Memory Regions and Section Placement](#memory-regions-and-section-placement). Requires `--udynlink-version >= 3.1`; incompatible with `--pc-rel` and `--no-long-calls`. |
+| `--pc-rel` | Allow pc-relative addressing. Not compatible with `--section` (data placement could not be resolved at load time). |
+| `--no-long-calls` | Do not use `-mlong-calls`. Not compatible with `--section` (direct branches cannot cross placement sections). |
 | `--stop-after-compile` | Stop after compiling source files to `.o`. |
 | `--stop-after-link` | Stop after linking to `.elf`. |
 | `--no-verbose` | Do not print executed commands. |

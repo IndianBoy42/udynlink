@@ -8,6 +8,7 @@
 - [Symbol Constants](#symbol-constants)
 - [Architecture Tag Constants and Macros](#architecture-tag-constants-and-macros)
 - [Module Loading Functions](#module-loading-functions)
+- [Section Query and Placement Functions](#section-query-and-placement-functions)
 - [Module Query Functions](#module-query-functions)
 - [Symbol Lookup Functions](#symbol-lookup-functions)
 - [RAM Requirement Functions](#ram-requirement-functions)
@@ -59,7 +60,7 @@ typedef struct {
     uint16_t  arch_tag;          // Target architecture tag + float ABI
     uint16_t  num_lot;           // Number of Linker Offset Table entries
     uint16_t  num_rels;          // Number of relocations
-    uint16_t  reserved;          // Reserved (must be 0)
+    uint16_t  flags;             // Bit 0: UDYNLINK_HDR_FLAG_SECTIONS; bits 7:1: section count
     uint32_t  symt_size;         // Size of symbol table in bytes
     uint32_t  code_size;         // Size of .text section in bytes
     uint32_t  data_size;         // Size of .data section in bytes
@@ -77,7 +78,7 @@ typedef struct {
 | `arch_tag` | Encodes the target core family, FPU presence, and float ABI. See [Architecture Tag Constants](#architecture-tag-constants-and-macros). |
 | `num_lot` | Number of entries in the Linker Offset Table. The LOT is the first region allocated in module RAM. |
 | `num_rels` | Number of `(lot_offset, symt_offset)` relocation pairs. |
-| `reserved` | Reserved field (must be 0). |
+| `flags` | Header flag bits. Bit 0 = `UDYNLINK_HDR_FLAG_SECTIONS`: the image carries a [section table](#section-query-and-placement-functions) (multi-region placement). Bits 7:1 hold the section count (1..63, meaningful only when bit 0 is set). Bits 15:8 are reserved and must be 0. Modules built without section placement always have `flags == 0`. |
 | `symt_size` | Size of the symbol table blob in bytes. |
 | `code_size` | Size of the `.text` section. |
 | `data_size` | Size of the initialized `.data` section. |
@@ -85,10 +86,9 @@ typedef struct {
 
 **Binary layout after the header:**
 
-```
 [Header: 32 bytes] [Relocations: num_rels * 8 bytes] [Symbol table: symt_size bytes]
-[Code] [Data]
-```
+[Section table: num_sections * 24 bytes (only when UDYNLINK_HDR_FLAG_SECTIONS is set; count in flags bits 7:1)]
+[Section payloads in ascending VA order, BSS skipped (untagged: [Code] [Data])]
 
 ---
 
@@ -237,7 +237,7 @@ Error codes returned by loader functions.
 | `1` | `UDYNLINK_ERR_LOAD_INVALID_SIGN` | The module signature does not match "UDLM". |
 | `2` | `UDYNLINK_ERR_LOAD_RAM_LEN_LOW` | The caller-provided `load_size` is smaller than the RAM required by the module. |
 | `3` | `UDYNLINK_ERR_LOAD_OUT_OF_MEMORY` | `udynlink_external_malloc` returned `NULL`. |
-| `4` | `UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED` | XIP is not supported because the code pointer is not in an executable region. |
+| `4` | `UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED` | Reserved. Not returned by the current loader: XIP loads perform no RAM/executability validation. |
 | `5` | `UDYNLINK_ERR_LOAD_INVALID_MODE` | An invalid load mode was specified. |
 | `6` | `UDYNLINK_ERR_LOAD_BAD_RELOCATION_TABLE` | A relocation references an out-of-range symbol, or a relocation targets the module name entry. |
 | `7` | `UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL` | An `extern` symbol could not be resolved by the host. |
@@ -247,6 +247,10 @@ Error codes returned by loader functions.
 | `11` | `UDYNLINK_ERR_LOAD_IO_ERROR` | Reserved. Previously used for streaming I/O read failures. |
 | `12` | `UDYNLINK_ERR_INVALID_MODULE` | A `NULL` module pointer was passed, or the module handle is uninitialized. |
 | `13` | `UDYNLINK_ERR_LOAD_HOOK_ABORTED` | Reserved. Previously used when a streaming load lifecycle hook returned non-OK. |
+| `14` | `UDYNLINK_ERR_LOAD_RAM_UNALIGNED` | The module's RAM base is not word (4-byte) aligned — a caller-supplied `load_addr` was misaligned, or `udynlink_external_malloc` returned a misaligned block. |
+| `15` | `UDYNLINK_ERR_LOAD_SECTION_UNRESOLVED` | A tagged section could not be placed: `udynlink_external_malloc` returned `NULL` for a sectioned module's section (or main block). Everything allocated before the failure is freed. |
+| `16` | `UDYNLINK_ERR_LOAD_SECTION_UNALIGNED` | The base returned by `udynlink_external_malloc` for a tagged section does not meet that section's declared alignment. |
+| `17` | `UDYNLINK_ERR_LOAD_BAD_SECTION_TABLE` | The image's section table is malformed or inconsistent: an invalid `flags` count combination (bit 0 clear with a nonzero count, or a count above 63), entries not sorted by `va`, overlapping VA ranges, a size not a multiple of 4, an invalid `align` (not a power of two ≥ 4) or `class`, a `name_off` outside the symbol-table string pool, or implementation caps exceeded. |
 
 ---
 
@@ -338,7 +342,7 @@ Bits [15:7] — Reserved
 
 | Macro | Value | Description |
 |-------|-------|-------------|
-| `UDYNLINK_LOADER_ABI_VERSION` | `UDYNLINK_MAKE_VERSION(3, 0)` | The ABI version of the current loader. Modules with a higher `udynlink_version` are rejected. |
+| `UDYNLINK_LOADER_ABI_VERSION` | `UDYNLINK_MAKE_VERSION(3, 1)` | The ABI version of the current loader. Modules with a higher `udynlink_version` are rejected. The 3.1 minor bump covers the multi-region section table: sectioned images must declare `udynlink_version >= 3.1`; untagged modules keep 3.0 and stay loadable by older loaders. |
 
 ### No-Prologue Flag
 
@@ -353,6 +357,12 @@ static inline int udynlink_module_has_no_prologue(const udynlink_module_header_t
 ```
 
 Returns non-zero if the module was built with `--no-prologue` (the `UDYNLINK_ARCH_FLAG_NO_PROLOGUE` bit is set in `arch_tag`). No-prologue modules omit the assembly wrapper for exported functions; the host must set `r9` directly via `UDYNLINK_PREPARE_CALL()` or use `UDYNLINK_CALL()` before calling any module function.
+
+### Header Flag Constants
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `UDYNLINK_HDR_FLAG_SECTIONS` | `0x0001` | Bit 0 of `udynlink_module_header_t.flags`: the image carries a section table (multi-region memory placement). See [Section Query and Placement Functions](#section-query-and-placement-functions) and [Multi-Region Memory Placement](how-it-works.md#multi-region-memory-placement). Bits 15:1 are reserved and must be 0. |
 
 ---
 
@@ -376,7 +386,7 @@ Loads a module from a memory-mapped image.
 |-----------|------|-------------|
 | `p_mod` | `udynlink_module_t *` | Pointer to a module handle structure allocated by the caller. Must not be `NULL`. **Must be zero-initialized before the first call** (e.g. `memset(p_mod, 0, sizeof(*p_mod))`), or the error-path cleanup may attempt to free garbage pointers. |
 | `base_addr` | `const void *` | Start address of the module binary image in memory (flash or RAM). |
-| `load_addr` | `void *` | RAM address where the module should be loaded, or `NULL` to request automatic allocation via `udynlink_external_malloc`. |
+| `load_addr` | `void *` | RAM address where the module should be loaded, or `NULL` to request automatic allocation via `udynlink_external_malloc`. Must be word (4-byte) aligned; a misaligned address is rejected with `UDYNLINK_ERR_LOAD_RAM_UNALIGNED`. |
 | `load_size` | `size_t` | If `load_addr` is not `NULL`, the size of the pre-allocated memory region. Ignored when `load_addr` is `NULL`. |
 | `load_mode` | `udynlink_load_mode_t` | How much of the module to copy to RAM. See [`udynlink_load_mode_t`](#udynlink_load_mode_t). |
 
@@ -393,8 +403,12 @@ Loads a module from a memory-mapped image.
 - `UDYNLINK_ERR_LOAD_ARCH_MISMATCH` — Core family or float ABI mismatch.
 - `UDYNLINK_ERR_LOAD_RAM_LEN_LOW` — Caller-provided `load_size` is too small.
 - `UDYNLINK_ERR_LOAD_OUT_OF_MEMORY` — `udynlink_external_malloc` returned `NULL`.
+- `UDYNLINK_ERR_LOAD_RAM_UNALIGNED` — `load_addr` is not word (4-byte) aligned, or `udynlink_external_malloc` returned a misaligned block.
 - `UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL` — An `extern` symbol could not be resolved by the host.
 - `UDYNLINK_ERR_LOAD_BAD_RELOCATION_TABLE` — Corrupt relocation data.
+- `UDYNLINK_ERR_LOAD_SECTION_UNRESOLVED` — a sectioned module's tagged section (or main block) could not be placed: `udynlink_external_malloc` returned `NULL` for it.
+- `UDYNLINK_ERR_LOAD_SECTION_UNALIGNED` — a tagged section's allocated base does not meet the section's declared alignment.
+- `UDYNLINK_ERR_LOAD_BAD_SECTION_TABLE` — the image's section table failed validation (unsorted/overlapping VAs, invalid size/align/class, name offset outside the string pool, caps exceeded).
 
 **Thread safety:** The loader does **not** use any locking. Concurrent calls to `udynlink_load_module` from multiple interrupt levels will corrupt the internal module table. The host must disable interrupts (or use a mutex) around load/unload operations.
 
@@ -402,6 +416,8 @@ Loads a module from a memory-mapped image.
 
 - **Zero-initialization is required.** The caller must clear `*p_mod` (e.g. with `memset`) before the first call to `udynlink_load_module()`. If the structure contains uninitialized garbage, a mid-load error will read `p_mod->p_ram` and potentially call `udynlink_external_free()` on an invalid address.
 - On error, all internally allocated memory is freed and `p_mod` is zeroed.
+- **Alignment (untagged modules).** The loader guarantees only word (4-byte) alignment for module data — the data area starts at `p_ram + num_lot * 4`, right after the LOT. Objects declared with `__attribute__((aligned(N)))` for N > 4 are **not** guaranteed to be N-aligned at runtime (measured: with a 32-byte-aligned RAM base, a 32-byte-aligned object landed at `0x20000028`, i.e. 8-byte aligned).
+- **Alignment (sectioned modules).** When the image carries a section table, each MAIN section base inside the block is aligned up to its declared `align` (the padding is included in the RAM size) and the main block is requested with `main_align` = the maximum alignment over MAIN sections, so `__attribute__((aligned(N)))` data in the default sections **is** honored. Tagged sections are aligned by the host pool and validated by the loader. Untagged modules keep the 4-byte-only contract described above. See [Multi-Region Memory Placement](how-it-works.md#multi-region-memory-placement).
 - The host must set `r9` to `p_mod->ram_base` via `UDYNLINK_PREPARE_CALL()` before calling any module function.
 
 ---
@@ -423,7 +439,7 @@ Loads a module from a non-contiguous image descriptor.
 |-----------|------|-------------|
 | `p_mod` | `udynlink_module_t *` | Pointer to caller-allocated module handle. Must not be `NULL`. **Must be zero-initialized before the first call** (e.g. `memset(p_mod, 0, sizeof(*p_mod))`), or the error-path cleanup may attempt to free garbage pointers. |
 | `image` | `const udynlink_module_image_t *` | Module image descriptor with all section pointers valid for the duration of the load. |
-| `load_addr` | `void *` | RAM address for loading, or `NULL` for automatic allocation. |
+| `load_addr` | `void *` | RAM address for loading, or `NULL` for automatic allocation. Must be word (4-byte) aligned; a misaligned address is rejected with `UDYNLINK_ERR_LOAD_RAM_UNALIGNED`. |
 | `load_size` | `size_t` | Size of pre-allocated RAM if `load_addr` is not `NULL`. |
 | `load_mode` | `udynlink_load_mode_t` | `COPY_ALL`, `COPY_TEXT_DATA`, or `XIP`. |
 
@@ -435,14 +451,19 @@ Loads a module from a non-contiguous image descriptor.
 - `UDYNLINK_ERR_LOAD_ARCH_MISMATCH` — core family or float ABI mismatch.
 - `UDYNLINK_ERR_LOAD_RAM_LEN_LOW` — caller-provided `load_size` is too small.
 - `UDYNLINK_ERR_LOAD_OUT_OF_MEMORY` — `udynlink_external_malloc` returned `NULL`.
+- `UDYNLINK_ERR_LOAD_RAM_UNALIGNED` — `load_addr` is not word (4-byte) aligned, or `udynlink_external_malloc` returned a misaligned block.
+- `UDYNLINK_ERR_LOAD_SECTION_UNRESOLVED` — a sectioned module's tagged section (or main block) could not be placed: `udynlink_external_malloc` returned `NULL` for it.
+- `UDYNLINK_ERR_LOAD_SECTION_UNALIGNED` — a tagged section's allocated base does not meet the section's declared alignment.
 - `UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL` — an `extern` symbol could not be resolved by the host.
 - `UDYNLINK_ERR_LOAD_BAD_RELOCATION_TABLE` — corrupt relocation data.
+- `UDYNLINK_ERR_LOAD_BAD_SECTION_TABLE` — the image's section table failed validation.
 
 **Notes:**
 
 - For `COPY_ALL` mode, this function copies each section from the image descriptor into a single contiguous RAM buffer.
 - For `COPY_TEXT_DATA` and `XIP` modes, the metadata (header, relocations, symbol table) is **not** copied; it must remain accessible via `image->p_header` for post-load symbol lookups. If your source metadata is not contiguous with the header, use `COPY_ALL`.
-- **Zero-initialization is required.** The caller must clear `*p_mod` before the first call.
+- **Alignment (untagged modules).** The loader guarantees only word (4-byte) alignment for module data — the data area starts at `p_ram + num_lot * 4`, right after the LOT. Objects declared with `__attribute__((aligned(N)))` for N > 4 are **not** guaranteed to be N-aligned at runtime (measured: with a 32-byte-aligned RAM base, a 32-byte-aligned object landed at `0x20000028`, i.e. 8-byte aligned).
+- **Alignment (sectioned modules).** Sectioned images get per-section alignment inside the main block (padding included in the RAM size) and a `main_align` allocator request; tagged sections are aligned by the host pool and validated by the loader. See [Multi-Region Memory Placement](how-it-works.md#multi-region-memory-placement).
 - On error, all internally allocated memory is freed and `p_mod` is zeroed.
 - The host must set `r9` to `p_mod->ram_base` via `UDYNLINK_PREPARE_CALL()` before calling any module function.
 
@@ -462,6 +483,8 @@ udynlink_error_t udynlink_load_apply_relocations(udynlink_module_t *p_mod,
 Applies all relocations to a module whose sections are already in RAM.
 
 This is a low-level primitive for custom loading pipelines. The caller must have already allocated RAM, copied code/data, zeroed BSS, and populated `p_mod->p_ram` and `p_mod->p_header`. This function reads relocation and symbol data from the provided pointers and patches the module's LOT and `.data` slots.
+
+For **sectioned** images the caller is additionally responsible for placing every tagged section before calling this function: allocate it via `udynlink_external_malloc(size, name, align, flags)`, copy the payload (and zero BSS), and store its base in the module's non-main section base array (immediately after the LOT), since sectioned relocation resolution goes through the section bases.
 
 **Parameters:**
 
@@ -517,6 +540,8 @@ Computes the RAM size required to load a module.
 | `mode` | `udynlink_load_mode_t` | Intended load mode. |
 
 **Return value:** Required RAM size in bytes.
+
+The size covers the module's **main RAM block** only: LOT, the non-main section base array (0 bytes for untagged modules), the load-mode-dependent metadata/code copy, `.data`, `.bss`, and — for sectioned modules — the per-section alignment padding inside the block. Tagged sections are allocated separately through `udynlink_external_malloc` and are not part of this number.
 
 ---
 
@@ -677,7 +702,7 @@ Unloads a module, freeing its RAM and clearing its handle.
 
 **Notes:**
 
-- RAM allocated by the loader (`!FOREIGN_RAM`) is freed via `udynlink_external_free`.
+- RAM allocated by the loader (`!FOREIGN_RAM`) is freed via `udynlink_external_free`. For a sectioned module this is one call for the main block plus one call per tagged section the loader allocated, each with the same `(section, align, flags)` arguments the allocation used; host-supplied sections are never freed (the host owns them).
 - The module structure is zeroed after unloading.
 - If the module was loaded via streaming with the header copied to RAM, the header memory is also freed.
 
@@ -699,7 +724,7 @@ For XIP the code stays in flash (code-delta 0); only the LOT/data/bss RAM block 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `p_mod` | `udynlink_module_t *` | Loaded module handle (must already be loaded). |
-| `new_ram` | `void *` | Destination buffer, or `NULL` to auto-allocate via `udynlink_external_malloc(udynlink_get_ram_size(p_mod))`. |
+| `new_ram` | `void *` | Destination buffer, or `NULL` to auto-allocate via `udynlink_external_malloc(udynlink_get_ram_size(p_mod), NULL, main_align, 0)` — the same main-block request a load makes. |
 | `new_size` | `size_t` | Size of `new_ram` (ignored when `NULL`); must be `>= udynlink_get_ram_size(p_mod)`. |
 
 **Return value:**
@@ -715,7 +740,157 @@ For XIP the code stays in flash (code-delta 0); only the LOT/data/bss RAM block 
 
 - A module's RAM size is fixed per mode; `new_size` may be larger than needed (extra space unused) but never smaller than required.
 - **Invalidation contract:** every symbol address previously returned to the host by `udynlink_lookup_symbol()` / `udynlink_get_symbol_value()` is **stale** after a successful relocate — re-resolve before calling. Cross-module thunks and dependency gateways (`udynlink_thunk` / `udynlink_deps`) embed the old `ram_base` as a literal and must be torn down and rebuilt after relocate.
+- **Sectioned modules:** this function moves only the main block. Tagged sections are absolute — the host placed them and the loader only records their bases — so a plain block move does not invalidate them. Use `udynlink_relocate_module_sections()` to also move tagged sections.
 - When `new_ram` is `NULL`, the loader frees the old loader-owned region after copying; when `new_ram` is non-`NULL` (foreign), the old foreign buffer is left caller-owned.
+
+---
+
+## Section Query and Placement Functions
+
+These functions expose a module's section table and the resolved runtime
+section bases (multi-region memory placement). They work for **every**
+module: an untagged module reports the three implicit main sections
+(`.text`/`.data`/`.bss` view, unnamed, `align` 4) with today's exact bases.
+See [Multi-Region Memory Placement](how-it-works.md#multi-region-memory-placement)
+for the format and layout background.
+
+### `UDYNLINK_SEC_CLASS_*`
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `UDYNLINK_SEC_CLASS_CODE` | `0` | Executable code section. |
+| `UDYNLINK_SEC_CLASS_DATA` | `1` | Initialized data section. |
+| `UDYNLINK_SEC_CLASS_BSS`  | `2` | Zero-initialized data section (no image payload). |
+
+### `udynlink_section_info_t`
+
+```c
+typedef struct {
+    const char *name;    /* NULL for the implicit main sections of an untagged module */
+    size_t      size;
+    size_t      align;   /* power of two, >= 4 */
+    uint32_t    flags;   /* hint bits; the internal MAIN bit is masked out */
+    uint8_t     sec_class; /* UDYNLINK_SEC_CLASS_* (named sec_class: `class` is a C++ keyword) */
+    uint8_t     reserved[3];
+} udynlink_section_info_t;
+```
+
+Describes one section-table entry. `flags` carries the hint word documented in
+[Hint Flags](how-it-works.md#hint-flags): bits 7:0 are the udynlink v1
+vocabulary (`NOCACHE`/`DMA`/`SHARED`), bits 15:8 are host-reserved
+pass-through, bits 23:16 are reserved (0 in v1), and the loader-internal
+`MAIN` bit (31) is never reported.
+
+### `udynlink_get_section_count`
+
+```c
+size_t udynlink_get_section_count(const udynlink_module_header_t *p_header);
+```
+
+Returns the number of sections in the image: the section-table entry count for
+a sectioned image (read from header `flags` bits 7:1 — no image body is read),
+or `3` for an untagged module.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `p_header` | `const udynlink_module_header_t *` | Module header (from an image or a loaded module). |
+
+**Return value:** Section count (`>= 3`).
+
+### `udynlink_get_section_info`
+
+```c
+udynlink_error_t udynlink_get_section_info(const udynlink_module_header_t *p_header,
+                                           size_t idx,
+                                           udynlink_section_info_t *out);
+```
+
+Fills `out` with the description of section `idx`. For an untagged module,
+indices 0/1/2 report the implicit CODE/DATA/BSS main sections with their
+historical sizes/offsets (`.text` at VA 0, `.data` at `code_size`, `.bss` at
+`code_size + data_size`) and `name == NULL`.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `p_header` | `const udynlink_module_header_t *` | Module header. |
+| `idx` | `size_t` | Section index in `[0, udynlink_get_section_count()-1]`. |
+| `out` | `udynlink_section_info_t *` | Descriptor to fill. |
+
+**Return value:** `UDYNLINK_OK` on success; an error code if `p_header`/`out` is `NULL` or `idx` is out of range.
+
+### `udynlink_get_section_base`
+
+```c
+void *udynlink_get_section_base(const udynlink_module_t *p_mod, size_t idx);
+```
+
+Returns the **runtime** base address of section `idx` in a loaded module.
+This is the DMA use case: the host asks for the address of the tagged buffer
+a module's section lives in. Main-section bases are derived exactly as the
+loader derives them (`get_text_pointer()`/data pointer formulas); tagged
+sections return the base recorded at load time.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `p_mod` | `const udynlink_module_t *` | Loaded module handle. |
+| `idx` | `size_t` | Section index in `[0, udynlink_get_section_count()-1]`. |
+
+**Return value:** The section's runtime base, or `NULL` if `p_mod` is not loaded or `idx` is out of range.
+
+### `udynlink_section_move_t`
+
+```c
+typedef struct { size_t idx; void *new_base; } udynlink_section_move_t;
+```
+
+One entry of the move list passed to `udynlink_relocate_module_sections()`.
+
+### `udynlink_relocate_module_sections`
+
+```c
+udynlink_error_t udynlink_relocate_module_sections(udynlink_module_t *p_mod,
+                                                   void *new_ram,
+                                                   size_t new_size,
+                                                   const udynlink_section_move_t *moves,
+                                                   size_t num_moves);
+```
+
+Relocates a loaded module like `udynlink_relocate_module()` (whole main block
+to `new_ram`, same load mode, runtime state preserved) and **additionally**
+moves the tagged sections listed in `moves`. The host must already have
+copied each moved section's payload to `new_base` — the loader does not
+`memcpy` host-owned blocks. The loader then re-applies, re-derived from the
+image's relocation table, every module-internal relocation whose target or
+source lies in a moved section, using per-section deltas (`0` for sections
+that did not move). A moved section's contents must be byte-identical to its
+pre-move contents.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `p_mod` | `udynlink_module_t *` | Loaded module handle. |
+| `new_ram` | `void *` | Destination for the main block, or `NULL` to auto-allocate with the module's `main_align`. |
+| `new_size` | `size_t` | Size of `new_ram` (ignored when `NULL`); must be `>= udynlink_get_ram_size(p_mod)`. |
+| `moves` | `const udynlink_section_move_t *` | Move list (may be `NULL` when `num_moves == 0`, which reduces to `udynlink_relocate_module()` with the given `new_ram`). |
+| `num_moves` | `size_t` | Number of entries in `moves`. |
+
+**Return value:**
+
+- `UDYNLINK_OK` on success.
+- The `udynlink_relocate_module()` errors for the main-block move (`UDYNLINK_ERR_INVALID_MODULE`, `UDYNLINK_ERR_LOAD_RAM_LEN_LOW`, `UDYNLINK_ERR_LOAD_OUT_OF_MEMORY`, `UDYNLINK_ERR_LOAD_RAM_UNALIGNED`).
+
+**Notes:**
+
+- `udynlink_relocate_module()` remains valid for sectioned modules: tagged sections are absolute (the host placed them), so moving just the main block does not invalidate them.
+- The invalidation contract of `udynlink_relocate_module()` applies to any section that moved: cached pointers into a moved section are stale after the move.
+- The host keeps ownership of moved tagged sections; the loader never frees them.
 
 ---
 
@@ -854,7 +1029,7 @@ Returns the total RAM space currently used by the loaded module.
 |-----------|------|-------------|
 | `p_mod` | `const udynlink_module_t *` | Loaded module handle. |
 
-**Return value:** Number of bytes occupied in RAM, including LOT, `.data`, `.bss`, and optionally header+code depending on the load mode.
+**Return value:** Number of bytes occupied by the module's **main RAM block**, including the LOT, the non-main section base array (0 bytes for untagged modules), `.data`, `.bss`, optionally header+code depending on the load mode, and for sectioned modules the per-section alignment padding inside the block. Tagged (non-main) sections live in their own host-placed allocations and are not included.
 
 **Note:** This reflects the *actual* allocation size after loading, which is useful for diagnostics and memory pool accounting.
 
@@ -904,15 +1079,38 @@ Returns the name of a module given only its base address, **without** loading it
 size_t udynlink_get_image_size(const void *base_addr);
 ```
 
-Calculates the total module image size (header + metadata + code + data), not the RAM size.
+Calculates a module image's size from its header alone — the header, the relocation/symbol/section tables and the main code+data payloads. It dereferences **only the 32-byte header**, so it is safe on a buffer whose length is not yet known.
+
+For a module built without section placement this is the exact image size. For a **sectioned** image it is a **lower bound**: tagged-section payloads are described only by the section table, which sits inside the metadata this function does not read. Size a buffer holding a sectioned image from its source (file size, array length), or use `udynlink_get_image_size_bounded()`.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `base_addr` | `const void *` | Pointer to the start of a module image (at least a complete header). |
+
+**Return value:** Lower bound on the image size in bytes. Returns `0` if the signature is invalid.
+
+---
+
+### `udynlink_get_image_size_bounded`
+
+```c
+size_t udynlink_get_image_size_bounded(const void *base_addr, size_t avail);
+```
+
+Returns the **total** image size — header, tables, main payloads and tagged CODE/DATA payloads — without ever reading past `avail` bytes. This is the size a caller must supply before handing the image to any loader entry point, and the value the fuzz/sanitizer harness gates its inputs with.
+
+The section table is read only after the header-derived lower bound has been shown to lie inside `avail`, which places the entire metadata block (section table included) inside the caller's buffer; every table field is then validated like the loader validates it.
 
 **Parameters:**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `base_addr` | `const void *` | Pointer to the start of a module image. |
+| `avail` | `size_t` | Bytes the caller guarantees at `base_addr`. |
 
-**Return value:** Total bytes from header through data section. Returns `0` if the signature is invalid.
+**Return value:** Total image size in bytes, or `0` when it cannot be established within `avail` (truncated buffer, malformed header, or inconsistent section table). Treat `0` — and any result greater than `avail` — as a rejection: the loader has no buffer-length parameter and would read past the end of a short buffer.
 
 ---
 
@@ -2099,7 +2297,7 @@ for (udynlink::Symbol s : mod.symbols()) {
 
 ## External Callbacks
 
-The host firmware **must** implement every function declared in `udynlink/udynlink_externals.h`. Without these, the loader will not link.
+The functions declared in `udynlink/udynlink_externals.h` form the host contract. `udynlink_external_malloc` and `udynlink_external_free` have no defaults and must be implemented by the host. `udynlink_external_is_pointer_in_ram`, `udynlink_external_vprintf`, and `udynlink_external_resolve_symbol` have weak defaults in `udynlink.c`, so the loader links and loads even without host implementations.
 
 ### `udynlink_external_is_pointer_in_ram`
 
@@ -2109,37 +2307,48 @@ int udynlink_external_is_pointer_in_ram(const void *p);
 
 Returns non-zero if the given pointer lies in the MCU's SRAM region.
 
-**Called by:** The loader during XIP validation (ensuring code does not reside in RAM).
+**Called by:** Nothing. The declaration and a weak default (returns 0) exist in the loader, but the current loader never invokes this callback, and `UDYNLINK_ERR_LOAD_XIP_UNSUPPORTED` is never returned. XIP loads copy `.data` into the RAM block without validating where the code resides.
 
-**Note:** This callback is declared in the header but the current loader implementation does not actively call it during XIP loads. Hosts should still provide a correct implementation for future compatibility.
+**Note:** Implementing the callback is harmless but has no effect on loader behavior today; do not rely on it for XIP validation.
 
 ---
 
 ### `udynlink_external_malloc`
 
 ```c
-void *udynlink_external_malloc(size_t size);
+/* section == NULL -> the module's main RAM block */
+void *udynlink_external_malloc(size_t size, const char *section, size_t align, uint32_t flags);
 ```
 
-Allocates `size` bytes of RAM for a module.
+Allocates `size` bytes of RAM for a module block or one of its sections.
 
-**Called by:** `udynlink_load_module` and `udynlink_load_module_image` when `load_addr == NULL` (auto-allocation mode).
+**Called by:** `udynlink_load_module` and `udynlink_load_module_image` when `load_addr == NULL` (auto-allocation mode), once for the main block and once per tagged section of a sectioned module. Also by `udynlink_relocate_module`/`udynlink_relocate_module_sections` when the destination is `NULL`.
 
-**Semantics:** Must return a pointer to at least `size` bytes of writable RAM, aligned suitably for 32-bit access. May return `NULL` on failure.
+**Semantics:**
+
+- `section == NULL` — the module's **main RAM block** (LOT, default sections, non-main base array, and in `COPY_ALL` the image metadata). `align` is the block's `main_align` (max alignment over MAIN sections; 4 for untagged modules); `flags` is `0`.
+- `section != NULL` — one **tagged section** of a sectioned module; `section` is the section name declared on the mkmodule command line, `align` its declared alignment (power of two, ≥ 4), and `flags` its hint word with the loader-internal bits (`MAIN`, reserved) masked out. The host decides which pool answers; returning `NULL` fails the load with `UDYNLINK_ERR_LOAD_SECTION_UNRESOLVED` after freeing everything already allocated.
+- Must return a pointer to at least `size` bytes of writable RAM aligned to `align`. A main block below `main_align` is freed and the load fails with `UDYNLINK_ERR_LOAD_RAM_UNALIGNED`; a tagged section below its `align` fails with `UDYNLINK_ERR_LOAD_SECTION_UNALIGNED`.
+- `section` points into the module image's string pool and is valid **only for the duration of the call**; copy it if the allocator stores names.
+
+Untagged modules trigger exactly one call — `(ram_size, NULL, 4, 0)` — identical to the pre-3.1 single-argument contract.
 
 ---
 
-### `udynlink_external_free`
-
 ```c
-void udynlink_external_free(void *p);
+/* section == NULL -> the module's main RAM block */
+void udynlink_external_free(void *p, const char *section, size_t align, uint32_t flags);
 ```
 
 Frees memory previously allocated by `udynlink_external_malloc`.
 
-**Called by:** `udynlink_unload_module` and error cleanup paths in the loaders.
+**Called by:** `udynlink_unload_module`, mid-load error cleanup, and relocate's old-region release.
 
-**Semantics:** Must safely handle `NULL`.
+**Semantics:**
+
+- Receives exactly the `(section, align, flags)` arguments the matching allocation used, so hosts that route by name (or by alignment class) can return the block to the right pool.
+- Called for **every** block the loader allocated: the main block plus each tagged section it allocated, on unload and on every error path. Sections the host supplied via `load_addr` (foreign RAM) are never freed, and host-owned tagged sections are never freed (the host owns their lifetime).
+- Must safely handle `NULL`.
 
 ---
 

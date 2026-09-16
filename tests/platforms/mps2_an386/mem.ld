@@ -5,11 +5,16 @@
  * For QEMU -kernel, the ELF is loaded at the addresses specified
  * in the program headers. We place everything in ZBTSRAM for
  * simplicity; the LOT base at 0x20000000 is valid BRAM.
+ *
+ * BRAM is linked in only when a test actually references it: the .altpool
+ * output section (secondary placement pool for sectioned modules) is empty
+ * for every other test, so the image layout stays unchanged.
  */
 
 MEMORY
 {
   RAM (rwx) : ORIGIN = 0x00000000, LENGTH = 8M
+  BRAM (rwx) : ORIGIN = 0x20000000, LENGTH = 4M
 }
 
 SECTIONS
@@ -44,7 +49,15 @@ SECTIONS
     _ebss = .;
   } > RAM
 
+  /* Secondary placement pool: lives in the board's second RAM region. */
+  .altpool (NOLOAD) : {
+    __altpool_start__ = .;
+    *(.altpool*)
+    __altpool_end__ = .;
+  } > BRAM
+
   _end = .;
   _end_noinit = .;
   _estack = ORIGIN(RAM) + LENGTH(RAM);
 }
+

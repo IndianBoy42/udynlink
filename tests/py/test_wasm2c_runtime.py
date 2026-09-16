@@ -46,9 +46,18 @@ HOST_PREAMBLE = """\
 #include <stdint.h>
 #include <setjmp.h>
 
-/* Host callbacks the runtime's weak hooks delegate to. */
-void *udynlink_external_malloc(size_t size) { return malloc(size); }
-void udynlink_external_free(void *p) { free(p); }
+/* Host callbacks the runtime's weak hooks delegate to (section = NULL: the
+ * runtime owns no tagged sections; alignment 8 = widest thing it stores). */
+void *udynlink_external_malloc(size_t size, const char *section,
+                               size_t align, uint32_t flags) {
+    (void)section; (void)align; (void)flags;
+    return malloc(size);
+}
+void udynlink_external_free(void *p, const char *section,
+                            size_t align, uint32_t flags) {
+    (void)section; (void)align; (void)flags;
+    free(p);
+}
 void udynlink_external_vprintf(const char *s, va_list va) { (void)s; (void)va; }
 uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod,
                                            const char *name) {

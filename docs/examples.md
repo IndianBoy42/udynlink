@@ -7,6 +7,7 @@
 - [Host with Hash-Based Resolution](#host-with-hash-based-resolution)
 - [XIP (Execute In Place) from Flash](#xip-execute-in-place-from-flash)
 - [C++ Module with Constructors](#c-module-with-constructors)
+- [Multi-Region Placement: a DMA Buffer in a Second RAM Region](#multi-region-placement-a-dma-buffer-in-a-second-ram-region)
 - [Hot-Patching Symbols with `udynlink_link_symbol`](#hot-patching-symbols-with-udynlink_link_symbol)
 - [Loading from Non-Contiguous Sources](#loading-from-non-contiguous-sources)
 - [Multiple Module Instances](#multiple-module-instances)
@@ -63,11 +64,17 @@ This produces `mod_hello_module_data.h`, a C header containing the module as a b
 /*  External callbacks required by udynlink                                   */
 /* -------------------------------------------------------------------------- */
 
-void *udynlink_external_malloc(size_t size) {
+void *udynlink_external_malloc(size_t size, const char *section,
+                               size_t align, uint32_t flags) {
+    (void)section;  /* NULL = the module's main RAM block */
+    (void)align;    /* honor in production code: allocate `align`-aligned */
+    (void)flags;
     return malloc(size);
 }
 
-void udynlink_external_free(void *p) {
+void udynlink_external_free(void *p, const char *section,
+                            size_t align, uint32_t flags) {
+    (void)section; (void)align; (void)flags;
     free(p);
 }
 
@@ -192,8 +199,16 @@ uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const
 /*  Other required externals (malloc, free, vprintf, is_pointer_in_ram)     */
 /* -------------------------------------------------------------------------- */
 
-void *udynlink_external_malloc(size_t size) { return malloc(size); }
-void udynlink_external_free(void *p) { free(p); }
+void *udynlink_external_malloc(size_t size, const char *section,
+                               size_t align, uint32_t flags) {
+    (void)section; (void)align; (void)flags;
+    return malloc(size);
+}
+void udynlink_external_free(void *p, const char *section,
+                            size_t align, uint32_t flags) {
+    (void)section; (void)align; (void)flags;
+    free(p);
+}
 void udynlink_external_vprintf(const char *s, va_list va) { vprintf(s, va); }
 int udynlink_external_is_pointer_in_ram(const void *p) {
     return ((uintptr_t)p >= 0x20000000 && (uintptr_t)p < 0x20010000);
@@ -254,8 +269,16 @@ uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const
 /*  Other required externals                                                  */
 /* -------------------------------------------------------------------------- */
 
-void *udynlink_external_malloc(size_t size) { return malloc(size); }
-void udynlink_external_free(void *p) { free(p); }
+void *udynlink_external_malloc(size_t size, const char *section,
+                               size_t align, uint32_t flags) {
+    (void)section; (void)align; (void)flags;
+    return malloc(size);
+}
+void udynlink_external_free(void *p, const char *section,
+                            size_t align, uint32_t flags) {
+    (void)section; (void)align; (void)flags;
+    free(p);
+}
 void udynlink_external_vprintf(const char *s, va_list va) { vprintf(s, va); }
 int udynlink_external_is_pointer_in_ram(const void *p) {
     return ((uintptr_t)p >= 0x20000000 && (uintptr_t)p < 0x20010000);
@@ -317,8 +340,16 @@ uintptr_t udynlink_external_resolve_symbol(const udynlink_module_t *p_mod, const
     return (addr != NULL) ? (uintptr_t)addr : 0;
 }
 
-void *udynlink_external_malloc(size_t size) { return malloc(size); }
-void udynlink_external_free(void *p) { free(p); }
+void *udynlink_external_malloc(size_t size, const char *section,
+                               size_t align, uint32_t flags) {
+    (void)section; (void)align; (void)flags;
+    return malloc(size);
+}
+void udynlink_external_free(void *p, const char *section,
+                            size_t align, uint32_t flags) {
+    (void)section; (void)align; (void)flags;
+    free(p);
+}
 void udynlink_external_vprintf(const char *s, va_list va) { vprintf(s, va); }
 int udynlink_external_is_pointer_in_ram(const void *p) {
     return ((uintptr_t)p >= 0x20000000 && (uintptr_t)p < 0x20010000);
@@ -364,11 +395,20 @@ python3 mkmodule --gen-c-header --header-path ../host_firmware \
 #include "udynlink.h"
 #include "mod_sensor_module_data.h"
 
-void *udynlink_external_malloc(size_t size) { return malloc(size); }
-void udynlink_external_free(void *p) { free(p); }
+void *udynlink_external_malloc(size_t size, const char *section,
+                               size_t align, uint32_t flags) {
+    (void)section; (void)align; (void)flags;
+    return malloc(size);
+}
+void udynlink_external_free(void *p, const char *section,
+                            size_t align, uint32_t flags) {
+    (void)section; (void)align; (void)flags;
+    free(p);
+}
 void udynlink_external_vprintf(const char *s, va_list va) { vprintf(s, va); }
 
-/* For XIP, the loader needs to know which addresses are RAM */
+/* Part of the external hook contract; the current loader never calls it.
+   Kept so the example matches udynlink_externals.h. */
 int udynlink_external_is_pointer_in_ram(const void *p) {
     uintptr_t addr = (uintptr_t)p;
     /* Example: 128 KiB SRAM at 0x20000000 */
@@ -423,6 +463,154 @@ For a module with 1 KiB code, 256 bytes `.data`, 64 bytes `.bss`, and 16 LOT ent
 | `XIP` | 16*4 + 256 + 64 = **384 bytes** |
 
 XIP saves **1008 bytes** in this example because the 1 KiB code section stays in flash.
+
+---
+
+## Multi-Region Placement: a DMA Buffer in a Second RAM Region
+
+A module owns a sensor buffer that a DMA controller must reach, and a
+latency-critical lookup table. The MCU has a DMA-capable SRAM2 bank and fast
+CCM RAM. The module **tags** the objects; the host decides where they land.
+
+### Module side
+
+The module tags objects with the section macros from `udynlink/udynlink_section.h`
+(reached via `mkmodule -I <repo>/udynlink`):
+
+```c
+/* mod_regions.c */
+#include "udynlink_section.h"
+#include <stdint.h>
+#include <stddef.h>
+
+/* A DMA descriptor buffer: must be in DMA-capable, non-cacheable RAM. */
+UDYNLINK_SECTION_ALIGNED("dma", 32)
+volatile uint8_t dma_buf[512];
+
+/* A hot lookup table: put it in fast RAM if the host has some. */
+UDYNLINK_SECTION("fast")
+const uint16_t lut[256] = { /* ... */ };
+
+/* Everything untagged stays in the module's default .text/.data/.bss. */
+int process(const volatile uint8_t *src, uint8_t *dst, size_t n) {
+    for (size_t i = 0; i < n; i++)
+        dst[i] = lut[src[i] & 0xFF];
+    return (int)n;
+}
+```
+
+Build it, declaring each tagged section and its hints:
+
+```bash
+cd scripts
+python3 mkmodule --target cortex-m4 --gen-c-header \
+    --section dma:align=32:flags=DMA,NOCACHE \
+    --section fast \
+    -I ../udynlink \
+    mod_regions.c
+```
+
+`--section dma:align=32:flags=DMA,NOCACHE` declares a section named `dma`
+that must be 32-byte aligned and is flagged *DMA-reachable* and *map
+non-cacheable*; the `UDYNLINK_SECTION_ALIGNED("dma", 32)` objects land in it.
+`flags` accepts `NOCACHE`, `DMA`, `SHARED`, and host-reserved `host0`..`host7`
+(bits 15:8, opaque pass-through).
+
+### Host side
+
+The host owns one pool per hardware region and routes by the section name the
+allocator callbacks receive:
+
+```c
+/* host_regions.c (callback section only; resolve/printf hooks as usual) */
+#include <stdint.h>
+#include <stddef.h>
+#include <string.h>
+#include "udynlink.h"
+#include "mod_regions_module_data.h"
+
+#define FLAG_NOCACHE 0x01u
+#define FLAG_DMA     0x02u
+
+/* Hardware regions: SRAM2 is DMA-reachable, CCM is not. */
+static uint8_t sram2[8 * 1024] __attribute__((aligned(32)));
+static uint8_t ccm[16 * 1024]  __attribute__((aligned(32)));
+
+typedef struct { const char *name; uint8_t *base; size_t cap, used; } pool_t;
+static pool_t pools[] = {
+    { "dma",  sram2, sizeof(sram2), 0 },
+    { "fast", ccm,   sizeof(ccm),   0 },
+};
+
+static void *pool_bump(pool_t *p, size_t size, size_t align) {
+    uintptr_t raw = (uintptr_t)p->base + p->used;
+    uintptr_t aligned = (raw + align - 1) & ~((uintptr_t)align - 1);
+    size_t need = (aligned - raw) + size;
+    if (need > p->cap - p->used) return NULL;      /* refuse the placement */
+    p->used += need;
+    return (void *)aligned;
+}
+
+void *udynlink_external_malloc(size_t size, const char *section,
+                               size_t align, uint32_t flags) {
+    if (section == NULL)                            /* the module main block */
+        return pool_bump(&pools[0], size, align);   /* simple host: same pool */
+
+    for (size_t i = 0; i < sizeof(pools)/sizeof(pools[0]); i++)
+        if (strcmp(pools[i].name, section) == 0)
+            return pool_bump(&pools[i], size, align);
+    return NULL;                                    /* unknown section: fail load */
+}
+
+void udynlink_external_free(void *p, const char *section,
+                            size_t align, uint32_t flags) {
+    (void)p; (void)section; (void)align; (void)flags;
+    /* Static pools: reclaim per-module by rewinding p->used on unload, or
+       track blocks if modules unload out of order. */
+}
+
+void load_it(void) {
+    udynlink_module_t mod;
+    memset(&mod, 0, sizeof(mod));
+    if (udynlink_load_module(&mod, mod_regions_module_data, NULL, 0,
+                             UDYNLINK_LOAD_MODE_COPY_ALL) != UDYNLINK_OK)
+        return;
+
+    /* Hand the DMA controller the buffer's runtime address. */
+    size_t n = udynlink_get_section_count(mod.p_header);
+    for (size_t i = 0; i < n; i++) {
+        udynlink_section_info_t info;
+        if (udynlink_get_section_info(mod.p_header, i, &info) == UDYNLINK_OK
+            && info.name && strcmp(info.name, "dma") == 0) {
+            void *base = udynlink_get_section_base(&mod, i);
+            dma_start((uintptr_t)base, info.size);   /* host DMA setup */
+        }
+    }
+}
+```
+
+### Key points
+
+- **Tagging is separate from policy.** The module says *what* the memory is
+  for (hints); the host says *where* it goes. A host without CCM can route
+  `fast` to ordinary SRAM; a host can refuse a placement outright (return
+  `NULL`) and the load fails cleanly with
+  `UDYNLINK_ERR_LOAD_SECTION_UNRESOLVED`.
+- **The loader validates alignment.** If the host returns a base that does
+  not meet the declared `align`, the load fails with
+  `UDYNLINK_ERR_LOAD_SECTION_UNALIGNED`.
+- **Untagged code and data are untouched**: `process()` runs from the module's
+  ordinary RAM block, and an untagged build of this module (no `--section`)
+  makes exactly one allocation call, exactly as before.
+- **XIP composes**: in `UDYNLINK_LOAD_MODE_XIP` the default `.text` stays in
+  flash, while tagged code sections would still be copied to their
+  host-resolved addresses.
+- **Relocation**: `udynlink_relocate_module()` moves only the main block — the
+  DMA buffer's address (and therefore an armed DMA transfer) stays valid.
+
+See also [API Reference: Section Query and Placement
+Functions](api-reference.md#section-query-and-placement-functions) and
+[Multi-Region Memory Placement](how-it-works.md#multi-region-memory-placement).
 
 ---
 
@@ -550,8 +738,16 @@ python3 mkmodule --gen-c-header --header-path ../host_firmware \
 #include "udynlink.h"
 #include "mod_hello_cpp_module_data.h"
 
-void *udynlink_external_malloc(size_t size) { return malloc(size); }
-void udynlink_external_free(void *p) { free(p); }
+void *udynlink_external_malloc(size_t size, const char *section,
+                               size_t align, uint32_t flags) {
+    (void)section; (void)align; (void)flags;
+    return malloc(size);
+}
+void udynlink_external_free(void *p, const char *section,
+                            size_t align, uint32_t flags) {
+    (void)section; (void)align; (void)flags;
+    free(p);
+}
 void udynlink_external_vprintf(const char *s, va_list va) { vprintf(s, va); }
 int udynlink_external_is_pointer_in_ram(const void *p) {
     return ((uintptr_t)p >= 0x20000000 && (uintptr_t)p < 0x20010000);
@@ -624,7 +820,7 @@ int load_module_from_sd(const char *path, udynlink_module_t *p_mod) {
     if (res != FR_OK) return -1;
 
     size_t file_size = f_size(&fil);
-    uint8_t *image_buf = (uint8_t *)udynlink_external_malloc(file_size);
+    uint8_t *image_buf = (uint8_t *)udynlink_external_malloc(file_size, NULL, 4, 0);
     if (!image_buf) {
         f_close(&fil);
         return -1;
@@ -634,7 +830,7 @@ int load_module_from_sd(const char *path, udynlink_module_t *p_mod) {
     res = f_read(&fil, image_buf, file_size, &br);
     f_close(&fil);
     if (res != FR_OK || br != file_size) {
-        udynlink_external_free(image_buf);
+        udynlink_external_free(image_buf, NULL, 4, 0);
         return -1;
     }
 
@@ -642,7 +838,7 @@ int load_module_from_sd(const char *path, udynlink_module_t *p_mod) {
         p_mod, image_buf, NULL, 0, UDYNLINK_LOAD_MODE_COPY_ALL);
 
     if (err != UDYNLINK_OK) {
-        udynlink_external_free(image_buf);
+        udynlink_external_free(image_buf, NULL, 4, 0);
     }
     return (err == UDYNLINK_OK) ? 0 : -1;
 }
@@ -783,8 +979,16 @@ int get_count(void) {
 #include "udynlink.h"
 #include "mod_counter_module_data.h"
 
-void *udynlink_external_malloc(size_t size) { return malloc(size); }
-void udynlink_external_free(void *p) { free(p); }
+void *udynlink_external_malloc(size_t size, const char *section,
+                               size_t align, uint32_t flags) {
+    (void)section; (void)align; (void)flags;
+    return malloc(size);
+}
+void udynlink_external_free(void *p, const char *section,
+                            size_t align, uint32_t flags) {
+    (void)section; (void)align; (void)flags;
+    free(p);
+}
 void udynlink_external_vprintf(const char *s, va_list va) { vprintf(s, va); }
 int udynlink_external_is_pointer_in_ram(const void *p) {
     return ((uintptr_t)p >= 0x20000000 && (uintptr_t)p < 0x20010000);
@@ -950,8 +1154,16 @@ void pool_free(void *p) {
     /* Simple pool: no individual frees; reset pool_offset to free all */
 }
 
-void *udynlink_external_malloc(size_t size) { return pool_malloc(size); }
-void udynlink_external_free(void *p) { pool_free(p); }
+void *udynlink_external_malloc(size_t size, const char *section,
+                               size_t align, uint32_t flags) {
+    (void)section; (void)align; (void)flags;
+    return pool_malloc(size);
+}
+void udynlink_external_free(void *p, const char *section,
+                            size_t align, uint32_t flags) {
+    (void)section; (void)align; (void)flags;
+    pool_free(p);
+}
 void udynlink_external_vprintf(const char *s, va_list va) { vprintf(s, va); }
 int udynlink_external_is_pointer_in_ram(const void *p) {
     return ((uintptr_t)p >= 0x20000000 && (uintptr_t)p < 0x20010000);
@@ -1245,11 +1457,15 @@ python3 mkmodule --gen-c-header --header-path ../host_firmware \
 /*  External callbacks required by udynlink                                   */
 /* -------------------------------------------------------------------------- */
 
-void *udynlink_external_malloc(size_t size) {
+void *udynlink_external_malloc(size_t size, const char *section,
+                               size_t align, uint32_t flags) {
+    (void)section; (void)align; (void)flags;
     return malloc(size);
 }
 
-void udynlink_external_free(void *p) {
+void udynlink_external_free(void *p, const char *section,
+                            size_t align, uint32_t flags) {
+    (void)section; (void)align; (void)flags;
     free(p);
 }
 
