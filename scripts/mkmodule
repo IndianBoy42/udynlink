@@ -532,6 +532,18 @@ def process(output, args):
     # 0/… and tag k at 0x02000000*(k+1), so the flat VA map stays
     # unambiguous and the loader resolves runtime(va) per section entry.
     sectioned = bool(args.sections)
+    # --tag-on-align: a main section whose linked ELF sh_addralign exceeds 4
+    # needs the section table for the loader to honor that alignment. Decide
+    # the tag from the same normalized value the untagged-alignment warning
+    # below reads (max(sh_addralign, 1), floored at 4 like the section
+    # entries carry); without the flag the image stays untagged.
+    align_triggers = []
+    if args.tag_on_align and not sectioned:
+        for sect in (cs, ds, bs):
+            align = max(4, secinfo[sect["index"]]["addralign"])
+            if align > 4:
+                align_triggers.append((sect, align))
+        sectioned = bool(align_triggers)
     section_entries = []
     code_section_names = {sectname_code}
     # Per-section packed payload buffers with their VA spans: relocation
@@ -653,6 +665,27 @@ def process(output, args):
     # distinct st_value/st_shndx.  Keying by name would collapse them and make
     # every reference resolve to the last-written symbol's address, corrupting
     # PIC code at runtime.  See the ``.LC0`` collision regression test.
+    if align_triggers:
+        # --tag-on-align caused the tag: name the trigger in the same shape
+        # as the untagged warning above (section, alignment, up to two
+        # symbols) so the author knows why the image now carries a section
+        # table — and that pre-3.1 loaders will refuse it.
+        if args.udynlink_version_val < pack_version(3, 1):
+            args.udynlink_version = "3.1"
+            args.udynlink_version_val = pack_version(3, 1)
+        over = []
+        for sect, align in align_triggers:
+            hits = [sd for sd in syms if sd["section"] == sect["index"] and sd["name"]
+                    and (sd["value"] - sect["addr"]) % align == 0]
+            names = ([sd["name"] for sd in hits if sd["type"] == "STT_OBJECT"]
+                     or [sd["name"] for sd in hits])[:2]
+            over.append("%s requires %d-byte alignment%s" % (
+                sect["name"], align,
+                (" (symbol%s %s)" % ("s" if len(names) > 1 else "",
+                 ", ".join("'%s'" % n for n in names))) if names else ""))
+        warn("%s, but --tag-on-align tags the image with a section table so the "
+             "loader honors the alignment: the image now requires a loader ABI "
+             "of at least 3.1 (loader ABI version %s)" % (" and ".join(over), args.udynlink_version))
     def _sym_key(sd):
         """Unique identity of a symbol: its (symtab section, symbol index)."""
         return (sd["symtab"], sd["idx"])
@@ -1176,6 +1209,12 @@ parser.add_argument("--section", dest="section", action="append", default=[],
          "DMA, SHARED and host<N> (N in 0..7, host-private bit). Requires "
          "--udynlink-version >= 3.1 (the default becomes 3.1 when omitted); "
          "incompatible with --pc-rel and --no-long-calls.")
+parser.add_argument("--tag-on-align", dest="tag_on_align", action="store_true",
+    help="Tag the image with a section table when a main section "
+         "(.text/.data/.bss) requires alignment above 4 in the linked ELF, so "
+         "the loader honors it (the loader ABI version is clamped up to at "
+         "least 3.1); without the flag such an image stays untagged and the "
+         "alignment warning is printed.")
 parser.add_argument("--no-prologue", dest="no_prologue", action="store_true", help="Skip assembly prologue generation for exported functions (default: false)")
 parser.add_argument("--lto", dest="lto", action="store_true",
     help="Enable link-time optimization (GCC -flto). Compiles to fat LTO "

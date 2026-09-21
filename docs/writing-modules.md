@@ -582,6 +582,14 @@ descriptors) can fault or corrupt data. The fix is a placement section:
 `--section <name>` plus `UDYNLINK_SECTION_ALIGNED("<name>", N)` makes the
 alignment real — the host places the whole section at a suitably aligned
 address (see [Memory Regions and Section Placement](#memory-regions-and-section-placement)).
+Alternatively, build with `--tag-on-align`: mkmodule then emits a section
+table for the image (main `.text`/`.data`/`.bss` entries only) whenever one
+of the main sections requires alignment above 4 in the linked ELF, so the
+loader aligns each main section inside the RAM block and the alignment is
+honored without a placement section. Such an image requires a loader ABI of
+at least 3.1 — mkmodule raises `--udynlink-version` accordingly and prints
+one line naming the triggering section and symbols instead of the untagged
+warning above. Without the flag the image stays untagged.
 
 ## Memory Regions and Section Placement
 
