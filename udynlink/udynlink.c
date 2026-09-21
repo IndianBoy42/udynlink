@@ -370,7 +370,20 @@ static udynlink_error_t get_sectab(const udynlink_module_header_t *p_header, sec
 
 /* Index of the section containing link-time VA `va`, or -1.  Entries are
  * sorted by va and non-overlapping (enforced by get_sectab), so the scan
- * can stop at the first section starting past `va`. */
+ * can stop at the first section starting past `va`.
+ *
+ * The three main sections tile the RAM block: each base is the previous
+ * end rounded up to its own declared alignment, and the padding between
+ * them is part of the block (get_sectab checks exactly that arithmetic
+ * and get_ram_size_sections sizes it).  A link-time VA in that padding
+ * therefore resolves exactly like a VA inside the section — boundary
+ * symbols such as __init_array_end or _edata sit there — so a main
+ * section's span runs to the next main section's va rather than its own
+ * end.  The last main section keeps the strict end: a VA past .bss is
+ * not part of anything and must stay unfound.  Named/tagged sections
+ * keep it too — their payloads are separate host allocations with no
+ * padding contract, and their far-away VAs must never be claimed by a
+ * main span. */
 static int sect_find_by_va(const sect_view_t *tab, uint32_t va) {
     for (size_t i = 0; i < tab->num; i++) {
         sect_entry_t e;
@@ -378,7 +391,13 @@ static int sect_find_by_va(const sect_view_t *tab, uint32_t va) {
         if (va < e.va) {
             break;
         }
-        if ((uint64_t)(va - e.va) < e.size) {
+        uint64_t span = e.size;
+        if (i + 1 < 3 && i + 1 < tab->num) {
+            sect_entry_t next;
+            sect_entry_at(tab, i + 1, &next);
+            span = (uint64_t)next.va - e.va;
+        }
+        if ((uint64_t)(va - e.va) < span) {
             return (int)i;
         }
     }
