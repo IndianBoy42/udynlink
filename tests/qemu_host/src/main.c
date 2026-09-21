@@ -141,8 +141,14 @@ void *udynlink_external_malloc(size_t size, const char *section, size_t align, u
         g_alt_pool_allocs++;
         return (void *)p;
     }
-    (void)align;
-    return malloc(size);
+    /* The loader demands the main block satisfy the module's main-section
+     * alignment (a tagged image with alignas(32) module data asks for 32),
+     * and the firmware's own allocator returns 32-byte-aligned payloads, so
+     * the rig must not be the thing that cannot load such an image. The
+     * alignment check only kicks in above newlib's 8-byte malloc alignment;
+     * newlib's aligned_alloc returns a pointer the plain free() below
+     * accepts, so udynlink_external_free needs no changes. */
+    return align > 4u ? aligned_alloc(align, size) : malloc(size);
 }
 
 void udynlink_external_free(void *p, const char *section, size_t align, uint32_t flags) {
