@@ -616,32 +616,37 @@ def process(output, args):
     syms = get_symbols_in_elf(output)
     rels = get_relocations_in_elf(output)
     print_list(syms,"syms   :", args)
-    # The loader guarantees only 4-byte alignment for module data (the RAM
-    # arena base is 4-byte aligned and .data/.bss follow it unaligned), so a
-    # member that raised the packed .data/.bss sh_addralign above 4 will not
-    # get that alignment at runtime. Warn once so aligned(N>4) is a visible
-    # no-op instead of a silent misalignment.
-    over = []
-    for sect in (ds, bs):
-        align = secinfo[sect["index"]]["addralign"]
-        if align <= 4:
-            continue
-        hits = [sd for sd in syms if sd["section"] == sect["index"] and sd["name"]
-                and (sd["value"] - sect["addr"]) % align == 0]
-        names = ([sd["name"] for sd in hits if sd["type"] == "STT_OBJECT"]
-                 or [sd["name"] for sd in hits])[:2]
-        over.append("%s requires %d-byte alignment%s" % (
-            sect["name"], align,
-            (" (symbol%s %s)" % ("s" if len(names) > 1 else "",
-             ", ".join("'%s'" % n for n in names))) if names else ""))
-    if over:
-        warn("%s, but the udynlink loader guarantees only 4-byte alignment for module "
-             "data: __attribute__((aligned(N))) with N > 4 on module data is not honored "
-             "at runtime, the data is placed at a 4-byte-aligned arena offset and code "
-             "relying on the stricter alignment will misbehave. Put the data in a declared "
-             "placement section instead: --section <name> plus UDYNLINK_SECTION_ALIGNED("
-             "\"<name>\", N) from udynlink/udynlink_section.h gets the alignment honored "
-             "(the host places the section at a suitably aligned address)." % " and ".join(over))
+    # Alignment above 4 is honored for a TAGGED image: the main sections carry
+    # their own alignment in the section table and the loader rounds each base
+    # up inside the RAM block (so the .data/.bss gaps are part of the layout).
+    # An untagged image has one flat data blob that the loader places at a
+    # 4-byte arena offset, so a member that raised the packed .data/.bss
+    # sh_addralign above 4 will NOT get that alignment there. Warn once, only
+    # in the case where it is true, so aligned(N>4) is a visible no-op instead
+    # of a silent misalignment.
+    if not sectioned:
+        over = []
+        for sect in (ds, bs):
+            align = secinfo[sect["index"]]["addralign"]
+            if align <= 4:
+                continue
+            hits = [sd for sd in syms if sd["section"] == sect["index"] and sd["name"]
+                    and (sd["value"] - sect["addr"]) % align == 0]
+            names = ([sd["name"] for sd in hits if sd["type"] == "STT_OBJECT"]
+                     or [sd["name"] for sd in hits])[:2]
+            over.append("%s requires %d-byte alignment%s" % (
+                sect["name"], align,
+                (" (symbol%s %s)" % ("s" if len(names) > 1 else "",
+                 ", ".join("'%s'" % n for n in names))) if names else ""))
+        if over:
+            warn("%s, but an untagged image gets one flat data blob at a 4-byte arena "
+                 "offset from the udynlink loader: __attribute__((aligned(N))) with N > 4 "
+                 "on module data is not honored at runtime and code relying on the "
+                 "stricter alignment will misbehave. Declare a placement section instead: "
+                 "SECTIONS/--section <name> plus UDYNLINK_SECTION_ALIGNED(\"<name>\", N) "
+                 "from udynlink/udynlink_section.h gets the alignment honored (the host "
+                 "places the section at a suitably aligned address), or tag the image by "
+                 "declaring any section." % " and ".join(over))
     # Symbols are identified by (symtab section index, symbol index) — NOT by
     # name.  GCC's local constant-pool labels (.LC0, .LC1, ...) are reused in
     # every translation unit of a multi-TU module: they share a name but have

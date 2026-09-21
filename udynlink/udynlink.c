@@ -238,6 +238,14 @@ static size_t get_nonmain_bases_size(const sect_view_t *tab) {
     return tab->num > 3 ? (tab->num - 3) * sizeof(uintptr_t) : 0;
 }
 
+/* Round `value` up to a multiple of `align`, in 64 bits: the caller has
+ * already validated align as a power of two >= 4, and the header's sizes are
+ * attacker-controlled in the fuzz model, so their sum must not wrap before it
+ * is compared. */
+static uint32_t align_up_u32(uint64_t value, uint32_t align) {
+    return (uint32_t)((value + align - 1u) & ~((uint64_t)align - 1u));
+}
+
 /* Parse and validate the section table of a (possibly malformed) header.
  * The section count lives in the header's flag bits, so every metadata
  * offset is header-derived; the entry fields are attacker-controlled in
@@ -331,16 +339,27 @@ static udynlink_error_t get_sectab(const udynlink_module_header_t *p_header, sec
         prev = e;
     }
     /* Main-section consistency with the header (the index convention the
-     * VA map and the payload layout both rely on). */
+     * VA map and the payload layout both rely on).
+     *
+     * Each main section's base is the previous section's end rounded up to
+     * that section's own declared alignment: the padding is part of the RAM
+     * block (get_ram_size_sections applies the same arithmetic when it sizes
+     * it), and mkmodule emits exactly these link-space VAs. Requiring the
+     * unpadded value instead rejected every image whose .data or .bss needs
+     * more than 4-byte alignment — an alignas(8) buffer puts the .bss base 4
+     * bytes past code+data — so the loader refused a layout its own placement
+     * code honours. */
     sect_entry_t m[3];
     sect_view_t view = { entries, tab->p_pool, num };
     for (uint32_t i = 0; i < 3; i++) {
         sect_entry_at(&view, i, &m[i]);
     }
+    const uint32_t data_va = align_up_u32(p_header->code_size, m[1].align);
+    const uint32_t bss_va = align_up_u32((uint64_t)data_va + p_header->data_size, m[2].align);
     if (m[0].size != p_header->code_size ||
-        m[1].va != p_header->code_size ||
+        m[1].va != data_va ||
         m[1].size != p_header->data_size ||
-        m[2].va != (uint32_t)((uint64_t)p_header->code_size + p_header->data_size) ||
+        m[2].va != bss_va ||
         m[2].size != p_header->bss_size) {
         return UDYNLINK_ERR_LOAD_BAD_SECTION_TABLE;
     }
