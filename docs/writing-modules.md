@@ -951,14 +951,25 @@ udynlink_add_module(<name>
   [OPT_LEVEL <0|s|2|3|z>]    # -O (default: s)
   [MODULE_NAME <name>]       # --module-name (default: <name>)
   [BUILD_FLAGS <flags>]      # --build-flags (extra compiler flags)
+  [INCLUDE_DIRS <dir...>]    # extra -I dirs for the module sources
+  [SECTIONS <spec...>]       # --section NAME[:align=N][:flags=F1,F2] (repeatable)
+  [TAG_ON_ALIGN]             # --tag-on-align
+  [STRIP_HIDDEN_SYMS]        # --strip-hidden-syms
+  [STRIP_NON_PUBLIC_SYMS]    # --strip-non-public-syms
+  [STRIP_MANGLED_SYMS]       # --strip-mangled-syms
+  [STRIP_WEAK_SYM_NAMES]     # --strip-weak-sym-names
   [MOD_VERSION <ver>]        # --mod-version (default: 1.0)
-  [UDYNLINK_VERSION <ver>]   # --udynlink-version (default: 3.0)
+  [UDYNLINK_VERSION <ver>]   # --udynlink-version (default: mkmodule's own: 3.0,
+                             #   or 3.1 automatically when SECTIONS is used)
   [NO_PROLOGUE]              # --no-prologue
   [PC_REL]                   # --pc-rel
   [NO_LONG_CALLS]            # --no-long-calls
+  [LTO]                      # --lto (link-time optimization)
   [DISASM]                   # --disasm
+  [WORKDIR <dir>]            # mkmodule --workdir (default: <build>/CMakeFiles/<name>.mkmodule)
   [OUTPUT_DIR <dir>]         # where the .bin is written (default: ${CMAKE_CURRENT_BINARY_DIR})
   [GENERATE_HEADER]          # also emit <name>_module_data.h
+  [IMPORTS_HEADER]           # also emit <name>_imports.h (the module's symbol contract)
   [HEADER_OUTPUT_DIR <dir>]  # header dir (default: OUTPUT_DIR)
   [DEPENDS <dep...>]         # extra build-graph deps (targets or files)
 )
@@ -966,10 +977,19 @@ udynlink_add_module(<name>
 
 This creates two CMake targets:
 
-- **`<name>`** — a custom target (part of `ALL`) that produces `${OUTPUT_DIR}/<name>.bin`. Intermediate files (`*.o`, `*.elf`, `*.s`) land under `${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/<name>.mkmodule`, never beside your sources.
-- **`udynlink::module::<name>`** — an INTERFACE library. Linking your firmware against it pulls in the module's build ordering and (with `GENERATE_HEADER`) the directory containing `<name>_module_data.h` as an include directory.
+- **`<name>`** — a custom target (part of `ALL`) that produces `${OUTPUT_DIR}/<name>.bin`. Intermediate files (`*.o`, `*.elf`, `*.s`) land under `${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/<name>.mkmodule` (or `WORKDIR`), never beside your sources.
+- **`udynlink::module::<name>`** — an INTERFACE library. Linking your firmware against it pulls in the module's build ordering and (with `GENERATE_HEADER` or `IMPORTS_HEADER`) the directory containing the generated headers as an include directory.
 
-The helper passes `-I <udynlink headers>` (`udynlink_INCLUDE_DIR` — the in-tree `udynlink/` for `add_subdirectory`/`FetchContent`, the installed `include/udynlink` for `find_package`) to every `mkmodule` invocation, so module sources can `#include "udynlink_deps_api.h"` directly. Extra include dirs for your own headers go through `BUILD_FLAGS` (e.g. `BUILD_FLAGS "-I${CMAKE_CURRENT_SOURCE_DIR}/include"`).
+The helper passes `-I <udynlink headers>` (`udynlink_INCLUDE_DIR` — the in-tree `udynlink/` for `add_subdirectory`/`FetchContent`, the installed `include/udynlink` for `find_package`) to every `mkmodule` invocation, so module sources can `#include "udynlink_deps_api.h"` directly. Your own include dirs go through `INCLUDE_DIRS` (or `BUILD_FLAGS`, e.g. `BUILD_FLAGS "-I${CMAKE_CURRENT_SOURCE_DIR}/include"`).
+
+A sectioned build — placement sections plus the symbol contract the host has to satisfy:
+
+```cmake
+udynlink_add_module(mod_dma
+    SOURCES src/mod_dma.c
+    SECTIONS dtcm dma:align=32:flags=DMA,NOCACHE
+    IMPORTS_HEADER)      # mod_dma_imports.h: what udynlink_external_resolve_symbol must answer
+```
 
 ### Full Example (FetchContent)
 
