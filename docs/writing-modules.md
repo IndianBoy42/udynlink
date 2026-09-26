@@ -289,6 +289,38 @@ Typical symbols a host firmware provides:
 - `memcpy`, `memset`, `strlen` — standard string/memory operations
 - Custom hardware abstractions: `sensor_read`, `adc_sample`, `pwm_set`, `spi_transfer`
 
+### Host Symbol Contract
+
+That list of host symbols has to be complete, and the module image is the
+only authoritative statement of what a module actually needs. `mkmodule
+--gen-imports-header` writes it out as `<bin>_imports.h`:
+
+```bash
+python3 mkmodule --gen-imports-header --header-path ../host_firmware hello.c
+```
+
+```c
+#include "hello_imports.h"
+
+size_t count;
+const char *const *names = hello_imports(&count);   /* undefined symbols */
+```
+
+The flag is explicit — `--gen-c-header` does not imply it, because the
+wrapper pipelines (`proto2module`, `mkwasm2c-module`) write their own
+contract headers under that file name.
+
+The list is read back from the finished image, so it matches what the loader
+will ask for — defined exports and local symbols are not in it. It carries
+names, not prototypes: the image has no type information for imports, and the
+module was compiled against your headers, so their signatures are yours. A
+module with no undefined symbols produces an empty list.
+
+Two uses: implement the list in `udynlink_external_resolve_symbol()`, and
+feed it to `scripts/mkhostsyms` (or assert it in your build) so a host whose
+symbol set drifts from the module's expectations fails at build time rather
+than at load with `UDYNLINK_ERR_LOAD_UNKNOWN_SYMBOL`.
+
 ## C++ Modules
 
 ### Supported Features
@@ -786,6 +818,7 @@ Source files are compiled with:
 | `-O <level>` | Optimization level: `0`, `s` (default, size), `2`, `3`, `z`. |
 | `--bin-name <path>` | Custom output path for the `.bin` file. Default is derived from the first source file. |
 | `--gen-c-header` | Generate a C header file containing the binary as a `static const unsigned char` array. |
+| `--gen-imports-header` | Emit `<bin>_imports.h`: the host-side symbol contract for this module — the list of symbols that are undefined in the image, which the host must resolve from `udynlink_external_resolve_symbol()`. Explicit: not implied by `--gen-c-header`, whose sibling file name belongs to the wrapper pipelines' own contract headers. See [Host Symbol Contract](#host-symbol-contract). |
 | `--header-path <dir>` | Directory where the generated C header is written. Default: current directory. |
 | `--mod-version <ver>` | Module ABI version in `major.minor` format. Default: `1.0`. |
 | `--udynlink-version <ver>` | Minimum loader ABI version required. Default: `3.0` (`3.1` for `--section` builds without an explicit version; a lower explicit version together with `--section` is rejected). |

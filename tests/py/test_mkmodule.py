@@ -214,3 +214,50 @@ class TestMkmoduleSections:
                 continue
             off += e[2]
         assert off == len(img)
+
+
+_IMPORTS_SRC = (
+    "#include <stdio.h>\n"
+    "extern int host_scale(int);\n"
+    "extern int host_offset;\n"
+    "int module_entry(int v) { printf(\"v=%d\\n\", v); return host_scale(v) + host_offset; }\n"
+)
+
+
+@skip_no_arm_gcc
+class TestMkmoduleImportsHeader:
+    """--gen-imports-header: the host-side symbol contract. The import list is
+    read back from the built image, so the header describes what the loader
+    will actually have to resolve (not what the sources mentioned)."""
+
+    def _run(self, tmp_path, src_text, *args):
+        return _run_source(tmp_path, src_text, "--header-path", str(tmp_path), *args)
+
+    def test_lists_undefined_symbols_only(self, tmp_path):
+        res = self._run(tmp_path, _IMPORTS_SRC, "--gen-imports-header")
+        assert res.returncode == 0, res.stdout + res.stderr
+        header = (tmp_path / "mod_imports.h").read_text()
+        for name in ("host_scale", "host_offset", "printf"):
+            assert '"%s",' % name in header
+        # Defined exports and locals are not imports.
+        assert '"module_entry"' not in header
+        assert "#ifndef MOD_IMPORTS_H" in header
+        assert "static inline const char *const *mod_imports(size_t *count)" in header
+
+    def test_self_contained_module_reports_no_imports(self, tmp_path):
+        res = self._run(tmp_path, _SRC, "--gen-imports-header")
+        assert res.returncode == 0, res.stdout + res.stderr
+        header = (tmp_path / "mod_imports.h").read_text()
+        assert "No imports" in header
+        assert "names[]" not in header
+        assert "return NULL;" in header
+
+    def test_gen_c_header_does_not_claim_imports_header(self, tmp_path):
+        """--gen-c-header writes the image header only. The <bin>_imports.h
+        name belongs to the wrapper pipelines' own contract headers
+        (mkwasm2c-module writes prototypes there), so mkmodule must not
+        implicitly overwrite it."""
+        res = self._run(tmp_path, _IMPORTS_SRC, "--gen-c-header")
+        assert res.returncode == 0, res.stdout + res.stderr
+        assert (tmp_path / "mod_module_data.h").is_file()
+        assert not (tmp_path / "mod_imports.h").exists()

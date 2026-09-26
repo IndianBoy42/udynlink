@@ -87,6 +87,7 @@ python3 mkmodule --gen-c-header --header-path /some/path source1.c [source2.c ..
 ```
 
 Additional flags:
+- `--gen-imports-header` — emit `<bin>_imports.h`, the host-side symbol contract: the module's undefined symbols, read back from the finished image. Explicit, not implied by `--gen-c-header` (wrapper pipelines own that file name). Names only; the host implements them for `udynlink_external_resolve_symbol()`.
 - `--public-symbols func1,func2` — only export named symbols (reduces image size)
 - `-O <level>` — optimization level (`0`, `s`, `2`, `3`, `z`; default: `s`)
 - `--bin-name <path>` — custom output binary name
@@ -335,5 +336,4 @@ The `.gitignore` and test harness generate these artifacts; do not commit them:
 
 | # | Task | Priority | Notes |
 |---|------|----------|-------|
-| 1 | Add unit tests for mkmodule | Low | mkhostsyms now has tests; mkmodule still only tested via QEMU |
-| 2 | Migrate STM32F429 tests to mainline QEMU | Medium | Depends on suitable MPS2-level board support in mainline QEMU for M4 |
+| 1 | Migrate STM32F429 tests to mainline QEMU | Medium | Depends on suitable MPS2-level board support in mainline QEMU for M4 |

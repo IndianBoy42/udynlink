@@ -38,7 +38,9 @@ never drift:
   hook prototypes the host must implement. Generated in lockstep with the
   module source, always from the same run.
 - the **extern symbol list**, which is derivable from the module's symbol
-  table (the QEMU tests assert it exactly).
+  table (the QEMU tests assert it exactly). `mkmodule --gen-imports-header`
+  emits it as `<bin>_imports.h`, and `udynlink_parser` reads it back from a
+  built image.
 
 ### Two flavors
 
