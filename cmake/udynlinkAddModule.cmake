@@ -41,6 +41,7 @@ target links to consume the generated embedding header.
       [IMPORTS_HEADER]           # also emit <name>_imports.h (the module's symbol contract)
       [HEADER_OUTPUT_DIR <dir>]  # header dir (default: OUTPUT_DIR)
       [DEPENDS <dep...>]         # extra build-graph deps (targets or files)
+      [SIZE_REPORT]              # print the image/RAM size summary after each build
     )
 
 Creates:
@@ -63,7 +64,7 @@ Consumer in one line:
 
 function(udynlink_add_module name)
   set(_options NO_PROLOGUE PC_REL NO_LONG_CALLS LTO DISASM GENERATE_HEADER
-              IMPORTS_HEADER TAG_ON_ALIGN
+              IMPORTS_HEADER TAG_ON_ALIGN SIZE_REPORT
               STRIP_HIDDEN_SYMS STRIP_NON_PUBLIC_SYMS STRIP_MANGLED_SYMS
               STRIP_WEAK_SYM_NAMES)
   set(_oneval TARGET MCPU PUBLIC_SYMBOLS OPT_LEVEL MODULE_NAME BUILD_FLAGS
@@ -239,6 +240,15 @@ function(udynlink_add_module name)
 
   # Builds the module when the project is built, and on bare `cmake --build`.
   add_custom_target(${name} ALL DEPENDS ${_bin})
+
+  # Informational, and deliberately a POST_BUILD step rather than part of the
+  # module recipe: editing the reporting tool must not rebuild every module.
+  if(ARG_SIZE_REPORT)
+    add_custom_command(TARGET ${name} POST_BUILD
+      COMMAND Python3::Interpreter "${udynlink_SCRIPTS_DIR}/module-size" "${_bin}"
+      COMMENT "Sizing udynlink module: ${name}"
+      VERBATIM)
+  endif()
 
   # Consumer-facing: link this to pull the module build + the header include dir.
   # A plain-named INTERFACE target carries the build-ordering dependency and

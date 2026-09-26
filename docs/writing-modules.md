@@ -972,6 +972,7 @@ udynlink_add_module(<name>
   [IMPORTS_HEADER]           # also emit <name>_imports.h (the module's symbol contract)
   [HEADER_OUTPUT_DIR <dir>]  # header dir (default: OUTPUT_DIR)
   [DEPENDS <dep...>]         # extra build-graph deps (targets or files)
+  [SIZE_REPORT]              # print the image/RAM size summary after each build
 )
 ```
 
@@ -990,6 +991,11 @@ udynlink_add_module(mod_dma
     SECTIONS dtcm dma:align=32:flags=DMA,NOCACHE
     IMPORTS_HEADER)      # mod_dma_imports.h: what udynlink_external_resolve_symbol must answer
 ```
+
+`SIZE_REPORT` adds a `scripts/module-size` step after each build, printing the
+image bytes, the main RAM block per load mode, and the tagged sections the
+host will allocate — the same report you can run by hand on any `.bin`
+(`scripts/module-size --json` for machine consumption).
 
 ### Full Example (FetchContent)
 

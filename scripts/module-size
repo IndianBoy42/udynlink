@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""Print a size summary for built UDLM module images.
+
+    module-size [--json] IMAGE.bin [IMAGE.bin ...]
+
+Reads each image with ``udynlink_parser`` — the single source of truth for
+the binary format — and reports what a host pays for it: the on-disk image it
+has to store or transfer, the main RAM block per load mode, the tagged
+sections the host allocates separately, and the symbol/relocation table
+weight. Exit status is 1 if any file cannot be read as a UDLM image.
+
+Useful as a build post-step (``udynlink_add_module(... SIZE_REPORT)``) and
+for answering "how much flash and RAM does this module cost".
+"""
+
+import argparse
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import udynlink_parser as udl  # noqa: E402
+
+
+def _human(n):
+    """Byte count with a human unit; exact bytes stay visible in the body."""
+    if n < 1024:
+        return "%d B" % n
+    if n < 1024 * 1024:
+        return "%.2f KB" % (n / 1024.0)
+    return "%.2f MB" % (n / 1024.0 / 1024.0)
+
+
+def _version(v):
+    return "%d.%d" % (udl.get_major_version(v), udl.get_minor_version(v))
+
+
+def _summary(path):
+    """Decode one image into the report dict; raises ValueError if it is not
+    a UDLM image."""
+    with open(path, "rb") as f:
+        data = f.read()
+    img = udl.parse_module(data)
+    h = img.header
+    # num_named_symbols is the loader's own definition (the searchable block
+    # it binary-searches), so the number reported is the number it uses.
+    named = img.num_named_symbols
+    sections = [{
+        "name": s.name,
+        "class": s.class_name,
+        "size": s.size,
+        "align": s.align,
+        "main": s.is_main,
+    } for s in img.sections]
+    tagged = sum(s["size"] for s in sections if not s["main"])
+    ram = {}
+    for mode in (udl.LoadMode.COPY_ALL, udl.LoadMode.COPY_TEXT_DATA, udl.LoadMode.XIP):
+        # RuntimeLayout.ram_size covers both layouts: the untagged formula and
+        # the sectioned one (non-main base array + per-section alignment).
+        ram[mode.name.lower()] = img.runtime_layout(mode).ram_size
+    return {
+        "path": path,
+        "name": img.module_name,
+        "mod_version": _version(h.mod_version),
+        "udynlink_version": _version(h.udynlink_version),
+        "arch": udl.arch_family_name(h.arch_tag),
+        "arch_tag": h.arch_tag,
+        "image_size": img.image_size,
+        "code_size": h.code_size,
+        "data_size": h.data_size,
+        "bss_size": h.bss_size,
+        "symtab_size": h.symt_size,
+        "symbols": len(img.symbols),
+        "named_symbols": named,
+        "relocations": len(img.relocations),
+        "lot_entries": h.num_lot,
+        "ram": ram,
+        "sections": sections,
+        "tagged_ram": tagged,
+    }
+
+
+def _print_summary(m):
+    print("%s — UDLM image %s, ABI %s, %s, mod_version %s" % (
+        m["name"], _human(m["image_size"]), m["udynlink_version"], m["arch"],
+        m["mod_version"]))
+    print("  text    %9s   code section (executes in the image under XIP)" % _human(m["code_size"]))
+    print("  data    %9s   initialized data (copied to RAM at load)" % _human(m["data_size"]))
+    print("  bss     %9s   zero-initialized RAM" % _human(m["bss_size"]))
+    print("  symtab  %9s   %d entries, %d named" % (
+        _human(m["symtab_size"]), m["symbols"], m["named_symbols"]))
+    print("  relocs  %9s   %d entries" % (
+        _human(m["relocations"] * 8), m["relocations"]))
+    print("  lot     %9s   %d slots (inside the main block)" % (
+        _human(m["lot_entries"] * 4), m["lot_entries"]))
+    print("  ram     %9s   main block: XIP | %s COPY_TEXT_DATA | %s COPY_ALL" % (
+        _human(m["ram"]["xip"]), _human(m["ram"]["copy_text_data"]),
+        _human(m["ram"]["copy_all"])))
+    tagged = [s for s in m["sections"] if not s["main"]]
+    if tagged:
+        print("  tagged sections (the host allocates these separately):")
+        for s in tagged:
+            print("    %-12s %-5s %9s   align %d" % (
+                s["name"], s["class"], _human(s["size"]), s["align"]))
+        print("  tagged  %9s   total across %d section(s)" % (
+            _human(m["tagged_ram"]), len(tagged)))
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(
+        prog="module-size",
+        description="Size summary for built UDLM module images.")
+    p.add_argument("images", nargs="+", metavar="IMAGE.bin",
+                   help="module image(s) to report on")
+    p.add_argument("--json", action="store_true",
+                   help="emit the report as JSON (one object for all images) "
+                        "instead of the text summary")
+    args = p.parse_args(argv)
+
+    reports, failed = [], False
+    for path in args.images:
+        try:
+            reports.append(_summary(path))
+        except (OSError, ValueError) as e:
+            # parse_module raises ValueError for anything that is not a valid
+            # UDLM image; OSError covers an unreadable path.
+            print("module-size: %s: %s" % (path, e), file=sys.stderr)
+            failed = True
+
+    if args.json:
+        json.dump({"modules": reports}, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+    else:
+        for i, m in enumerate(reports):
+            if i:
+                print()
+            _print_summary(m)
+
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except BrokenPipeError:
+        # The reader closed early (e.g. `module-size ... | head`). Point
+        # stdout at /dev/null so the interpreter's final flush does not raise
+        # a second time, and report failure like other Unix filters.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        sys.exit(1)
