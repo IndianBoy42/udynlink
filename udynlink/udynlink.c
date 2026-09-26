@@ -666,12 +666,15 @@ static void free_nonmain_sections(const udynlink_module_t *p_mod, const sect_vie
         return;
     }
     for (size_t k = 3; k < tab->num; k++) {
+        sect_entry_t e;
+        sect_entry_at(tab, k, &e);
+        if (e.size == 0) {
+            continue; // empty declared section: the load path allocated nothing for it
+        }
         uintptr_t base = get_section_base_idx(p_mod, tab, k);
         if (base == 0) {
             break; // sequential allocation: the first gap ends the recorded run
         }
-        sect_entry_t e;
-        sect_entry_at(tab, k, &e);
         udynlink_external_free((void *)base, sect_name(tab, &e), e.align, sect_host_flags(&e));
     }
 }
@@ -1276,6 +1279,15 @@ udynlink_error_t udynlink_load_module_image(udynlink_module_t *p_mod,
         for (size_t k = 3; k < tab.num; k++) {
             sect_entry_t e;
             sect_entry_at(&tab, k, &e);
+            if (e.size == 0) {
+                /* A declared section the module placed nothing in: no host
+                 * allocation, no callback, base stays 0 (the array was zeroed
+                 * with the main block). Asking for zero bytes would fail the
+                 * load against any allocator that refuses a zero-byte request
+                 * — a build that declares a section it does not use yet is a
+                 * normal thing to do. */
+                continue;
+            }
             void *sec = udynlink_external_malloc(e.size, sect_name(&tab, &e), e.align, sect_host_flags(&e));
             if (sec == NULL) {
                 res = UDYNLINK_ERR_LOAD_SECTION_UNRESOLVED;

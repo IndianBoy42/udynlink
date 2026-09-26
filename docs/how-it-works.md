@@ -660,6 +660,12 @@ load mode including XIP (the host asked for that memory explicitly); the
 default `.text` still executes in place under XIP. Tagged DATA/BSS payloads
 are copied/zeroed at their resolved bases.
 
+A tagged section with `size == 0` — declared on the mkmodule command line but
+carrying no content — is **never allocated**: the loader skips it, its base
+in the non-main base array stays 0, and both `udynlink_get_section_base()`
+and unload ignore it. This keeps "declare a section now, fill it later"
+working against allocators that refuse a zero-byte request.
+
 ### Alignment
 
 The main block's alignment requirement is `main_align` — the maximum `align`

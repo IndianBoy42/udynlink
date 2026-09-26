@@ -32,7 +32,7 @@ static int test_mode(udynlink_load_mode_t mode) {
     udynlink_module_t mod;
     udynlink_sym_t sym;
     udynlink_section_info_t info;
-    size_t alt_idx = (size_t)-1, altcode_idx = (size_t)-1;
+    size_t alt_idx = (size_t)-1, altcode_idx = (size_t)-1, empty_idx = (size_t)-1;
     int res = 0;
     size_t allocs0 = test_altpool_alloc_count();
     size_t frees0 = test_altpool_free_count();
@@ -43,10 +43,10 @@ static int test_mode(udynlink_load_mode_t mode) {
     }
 
     /* Section table: the three main sections occupy indices 0/1/2 (lowest
-     * VAs, per the format contract), then the two tagged ones. */
+     * VAs, per the format contract), then the three tagged ones. */
     size_t nsec = udynlink_get_section_count(mod.p_header);
-    if (nsec != 5) {
-        printf("section count %u != 5\n", (unsigned)nsec);
+    if (nsec != 6) {
+        printf("section count %u != 6\n", (unsigned)nsec);
         goto exit;
     }
     for (size_t i = 0; i < nsec; i++) {
@@ -72,12 +72,14 @@ static int test_mode(udynlink_load_mode_t mode) {
             alt_idx = i;
         else if (!strcmp(info.name, "altcode"))
             altcode_idx = i;
+        else if (!strcmp(info.name, "empty"))
+            empty_idx = i;
         else {
             printf("unexpected section '%s'\n", info.name);
             goto exit;
         }
     }
-    if (alt_idx == (size_t)-1 || altcode_idx == (size_t)-1) {
+    if (alt_idx == (size_t)-1 || altcode_idx == (size_t)-1 || empty_idx == (size_t)-1) {
         printf("tagged sections missing from table\n");
         goto exit;
     }
@@ -95,6 +97,24 @@ static int test_mode(udynlink_load_mode_t mode) {
         printf("altcode section info mismatch\n");
         goto exit;
     }
+
+    /* A declared section the module placed nothing in: reported with size 0
+     * and given no host allocation at all — the rig refuses zero-byte
+     * requests, so a loader that asked would fail the load instead. */
+    if (udynlink_get_section_info(mod.p_header, empty_idx, &info) != UDYNLINK_OK ||
+        info.size != 0) {
+        printf("empty section info mismatch\n");
+        goto exit;
+    }
+    if (udynlink_get_section_base(&mod, empty_idx) != NULL) {
+        printf("declared-but-empty section got a base\n");
+        goto exit;
+    }
+    if (test_altpool_alloc_count() - allocs0 != 2) {
+        printf("empty section was allocated\n");
+        goto exit;
+    }
+    printf("sections: empty declared section took no allocation\n");
 
     {
         void *alt_base = udynlink_get_section_base(&mod, alt_idx);

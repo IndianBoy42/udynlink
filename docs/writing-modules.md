@@ -697,6 +697,12 @@ distinguishes it by a `NULL` section name). See
 and a pool example, and [API Reference](api-reference.md) for
 `udynlink_get_section_info`/`udynlink_get_section_base`.
 
+A declared section the module placed nothing in (size 0 in the image) is
+**not allocated**: the loader never asks the host for zero bytes, its base
+reads as `NULL`, and it is skipped on unload. Declaring a section you do not
+use yet is therefore harmless — no host pool has to answer a zero-byte
+request, and no allocation is spent on it.
+
 ## Target Selection and Cross-Compilation
 
 ### Choosing the Right Target

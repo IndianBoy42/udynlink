@@ -459,6 +459,12 @@ same `(section, align, flags)` for every block it allocated. Your allocator
 section either lands where you want it or the load fails with
 `UDYNLINK_ERR_LOAD_SECTION_UNRESOLVED`.
 
+The loader never asks for a **zero-byte** section: a section a module
+declared but placed nothing in gets no allocation at all (its base reads as
+`NULL`, and it is skipped on unload). An allocator that refuses a zero-byte
+request — a pool with a per-block header has nothing to hand back — is
+therefore never the reason a load fails.
+
 ### The region-pool pattern
 
 A typical host owns one static pool per hardware region and routes by name:

@@ -131,6 +131,12 @@ void *udynlink_external_malloc(size_t size, const char *section, size_t align, u
         }
         if (align < 4u)
             align = 4u;
+        /* A pool allocator may legitimately refuse a zero-byte request (there
+         * is nothing to hand back). The loader must not depend on one: a
+         * declared section the module placed nothing in takes no allocation
+         * at all, so this arm is the regression gate for that path. */
+        if (size == 0)
+            return NULL;
         uintptr_t base = (uintptr_t)g_alt_pool;
         uintptr_t p = (base + g_alt_pool_used + (align - 1u)) & ~(uintptr_t)(align - 1u);
         size_t off = (size_t)(p - base);

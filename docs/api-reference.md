@@ -834,6 +834,9 @@ a module's section lives in. Main-section bases are derived exactly as the
 loader derives them (`get_text_pointer()`/data pointer formulas); tagged
 sections return the base recorded at load time.
 
+A declared section carrying no content (`size == 0`, see
+`udynlink_get_section_info`) is never allocated, so its base is `NULL`.
+
 **Parameters:**
 
 | Parameter | Type | Description |
@@ -841,7 +844,7 @@ sections return the base recorded at load time.
 | `p_mod` | `const udynlink_module_t *` | Loaded module handle. |
 | `idx` | `size_t` | Section index in `[0, udynlink_get_section_count()-1]`. |
 
-**Return value:** The section's runtime base, or `NULL` if `p_mod` is not loaded or `idx` is out of range.
+**Return value:** The section's runtime base, or `NULL` if `p_mod` is not loaded, `idx` is out of range, or the section has no content.
 
 ### `udynlink_section_move_t`
 
@@ -2328,6 +2331,7 @@ Allocates `size` bytes of RAM for a module block or one of its sections.
 
 - `section == NULL` — the module's **main RAM block** (LOT, default sections, non-main base array, and in `COPY_ALL` the image metadata). `align` is the block's `main_align` (max alignment over MAIN sections; 4 for untagged modules); `flags` is `0`.
 - `section != NULL` — one **tagged section** of a sectioned module; `section` is the section name declared on the mkmodule command line, `align` its declared alignment (power of two, ≥ 4), and `flags` its hint word with the loader-internal bits (`MAIN`, reserved) masked out. The host decides which pool answers; returning `NULL` fails the load with `UDYNLINK_ERR_LOAD_SECTION_UNRESOLVED` after freeing everything already allocated.
+- `size` is always **> 0**: a declared section the module placed nothing in takes no allocation and no callback. An allocator may refuse zero-byte requests without affecting any load.
 - Must return a pointer to at least `size` bytes of writable RAM aligned to `align`. A main block below `main_align` is freed and the load fails with `UDYNLINK_ERR_LOAD_RAM_UNALIGNED`; a tagged section below its `align` fails with `UDYNLINK_ERR_LOAD_SECTION_UNALIGNED`.
 - `section` points into the module image's string pool and is valid **only for the duration of the call**; copy it if the allocator stores names.
 
