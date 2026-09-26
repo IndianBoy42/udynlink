@@ -270,6 +270,27 @@ def test_decode_arch_tag_fields():
     assert p.decode_arch_tag(p.ARCH_TAG_CORTEX_M4 | p.ARCH_FLAG_NO_PROLOGUE)["no_prologue"] is True
 
 
+def test_every_supported_arch_tag_names_its_family():
+    """No supported target may fall through to the 'family-0xN' placeholder.
+
+    The M7 entry was keyed by family 5 while its tag (0x57) carries family 7,
+    so every Cortex-M7 image reported an unnamed family — and family 5, which
+    no tag uses, was named 'cortex-m7'.
+    """
+    for tag in (p.ARCH_TAG_CORTEX_M0, p.ARCH_TAG_CORTEX_M0PLUS,
+                p.ARCH_TAG_CORTEX_M3, p.ARCH_TAG_CORTEX_M4,
+                p.ARCH_TAG_CORTEX_M4F, p.ARCH_TAG_CORTEX_M7,
+                p.ARCH_TAG_CORTEX_M33, p.ARCH_TAG_CORTEX_M55,
+                p.ARCH_TAG_CORTEX_M85):
+        decoded = p.decode_arch_tag(tag)
+        assert not decoded["family"].startswith("family-0x"), (hex(tag), decoded)
+        # The family id must be the tag's own low nibble, like the loader's.
+        assert decoded["family_id"] == tag & p.ARCH_FAMILY_MASK
+    # Names are keyed by family, so two tags of one family agree (M4F = M4).
+    assert p.decode_arch_tag(p.ARCH_TAG_CORTEX_M4)["family"] == "cortex-m4"
+    assert p.decode_arch_tag(p.ARCH_TAG_CORTEX_M7)["family"] == "cortex-m7"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Dedupe invariant: test_symbol_filter's parser now delegates to udynlink_parser
 # ─────────────────────────────────────────────────────────────────────────────

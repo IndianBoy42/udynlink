@@ -519,7 +519,7 @@ ARCH_TAG_CORTEX_M85     = 0x5A
 _ARCH_FAMILY_NAMES = {
     0x01: "cortex-m0", 0x02: "cortex-m0plus", 0x03: "cortex-m3",
     0x04: "cortex-m4", 0x08: "cortex-m33",
-    0x05: "cortex-m7", 0x09: "cortex-m55", 0x0A: "cortex-m85",
+    0x07: "cortex-m7", 0x09: "cortex-m55", 0x0A: "cortex-m85",
 }
 _FLOAT_ABI_NAMES = {
     ARCH_FLOAT_ABI_SOFT: "soft", ARCH_FLOAT_ABI_SOFTFP: "softfp",
