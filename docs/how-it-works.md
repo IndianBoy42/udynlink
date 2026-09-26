@@ -423,6 +423,24 @@ uint32_t symt_offset;  // symbol table index, or special flag bits
 
 If `lot_offset < num_lot`, the relocation targets a LOT entry. If `lot_offset >= num_lot`, the relocation targets a word in `.data` at word offset `(lot_offset - num_lot)` — equivalently, the word whose link-time VA is `code_size + 4 * (lot_offset - num_lot)`.
 
+### Reading an Image Outside the Loader
+
+The same layout is implemented in Python as `scripts/udynlink_parser.py` — a
+library (`parse_module()` plus `ModuleImage.runtime_layout()`, which models
+where each section lands under each load mode) and a command:
+
+```bash
+python3 scripts/udynlink_parser.py build/mod_hello.bin          # structural summary
+python3 scripts/udynlink_parser.py --json build/mod_hello.bin   # same facts as JSON
+python3 scripts/udynlink_parser.py --imports build/mod_hello.bin  # symbols the host must resolve
+```
+
+`mkmodule` imports its constants, so the format is defined once, and
+`tests/py/test_udynlink_parser.py` pins the constants and the layout math
+against this document and the C loader. Host-side tooling (an uploader's
+preflight, a symbol-contract comparison, `scripts/module-size`) should use it
+rather than re-deriving the byte layout.
+
 ---
 
 ## Relocation Processing

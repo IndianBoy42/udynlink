@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Standalone parser for udynlink module images (``UDLM``) and runtime RAM layouts.
 
 This module is the single source of truth, in Python, for the udynlink binary
@@ -25,12 +26,31 @@ a reporting view only).
 The parser is standalone: it depends only on the Python standard library.
 ``mkmodule`` and the test suite import the format constants from here so the
 format is defined exactly once across the Python toolchain.
+
+Two ways to use it:
+
+* **As a library** — the primary API: ``parse_module()`` decodes an image and
+  ``ModuleImage.runtime_layout()`` models where it lands. Everything the
+  format defines is reachable this way (symbols, relocations, sections, the
+  per-load-mode RAM layout).
+* **As a command** — ``udynlink_parser.py IMAGE.bin`` prints a structural
+  summary, ``--json`` emits the same facts as JSON, and ``--symbols`` /
+  ``--exports`` / ``--imports`` list the tables. Host-side tooling (an
+  uploader's preflight, a symbol-contract comparison, ``scripts/module-size``)
+  should go through this rather than re-deriving the layout.
+
+The format constants and layout rules are pinned by
+``tests/py/test_udynlink_parser.py`` against the C loader and the mkmodule
+writer: a change to either that is not mirrored here is a test failure.
 """
 
 import struct
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Callable, Dict, List, Optional, Tuple
+
+import os
+import sys
 
 __all__ = [
     # Signature / version
@@ -1608,3 +1628,147 @@ class RuntimeLayout:
                                                     "SYMBOL:%s" % sym.type_name, res.address,
                                                     "%s '%s' -> 0x%X (%s)" % (sym.type_name, sym.name, res.address, res.resolved_by)))
         return buf, reports
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Command line
+#
+# A thin front end over parse_module()/RuntimeLayout: the summary answers
+# "what is in this image", --json emits the same facts for other tooling, and
+# the list modes exist so host-side scripts (preflight checks, uploaders,
+# symbol-contract comparison) read the format from here instead of
+# re-implementing the layout. The import path remains the primary API —
+# mkmodule and the test suite use it.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def summarize(img: "ModuleImage", path: str = "<image>") -> dict:
+    """Structured summary of a parsed image; the payload of ``--json``.
+
+    Every field mirrors a value the loader itself derives, so a host can gate
+    or size against the same numbers without parsing the image again.
+    """
+    h = img.header
+    relocs = []
+    for r in img.relocations:
+        entry = {"lot_offset": r.lot_offset, "kind": r.kind.name}
+        if r.kind == RelocKind.SYMBOL:
+            entry["symbol"] = (img.symbols[r.symt_index].name
+                               if r.symt_index < len(img.symbols) else None)
+        elif r.kind == RelocKind.DATA_BASE:
+            entry["addend"] = r.data_addend
+        relocs.append(entry)
+    counts = {}
+    for s in img.symbols:
+        counts[s.type_name] = counts.get(s.type_name, 0) + 1
+    return {
+        "path": path,
+        "name": img.module_name,
+        "mod_version": "%d.%d" % (get_major_version(h.mod_version),
+                                  get_minor_version(h.mod_version)),
+        "loader_abi": "%d.%d" % (get_major_version(h.udynlink_version),
+                                 get_minor_version(h.udynlink_version)),
+        "arch": decode_arch_tag(h.arch_tag),
+        "image_size": img.image_size,
+        "sizes": {"code": h.code_size, "data": h.data_size,
+                  "bss": h.bss_size, "symtab": h.symt_size},
+        "symbol_counts": counts,
+        "symbols": [{"index": s.index, "name": s.name, "type": s.type_name,
+                     "location": s.location_name, "value": s.val_raw}
+                    for s in img.symbols],
+        "relocations": relocs,
+        "sections": [{"name": s.name, "class": s.class_name, "va": s.va,
+                      "size": s.size, "align": s.align, "main": s.is_main,
+                      "flags": s.host_flags} for s in img.sections],
+        "ram": {m.name.lower(): img.runtime_layout(m).ram_size
+                for m in LoadMode},
+    }
+
+
+def _print_summary(s: dict) -> None:
+    arch = s["arch"]
+    print("%s" % s["path"])
+    print("  module      %s" % s["name"])
+    print("  mod_version %s (loader ABI %s)" % (s["mod_version"], s["loader_abi"]))
+    print("  arch        %s%s, %s float, arch_tag 0x%02X" % (
+        arch["family"], "" if not arch["fpu"] else " + FPU",
+        arch["float_abi"], arch["raw"]))
+    print("  image       %d B" % s["image_size"])
+    print("  sizes       code %d B, data %d B, bss %d B, symtab %d B" % (
+        s["sizes"]["code"], s["sizes"]["data"], s["sizes"]["bss"],
+        s["sizes"]["symtab"]))
+    print("  symbols     %d (%s)" % (
+        len(s["symbols"]),
+        ", ".join("%d %s" % (n, t.lower()) for t, n in sorted(s["symbol_counts"].items()))
+        or "none"))
+    print("  relocations %d" % len(s["relocations"]))
+    print("  ram         XIP %d B, COPY_TEXT_DATA %d B, COPY_ALL %d B" % (
+        s["ram"]["xip"], s["ram"]["copy_text_data"], s["ram"]["copy_all"]))
+    print("  sections    %d" % len(s["sections"]))
+    for sec in s["sections"]:
+        print("    %-12s %-4s %6d B  align %-3d va 0x%08X%s" % (
+            sec["name"] or "<main>", sec["class"], sec["size"], sec["align"],
+            sec["va"], "" if not sec["main"] else "  (main)"))
+
+
+def main(argv=None) -> int:
+    """Entry point for ``python3 udynlink_parser.py IMAGE.bin``."""
+    import argparse
+    import json
+
+    p = argparse.ArgumentParser(
+        prog="udynlink_parser",
+        description="Inspect a UDLM module image (.bin): the decoded header, "
+                    "symbol table, relocations and the RAM layout each load "
+                    "mode produces.")
+    p.add_argument("image", help="module image to inspect; '-' reads stdin")
+    p.add_argument("--json", action="store_true",
+                   help="emit the structured summary as JSON")
+    listing = p.add_mutually_exclusive_group()
+    listing.add_argument("--symbols", action="store_true",
+                         help="list every symbol-table entry")
+    listing.add_argument("--exports", action="store_true",
+                         help="list the defined exported/weak names")
+    listing.add_argument("--imports", action="store_true",
+                         help="list the undefined (extern) names, one per line "
+                              "— the symbols the host must resolve")
+    args = p.parse_args(argv)
+
+    try:
+        if args.image == "-":
+            data = sys.stdin.buffer.read()
+        else:
+            with open(args.image, "rb") as f:
+                data = f.read()
+        img = parse_module(data)
+    except (OSError, ValueError) as e:
+        print("udynlink_parser: %s: %s" % (args.image, e), file=sys.stderr)
+        return 1
+
+    if args.json:
+        json.dump(summarize(img, args.image), sys.stdout, indent=2)
+        sys.stdout.write("\n")
+    elif args.symbols:
+        for s in img.symbols:
+            print("%-11s %-4s 0x%08X %s" % (s.type_name, s.location_name,
+                                            s.val_raw, s.name or "<unnamed>"))
+    elif args.exports:
+        for s in img.symbols:
+            if s.type in (SYM_TYPE_EXPORTED, SYM_TYPE_WEAK) and s.name:
+                print(s.name)
+    elif args.imports:
+        for s in img.symbols:
+            if s.type == SYM_TYPE_EXTERN and s.name:
+                print(s.name)
+    else:
+        _print_summary(summarize(img, args.image))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except BrokenPipeError:
+        # A reader closed early (e.g. `| head`): silence the interpreter's
+        # final flush and report failure like other Unix filters.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        sys.exit(1)

@@ -61,6 +61,7 @@ All user-facing documentation lives under `docs/` and is summarized in `docs/REA
   warns when the installed wasm2c is older than the tested minimum (`UDYNLINK_WASM2C` overrides).
 
 **Optional tools:**
+- **`scripts/udynlink_parser.py`** — the UDLM image format in Python: the single source of truth that `mkmodule` imports its constants from, a library (`parse_module()`, `ModuleImage.runtime_layout()`) for host-side tooling, and a command (`udynlink_parser.py IMAGE.bin`, `--json`, `--symbols`/`--exports`/`--imports`). Pinned against the C loader and the mkmodule writer by `tests/py/test_udynlink_parser.py`
 - **`scripts/module-size`** — prints a size summary for built `.bin` images (image bytes, per-load-mode main block, tagged sections, symbol/relocation table weight) and emits the same report as JSON with `--json`. Wired as an opt-in post-build step by `udynlink_add_module(... SIZE_REPORT)`
 - **`scripts/mkhostsyms`** — reads a host firmware ELF and generates a C header with a const GNU hash table (`--format gnu-hash`, default) or search trie (`--format trie`) for O(1)/O(k) symbol resolution
 - **`scripts/proto2module`** — compiles `.proto` files into protobuf codec modules (parse/write per message) via protoc + nanopb. Requires `protoc` and the nanopb generator plugin (`uv pip install nanopb==0.4.9.*`; keep it in sync with the vendored runtime at `third_party/nanopb`, currently nanopb-0.4.9.1). Extra mkmodule args go after `--` (see `docs/protobuf-modules.md`)

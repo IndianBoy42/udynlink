@@ -11,6 +11,7 @@ behavioral assertions (round-trip, runtime layout) rather than by tautology.
 """
 
 import glob
+import json
 import os
 import re
 import shutil
@@ -838,3 +839,90 @@ def test_sectioned_validation_rejects_malformed_tables():
     ], payloads={0: b"\x00" * 32, 1: b"\x00" * 16})
     with pytest.raises(ValueError, match="reserved flag bits"):
         p.parse_module(bad_rsvd)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Command line
+# ─────────────────────────────────────────────────────────────────────────────
+
+_PARSER = os.path.join(_REPO_ROOT, "scripts", "udynlink_parser.py")
+
+
+def _cli(*args, stdin=None):
+    """Run the parser CLI; returns (returncode, stdout, stderr) as text."""
+    res = subprocess.run([sys.executable, _PARSER, *args],
+                         capture_output=True, input=stdin)
+    return res.returncode, res.stdout.decode(), res.stderr.decode()
+
+
+_CLI_SYMBOLS = [
+    ("mod_cli", 0, p.SYM_TYPE_MODULE_NAME, False),
+    ("entry", 1, p.SYM_TYPE_EXPORTED, True),
+    ("printf", 0, p.SYM_TYPE_EXTERN, False),
+    ("weak_hook", 8, p.SYM_TYPE_WEAK, True),
+]
+
+
+
+@pytest.fixture
+def cli_image(tmp_path):
+    """An image with one export, one weak export, one extern and a tagged
+    section, assembled by the same helper the format tests use."""
+    code, data = b"\x00" * 32, b"\x00" * 16
+    raw = _build_image(
+        version=(3, 1), symbols=_CLI_SYMBOLS, relocs=[(0, 2)],
+        sectioned=[
+            (".text", 0, len(code), 4, p.SEC_CLASS_CODE, p.SEC_FLAG_MAIN),
+            (".data", len(code), len(data), 4, p.SEC_CLASS_DATA, p.SEC_FLAG_MAIN),
+            (".bss", len(code) + len(data), 0, 4, p.SEC_CLASS_BSS, p.SEC_FLAG_MAIN),
+            ("dma", 0x02000000, 64, 32, p.SEC_CLASS_DATA, 0),
+        ],
+        payloads={0: code, 1: data, 3: b"\x00" * 64})
+    path = tmp_path / "mod_cli.bin"
+    path.write_bytes(raw)
+    return path
+
+
+class TestParserCommandLine:
+    def test_summary_reports_the_image(self, cli_image):
+        rc, out, err = _cli(str(cli_image))
+        assert rc == 0, err
+        assert "mod_cli" in out
+        assert "dma" in out and "align 32" in out
+        img = p.parse_module(cli_image.read_bytes())
+        assert "image       %d B" % img.image_size in out
+        assert "sections    4" in out
+
+    def test_json_matches_the_library(self, cli_image):
+        rc, out, err = _cli("--json", str(cli_image))
+        assert rc == 0, err
+        report = json.loads(out)
+        img = p.parse_module(cli_image.read_bytes())
+        assert report["name"] == img.module_name == "mod_cli"
+        assert report["image_size"] == len(cli_image.read_bytes())
+        assert [s["name"] for s in report["sections"]] == [
+            ".text", ".data", ".bss", "dma"]
+        assert report["sections"][3] == {
+            "name": "dma", "class": "DATA", "va": 0x02000000, "size": 64,
+            "align": 32, "main": False, "flags": 0}
+        assert report["symbol_counts"] == {
+            "MODULE_NAME": 1, "EXPORTED": 1, "EXTERN": 1, "WEAK": 1}
+        assert report["ram"]["xip"] == img.runtime_layout(p.LoadMode.XIP).ram_size
+
+    def test_imports_and_exports_listings(self, cli_image):
+        rc, out, _ = _cli("--imports", str(cli_image))
+        assert rc == 0 and out == "printf\n"
+        rc, out, _ = _cli("--exports", str(cli_image))
+        assert rc == 0 and out == "entry\nweak_hook\n"
+
+    def test_dash_reads_stdin(self, cli_image):
+        raw = cli_image.read_bytes()
+        rc, out, err = _cli("-", stdin=raw)
+        assert rc == 0, err
+        assert "mod_cli" in out
+
+    def test_a_non_image_is_an_error(self, tmp_path):
+        junk = tmp_path / "junk.bin"
+        junk.write_bytes(b"nope")
+        rc, out, err = _cli(str(junk))
+        assert rc == 1 and out == ""
+        assert "junk.bin" in err
