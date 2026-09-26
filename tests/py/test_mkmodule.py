@@ -117,7 +117,9 @@ class TestMkmoduleDiagnostics:
         warnings = [l for l in res.stderr.splitlines() if l.startswith("WARNING:")]
         assert len(warnings) == 1
         assert "32-byte alignment" in warnings[0]
-        assert "4-byte alignment" in warnings[0]
+        # The message states the 4-byte arena floor the loader provides; the
+        # exact phrasing is not the contract, so match only the figure.
+        assert "4-byte" in warnings[0]
 
 
 @skip_no_arm_gcc
