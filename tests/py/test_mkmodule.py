@@ -330,3 +330,50 @@ class TestMkmoduleImportsHeader:
         assert res.returncode == 0, res.stdout + res.stderr
         assert (tmp_path / "mod_module_data.h").is_file()
         assert not (tmp_path / "mod_imports.h").exists()
+
+
+_CPP_ALIGNED_CTOR_SRC = """
+struct G { int v; G() : v(7) {} };
+static G g_value;
+/* alignas(32) puts .bss on a 32-byte alignment, so the loader places its
+ * runtime base past .data's end by an alignment pad. */
+alignas(32) static char g_buf[64];
+extern "C" int module_entry(void) { g_buf[0] = 1; return g_value.v + g_buf[0]; }
+"""
+
+
+@skip_no_arm_gcc
+def test_init_array_end_stays_inside_data(tmp_path):
+    """__init_array_end must not sit on the .data/.bss boundary.
+
+    The section table describes a flat link VA space; the loader places each
+    main section at its own aligned base. A boundary symbol that also equals
+    .data's end is then classified as the first .bss address, which the
+    loader aligns up — so cpp_init_fini walks past the real array and calls
+    the alignment padding (zeros). The linker script keeps the end symbol
+    strictly inside .data; a global ctor plus an over-aligned .bss is the
+    shape that exposed it.
+    """
+    sys.path.insert(0, os.path.join(_REPO_ROOT, "scripts"))
+    import udynlink_parser as up
+
+    src = tmp_path / "mod.cpp"
+    src.write_text(_CPP_ALIGNED_CTOR_SRC)
+    cmd = [_PY, _MKMODULE, "--workdir", str(tmp_path), "--module-name", "modx",
+           "--bin-name", str(tmp_path / "mod.bin"), "--tag-on-align", str(src)]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert res.returncode == 0, res.stdout + res.stderr
+
+    img = up.parse_module((tmp_path / "mod.bin").read_bytes())
+    main = [s for s in img.sections if s.name is None]
+    data = next(s for s in main if s.class_name == "DATA")
+    bss = next(s for s in main if s.class_name == "BSS")
+    start = img.lookup_symbol("__init_array_start")
+    end = img.lookup_symbol("__init_array_end")
+    assert start is not None and end is not None
+    assert end.val_raw > start.val_raw, "the fixture must produce a ctor"
+    assert end.val_raw < data.va + data.size, (
+        "__init_array_end at %#x is not inside .data [%#x,%#x)"
+        % (end.val_raw, data.va, data.va + data.size))
+    assert bss.va == (data.va + data.size + bss.align - 1) & ~(bss.align - 1), (
+        "the loader validates bss.va == align_up(data end, bss align)")
