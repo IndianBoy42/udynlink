@@ -356,7 +356,10 @@ static udynlink_error_t get_sectab(const udynlink_module_header_t *p_header, sec
     }
     const uint32_t data_va = align_up_u32(p_header->code_size, m[1].align);
     const uint32_t bss_va = align_up_u32((uint64_t)data_va + p_header->data_size, m[2].align);
-    if (m[0].size != p_header->code_size ||
+    /* .text's table size may exceed code_size by the alignment gap the
+     * encoder folds into its payload (the gap before .data), which is the
+     * distance up to data_va. */
+    if (m[0].size != data_va ||
         m[1].va != data_va ||
         m[1].size != p_header->data_size ||
         m[2].va != bss_va ||
@@ -449,6 +452,18 @@ static size_t get_main_section_offset(const udynlink_module_header_t *p_header, 
         off += e.size;
     }
     return off;
+}
+
+/* Bytes of MAIN .text payload in the image: code_size, plus the alignment
+ * gap the encoder folds into it when .data does not start at code_size.
+ * .data's VA is the payload's end either way. */
+static uint32_t get_code_payload_size(const udynlink_module_header_t *p_header, const sect_view_t *tab) {
+    if (tab->num > 1) {
+        sect_entry_t e;
+        sect_entry_at(tab, 1, &e);
+        return e.va;
+    }
+    return p_header->code_size;
 }
 
 /* Alignment the module's main RAM block must satisfy: the maximum over the
@@ -1075,6 +1090,13 @@ void udynlink_image_from_memory(const void *base_addr, udynlink_module_image_t *
     out->p_symtab = out->p_relocations + h->num_rels * 2;
     out->p_code = (const uint8_t *)h + get_code_offset_from_header(h);
     out->p_data = out->p_code + h->code_size;
+    if (is_sectioned(h)) {
+        /* A sectioned .text payload can run to .data's VA (the folded gap). */
+        sect_view_t tab;
+        if (get_sectab(h, &tab, 0) == UDYNLINK_OK) {
+            out->p_data = out->p_code + get_code_payload_size(h, &tab);
+        }
+    }
 }
 
 void udynlink_image_from_module(const udynlink_module_t *p_mod, udynlink_module_image_t *out) {
@@ -1247,16 +1269,18 @@ udynlink_error_t udynlink_load_module_image(udynlink_module_t *p_mod,
             // section table and its alignment padding.
             memcpy(p_temp8, image->p_header, code_offset);
             p_mod->p_header = (const udynlink_module_header_t *)p_temp8;
-            for (size_t i = 0; i < 2; i++) {
-                sect_entry_at(&tab, i, &me);
-                memcpy((uint8_t *)p_mod->p_ram + get_main_section_offset(p_header, &tab, load_mode, i),
-                       (i == 0) ? image->p_code : image->p_data, me.size);
+            memcpy((uint8_t *)p_mod->p_ram + get_main_section_offset(p_header, &tab, load_mode, 0),
+                   image->p_code, get_code_payload_size(p_header, &tab));
+            sect_entry_at(&tab, 1, &me);
+            if (me.size > 0) {
+                memcpy((uint8_t *)p_mod->p_ram + get_main_section_offset(p_header, &tab, load_mode, 1),
+                       image->p_data, me.size);
             }
             UDYNLINK_DEBUG(UDYNLINK_DEBUG_INFO, "Copied metadata (%u bytes) and main sections to RAM at %p\n", (unsigned)code_offset, p_temp8);
         } else if (load_mode == UDYNLINK_LOAD_MODE_COPY_TEXT_DATA) {
-            sect_entry_at(&tab, 0, &me);
-            if (me.size > 0) {
-                memcpy((uint8_t *)p_mod->p_ram + get_main_section_offset(p_header, &tab, load_mode, 0), image->p_code, me.size);
+            uint32_t code_payload = get_code_payload_size(p_header, &tab);
+            if (code_payload > 0) {
+                memcpy((uint8_t *)p_mod->p_ram + get_main_section_offset(p_header, &tab, load_mode, 0), image->p_code, code_payload);
             }
             sect_entry_at(&tab, 1, &me);
             if (me.size > 0) {
@@ -1275,7 +1299,7 @@ udynlink_error_t udynlink_load_module_image(udynlink_module_t *p_mod,
         // Tagged sections: one host allocation each, payload copied (or BSS
         // zeroed) at the resolved address — in every load mode, including
         // XIP: the host asked for that memory explicitly.
-        size_t payload_off = (size_t)p_header->code_size + p_header->data_size; // payload concat: main text then data
+        size_t payload_off = (size_t)get_code_payload_size(p_header, &tab) + p_header->data_size; // payload concat: main text then data
         for (size_t k = 3; k < tab.num; k++) {
             sect_entry_t e;
             sect_entry_at(&tab, k, &e);

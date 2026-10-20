@@ -271,7 +271,7 @@ Undefined weak symbols (`STB_WEAK` + `SHN_UNDEF`) are treated as `external` and 
 ### Module Image Format
 Binary modules start with the signature `UDLM`, followed by a 32-byte header, relocation table, symbol table, optional section table (multi-region placement: header `flags` bit 0 `UDYNLINK_HDR_FLAG_SECTIONS`, bits 7:1 the section count 1..63; the table is count-less 24-byte entries; sectioned images require `udynlink_version >= 3.1`; untagged images stay byte-identical to the 3.0 format), `.text`, and `.data`. The loader (`udynlink_load_module`) validates the signature, checks ABI version, applies relocations, and resolves extern symbols.
 
-Binary layout: [Header 32B] [Relocs] [Symtab] [Section table (optional, `UDYNLINK_HDR_FLAG_SECTIONS`)] [Code] [Data] — payloads in ascending VA order, BSS skipped.
+Binary layout: [Header 32B] [Relocs] [Symtab] [Section table (optional, `UDYNLINK_HDR_FLAG_SECTIONS`)] [Code] [Data] — payloads in ascending VA order, BSS skipped. In a sectioned image each payload starts at its section's VA, so a `.text`→`.data` alignment gap is folded into the `.text` payload (its table `size` becomes `.data`'s VA while `code_size` keeps the code's real length); padding it in front of `.data` shifts every data relocation.
 
 Relocation types handled: `R_ARM_GOT_BREL` (LOT), `R_ARM_ABS32` and `R_ARM_TARGET1` (data), `R_ARM_THM_CALL`/`R_ARM_THM_JUMP24` (ignored, PC-relative).
 

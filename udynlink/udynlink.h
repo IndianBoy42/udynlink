@@ -158,9 +158,13 @@ typedef struct {
     const uint32_t *p_relocations;
     /** Symbol table base (first word = entry count). The string pool is assumed contiguous with entries. */
     const uint32_t *p_symtab;
-    /** Code section (.text) in the source. */
+    /** Code section (.text) payload in the source. In a sectioned image this
+     *  also covers the alignment gap that precedes .data, so it runs up to
+     *  @c p_data. */
     const uint8_t  *p_code;
-    /** Data section (.data) in the source. */
+    /** Data section (.data) in the source: its payload starts exactly at
+     *  .data's link-time VA (which may be beyond @c p_header->code_size when
+     *  the linker left an alignment gap before .data). */
     const uint8_t  *p_data;
 } udynlink_module_image_t;
 
@@ -627,8 +631,11 @@ udynlink_error_t udynlink_load_module(udynlink_module_t *p_mod, const void *base
  *
  * For a sectioned image, the section payloads must be laid out contiguously
  * after @c image->p_code in ascending VA order (code, data, then tagged
- * sections; BSS has no payload) — exactly the layout
- * udynlink_image_from_memory() produces.  Tagged sections are always
+ * sections; BSS has no payload), each starting at its section's VA — exactly
+ * the layout udynlink_image_from_memory() produces.  Note that
+ * @c p_header->code_size is the code's own length, so @c image->p_data may be
+ * further than @c code_size bytes past @c image->p_code when an alignment gap
+ * precedes .data.  Tagged sections are always
  * allocated through udynlink_external_malloc() and copied/zeroed
  * individually, in every load mode.
  *

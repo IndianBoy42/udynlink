@@ -623,6 +623,13 @@ at least 3.1 — mkmodule raises `--udynlink-version` accordingly and prints
 one line naming the triggering section and symbols instead of the untagged
 warning above. Without the flag the image stays untagged.
 
+A sectioned image whose `.data` needs more alignment than the linker script's
+`ALIGN(4)` gets a `.text`→`.data` gap; `mkmodule` folds it into the `.text`
+payload, so the image stays consistent and every data relocation lands on the
+right word. Nothing is required from the module author for this, but note that
+the gap bytes are part of the `.text` payload (image size, not RAM size — the
+loader aligns each main section itself inside the RAM block).
+
 ## Memory Regions and Section Placement
 
 Microcontrollers do not have one uniform RAM: there is tightly coupled

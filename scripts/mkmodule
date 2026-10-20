@@ -485,6 +485,10 @@ def process(output, args):
     check(cs["size"] % 4 == 0, "Length of section '%s' is not a multiple of 4" % sectname_code)
     check(cs["addr"] == 0, "Section '%s' doesn't start at address 0" % sectname_code)
     code_sect = bytearray(cs["data"])
+    # .text's real content size. A sectioned payload may be longer by the
+    # alignment gap before .data (folded into the payload below); the header
+    # and every data-relative address still use this value.
+    code_size = cs["size"]
     crt_off += cs["size"]
     sect_idx_mapping[cs["index"]] = sectname_code
     # Data section
@@ -503,9 +507,6 @@ def process(output, args):
     # below.
     data_gap = ds["addr"] - crt_off
     check(data_gap % 4 == 0, ".data alignment gap '%d' is not a multiple of 4" % data_gap)
-    if data_gap > 0:
-        debug("Padding %d bytes of .text->.data alignment gap into the RAM arena" % data_gap, args)
-        data_sect = bytes(data_gap) + data_sect
     crt_off += len(data_sect)
     sect_idx_mapping[ds["index"]] = sectname_data
     # BSS section
@@ -545,6 +546,21 @@ def process(output, args):
             if align > 4:
                 align_triggers.append((sect, align))
         sectioned = bool(align_triggers)
+    # ── Main-section alignment gaps ──────────────────────────────────────
+    # A member with a strict alignment raises the next section's
+    # sh_addralign, so the linker starts it after a gap. A sectioned image
+    # resolves relocation targets through `code_size + 4*(lot - num_lot)` and
+    # indexes the write as `va - entry.va`, so its payloads must start
+    # exactly at their section's VA: pad the CODE payload up to .data's VA.
+    # Untagged images keep the old data-side pad — they only remain
+    # untagged when every main section is 4-aligned, where the gap is zero.
+    if sectioned and data_gap > 0:
+        debug("Padding %d bytes of .text->.data gap into the code payload" % data_gap, args)
+        code_sect += bytes(data_gap)
+        data_gap = 0
+    elif data_gap > 0:
+        debug("Padding %d bytes of .text->.data alignment gap into the RAM arena" % data_gap, args)
+        data_sect = bytes(data_gap) + data_sect
     section_entries = []
     code_section_names = {sectname_code}
     # Per-section packed payload buffers with their VA spans: relocation
@@ -552,7 +568,7 @@ def process(output, args):
     # belong to — tagged code sections carry their own pools — so site
     # patching must never assume the main .text/.data pair. The main .data
     # span starts at VA code_size because its packed blob carries the
-    # leading alignment gap; .bss has no payload to patch.
+    # leading alignment gap (untagged only); .bss has no payload to patch.
     payload_bufs = [
         (cs["addr"], cs["addr"] + len(code_sect), sectname_code, code_sect),
         (ds["addr"] - data_gap, ds["addr"] - data_gap + len(data_sect), sectname_data, bytearray(data_sect)),
@@ -887,8 +903,8 @@ def process(output, args):
         if t == "R_ARM_ABS32" or t == "R_ARM_TARGET1":
             offset, value = r["offset"], r["value"]
             check(offset % 4 == 0, "%s offset mod 4 '%x' is not a multiple of 4" % (name, offset))
-            check((offset - len(code_sect)) % 4 == 0, "%s code_sect mod 4 '%x-%x' is not a multiple of 4" % (name, offset, len(code_sect)))
-            offset = int((offset - len(code_sect)) / 4)
+            check((offset - code_size) % 4 == 0, "%s code_sect mod 4 '%x-%x' is not a multiple of 4" % (name, offset, code_size))
+            offset = int((offset - code_size) / 4)
             check(offset >= 0, "Offset of R_ARM_ABS32 symbols '%s' should be positive or 0!" % name)
             data_relocs.append((key, name, delta_off + offset, value))
             debug("Found data relocation for symbol '%s' (offset is %X, value is %x)" % (name, delta_off + offset, value), args)
@@ -1060,7 +1076,8 @@ def process(output, args):
     else:
         symt_len = round_to(symt_len, 4)
     img += struct.pack("<I", symt_len)  # Size of symbol table in bytes (4b)
-    img += struct.pack("<I", len(code_sect))  # Size of code section (4b)
+    img += struct.pack("<I", code_size)  # Size of .text content (4b); a sectioned
+                                         # payload may add the gap before .data
     img += struct.pack("<I", len(data_sect))  # Size of data section (4b)
     img += struct.pack("<I", len(bss_sect))  # Size of bss section (4b)
     # Write relocations: (lot off, symy off) pairs
@@ -1095,7 +1112,7 @@ def process(output, args):
             # Sectioned images keep the raw ELF link VA (resolution goes
             # through the section table's flat VA map); untagged images
             # offset data values into the packed arena exactly as before.
-            val_offset = 0 if (sectioned or sym_map[s] == "external" or defined_in_code) else len(code_sect)
+            val_offset = 0 if (sectioned or sym_map[s] == "external" or defined_in_code) else code_size
             # Symbols that are not in the code section (and are defined in the module) will have their value offseted with the
             # start of the .data section in the image
             debug_hint = "type: %s, " % sym_map[s]

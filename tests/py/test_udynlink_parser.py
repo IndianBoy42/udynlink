@@ -697,10 +697,15 @@ def test_sectioned_sample_table_matches_elf():
         assert img.to_bytes() == data
         for prev, cur in zip(img.sections, img.sections[1:]):
             assert cur.va >= prev.va + prev.size
-        # Main sections follow the flat link space: .text@0, .data@code_size.
-        assert (img.sections[0].va, img.sections[0].size) == (0, img.header.code_size)
-        assert (img.sections[1].va, img.sections[1].size) == \
-            (img.header.code_size, img.header.data_size)
+        # Main sections follow the flat link space: .text@0, .data where the
+        # .text payload ends. That payload also covers the alignment gap before
+        # .data, so its table size is `data.va`, never less than code_size, and
+        # equals code_size when the sections abut.
+        assert img.sections[0].va == 0
+        assert img.sections[1].va == img.sections[0].size
+        assert img.sections[1].size == img.header.data_size
+        assert img.sections[0].size >= img.header.code_size
+        assert img.sections[0].size - img.header.code_size < img.sections[1].align
         # Tagged entries must match the ELF's .udynlink.sec.* sections.
         elf = bin_path[:-4] + ".elf"
         out = subprocess.run([readelf, "-SW", elf], capture_output=True, text=True,
@@ -719,7 +724,15 @@ def test_sectioned_sample_table_matches_elf():
                 elf_name = ".udynlink.sec." + (sec.name or "")
             assert elf_name in elf_secs, "table entry '%s' missing from ELF" % sec.name
             addr, size, elf_align = elf_secs[elf_name]
-            assert (sec.va, sec.size) == (addr, size)
+            if sec.is_main and sec.cls == p.SEC_CLASS_CODE:
+                # .text's table size also covers the alignment gap before
+                # .data (folded into its payload), so it is at least the ELF
+                # size and ends exactly at .data's VA.
+                assert sec.va == addr
+                assert sec.size >= size
+                assert sec.va + sec.size == img.sections[1].va
+            else:
+                assert (sec.va, sec.size) == (addr, size)
             if not sec.is_main:
                 # Table align is the host placement promise: mkmodule emits
                 # max(declared --section align, ELF sh_addralign), so it may

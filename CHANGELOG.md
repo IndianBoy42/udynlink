@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Sectioned images with a `.text`→`.data` alignment gap loaded one word off** — when a module's `.data` needed more alignment than the linker script's `ALIGN(4)` (e.g. an `aligned(8)` `double`), the linker started `.data` after a gap. `mkmodule` prefixed that gap to the **`.data` payload** while recording `.data`'s linker VA in the section table, so `.data`'s bytes landed `gap` bytes before where the loader looked: the loader rejected the image (`UDYNLINK_ERR_LOAD_BAD_RELOCATION_TABLE`) or, where the VA map still resolved, patched every data relocation one word off. `mkmodule` now folds the gap into the **`.text` payload** (its table `size` becomes `.data`'s VA; `header.code_size` keeps the code's real length) and the loader copies/validates that payload accordingly, so payloads start exactly at their VA. Untagged images are byte-identical to before. Regression coverage: `tests/test-align-data` (all three load modes on a sectioned gap image) and `TestMkmoduleSectionedGap` (deterministic image-layout assertions).
+
 ### Added
 
 - **`scripts/module-size`** — reports what a module image costs: on-disk image bytes, the main RAM block for each of the three load modes, the tagged sections the host allocates separately (with their alignment), and the symbol/relocation table weight, all decoded through `udynlink_parser`. `--json` emits the same report for tooling. Wired into the CMake helper as an opt-in post-build step, `udynlink_add_module(... SIZE_REPORT)`.

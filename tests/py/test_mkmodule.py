@@ -216,6 +216,75 @@ class TestMkmoduleSections:
         assert off == len(img)
 
 
+_ALIGNED_DATA_SRC = (
+    '#include <stdint.h>\n'
+    '#include "udynlink_section.h"\n'
+    '/* aligned(8) in .data forces a .text->.data gap (the linker script\n'
+    ' * starts .data with ALIGN(4)). */\n'
+    '__attribute__((aligned(8))) uint64_t pair[2] = {1, 2};\n'
+    'static uint64_t *data_ptr = &pair[1];\n'
+    'UDYNLINK_SECTION("alt") volatile uint32_t marker;\n'
+    'uint64_t *get_ptr(void) { return data_ptr; }\n'
+)
+
+
+@skip_no_arm_gcc
+class TestMkmoduleSectionedGap:
+    """A sectioned image whose `.data` needs more alignment than the linker
+    script gives it starts after a `.text`->`.data` gap.
+
+    The gap must be folded into the CODE payload: the loader resolves
+    relocation targets through `code_size + 4*(lot - num_lot)` and writes at
+    `va - entry.va`, so a `.data` payload shifted by the gap applies every
+    data relocation one word off (and the loader rejects the image)."""
+
+    def _build(self, tmp_path, *extra):
+        # -O3 reliably ends .text at 4 mod 8 for this source, which is what
+        # makes the .text->.data gap deterministic across toolchains.
+        return _run_source(tmp_path, _ALIGNED_DATA_SRC, "-I",
+                           os.path.join(_REPO_ROOT, "udynlink"),
+                           "--section", "alt", "-O", "3", *extra)
+
+    def test_gap_is_folded_into_the_code_payload(self, tmp_path):
+        import struct
+        res = self._build(tmp_path)
+        assert res.returncode == 0, res.stdout + res.stderr
+        img = (tmp_path / "mod.bin").read_bytes()
+        (_, _, _, _, _, num_rels, flags, symt_size,
+         code_size, data_size, bss_size) = struct.unpack_from("<4sHHHHHHIIII", img, 0)
+
+        num_secs = (flags >> 1) & 0x3F
+        sectab_off = (32 + 8 * num_rels + symt_size + 3) & ~3
+        entries = [struct.unpack_from("<IIIIII", img, sectab_off + 24 * i)
+                   for i in range(num_secs)]
+        code_va, code_tbl_size = entries[0][1], entries[0][2]
+        data_va, data_tbl_size = entries[1][1], entries[1][2]
+
+        # The linker really did leave a gap for this module.
+        assert data_va > code_size, "test module no longer produces a gap"
+        # .text's table entry covers code + gap, so .data starts exactly at
+        # .text's end; header code_size stays the code's real length.
+        assert code_va == 0
+        assert code_tbl_size == data_va
+        assert data_tbl_size == data_size
+
+        # Payloads are stored at their VA offset: [text(+gap)][data][tagged].
+        payload_off = sectab_off + 24 * num_secs
+        code_payload = img[payload_off:payload_off + code_tbl_size]
+        data_payload = img[payload_off + code_tbl_size:
+                           payload_off + code_tbl_size + data_tbl_size]
+        # The gap bytes are zeros and .data's real content starts at .data's VA.
+        assert code_payload[code_size:] == bytes(data_va - code_size)
+        assert data_payload[:8] == struct.pack("<Q", 1), "data payload not at .data's VA"
+        # The gap bytes belong to no symbol, so the image ends where the
+        # payload concat says (no hole, no double count).
+        expected = payload_off + code_tbl_size + data_tbl_size
+        for name_off, va, size, _align, cls, _flg in entries[2:]:
+            if cls != 2:                      # BSS has no payload
+                expected += size
+        assert expected == len(img)
+
+
 _IMPORTS_SRC = (
     "#include <stdio.h>\n"
     "extern int host_scale(int);\n"

@@ -383,8 +383,17 @@ Properties the loader relies on:
 - The three main sections (`.text`, `.data`, `.bss`) carry the three lowest
   VAs, so they are indices 0/1/2 in both tagged and untagged modules.
 - Payloads are concatenated in ascending VA order, skipping BSS (BSS has no
-  payload in the image). For the default sections this keeps the historical
-  `[text][data]` layout and keeps `data_offset == code_offset + code_size`.
+  payload in the image), and each one starts at the offset its VA implies:
+  `payload_off[k] = code_offset + (va[k] - va[text])`. For the default
+  sections this keeps the historical `[text][data]` layout and keeps
+  `data_offset == code_offset + code_size` whenever the sections abut.
+- A **`.text`→`.data` alignment gap** (an `aligned(N)` member raises `.data`'s
+  `sh_addralign`, so the linker starts it after a gap) is folded into the
+  **`.text` payload**: `.text`'s table `size` becomes `.data`'s VA while
+  `header.code_size` keeps the code's real length. Both the loader (which
+  resolves relocation targets through `code_size + 4·(lot − num_lot)` and
+  writes at `va − entry.va`) and the parser index payloads by VA, so padding
+  the gap in front of `.data` instead would shift every data payload after it.
 - The count is 1..63, taken from header `flags` bits 7:1. An invalid
   combination — bit 0 clear with a nonzero count, or a count above 63 —
   is rejected with `UDYNLINK_ERR_LOAD_BAD_SECTION_TABLE`.
